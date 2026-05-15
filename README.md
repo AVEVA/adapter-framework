@@ -1,15 +1,20 @@
-# AVEVA Adapter Framework - Coming Soon
+# Adapter Framework (Coming Soon)
+Welcome to the **Adapter Framework** — a flexible, extensible toolkit designed to simplify how you collect, transform, and integrate operations data into OMF-compliant formats. The **Adapter Framework** empowers developers to build data connectivity products that:
+- Process data from **any source or specification**
+- Transform it into **OMF 1.2 or OMF 2.0 compliant formats**
+- Streamline ingestion into **AVEVA PI Server, CONNECT, Edge Data Store**, or **any OMF-compatible system**
 
-Welcome to the **Adapter Framework**.
+Whether you're working with industrial data streams, IoT devices, or custom datasets, this framework gives you the building blocks to adapt and scale.
+ 
+## Project Status
+**Currently in development**
 
-The Adapter Framework allows anyone to create their own adapter to process a data specification of their choice and format it into an OMF 1.2 or OMF 2.0 compliant formats.
+We're actively building and refining the Adapter Framework. Stay tuned for:
+- Public release date
+- Full documentation
+- Expanded sample library
 
-As the Adapter Framework is still in development, look forward to its upcoming release.
-
-[OMF Samples](https://github.com/AVEVA/AVEVA-Samples-OMF/tree/main)
-- [Complex Dynamic OMF](https://github.com/AVEVA/AVEVA-Samples-OMF/blob/main/docs/COMPLEX_DYNAMIC.md)
-- [Bart Ingress](https://github.com/AVEVA/sample-omf-bart_ingress-dotnet)
-- [Bulk Upload](https://github.com/AVEVA/sample-omf-bulk_upload-python)
-- [Sample Temperature Sensor](https://github.com/AVEVA/sample-omf-temperature_sensor-python)
+## In the Meantime
+While the Adapter Framework is still in development, you can review the [OMF specification](https://docs.aveva.com/bundle/omf/page/1283981.html) and explore the [OMF application samples](https://github.com/AVEVA/AVEVA-Samples) to better understand OMF messaging patterns and payload structures.
 
 ![AVEVALOGO](img/AVEVALOGO.png "AVEVA Logo")
