@@ -10,6 +10,6 @@ As the Adapter Framework is still in development, look forward to its upcoming r
 - [Complex Dynamic OMF](https://github.com/AVEVA/AVEVA-Samples-OMF/blob/main/docs/COMPLEX_DYNAMIC.md)
 - [Bart Ingress](https://github.com/AVEVA/sample-omf-bart_ingress-dotnet)
 - [Bulk Upload](https://github.com/AVEVA/sample-omf-bulk_upload-python)
-- [Sample OF Temperature Sensor](https://github.com/AVEVA/sample-omf-temperature_sensor-python)
+- [Sample Temperature Sensor](https://github.com/AVEVA/sample-omf-temperature_sensor-python)
 
 ![AVEVALOGO](img/AVEVALOGO.png "AVEVA Logo")
