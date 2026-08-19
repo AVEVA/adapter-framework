@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "YourAdapterTeam",
+  "classifications": [ "Console" ],
+  "name": "AdapterTemplate",
+  "identity": "AdapterTemplate",
+  "groupIdentity": "AdapterTemplate",
+  "shortName": "AdapterTemplate",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "preferNameDirectory": false,
+  "symbols": {
+    "name": {
+      "type": "parameter",
+      "datatype": "string",
+      "isRequired": true,
+      "description": "Renames file names and contents containing 'AdapterNamePlaceholder'",
+      "FileRename": "AdapterNamePlaceholder",
+      "replaces": "AdapterNamePlaceholder"
+    },
+    "guid1": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "AdapterHostProjectGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid2": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "AdapterMainProjectGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid3": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "SolutionGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid4": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "BuildPropertiesGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid5": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "TestsGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid6": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "AdapterMainUnitTestProjectGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    },
+    "guid8": {
+      "type": "generated",
+      "generator": "guid",
+      "replaces": "UpgradeCodeGuidPlaceholder",
+      "parameters": {
+        "format": "D"
+      }
+    }
+  }
+}

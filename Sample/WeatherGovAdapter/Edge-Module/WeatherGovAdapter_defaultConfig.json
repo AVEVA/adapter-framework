@@ -1,0 +1,119 @@
+{
+  "WeatherGovAdapter1": {
+    "DataSource": {
+      "baseUrl": "https://api.weather.gov",
+      "requestTimeoutMs": 10000,
+      "maxRetries": 3,
+      "retryBackoffMs": 1000,
+      "maxConcurrentRequests": 5,
+      "userAgent": "WeatherGovAdapterSample/1.0 (support@example.com)",
+      "streamIdPrefix": "weathergov",
+      "allowInsecureBaseUrl": false,
+      "dropNullMeasurements": true
+    },
+    "DataSelection": [
+      {
+        "id": "weathergov.station.KSEA",
+        "name": "Seattle NOAA Station",
+        "selected": true,
+        "stationId": "KSEA",
+        "includeFields": [
+          "timestamp",
+          "temperature_c",
+          "dewpoint_c",
+          "relative_humidity_pct",
+          "wind_speed_mps",
+          "wind_direction_deg",
+          "barometric_pressure_pa",
+          "visibility_m",
+          "text_description"
+        ],
+        "scheduleId": "1",
+        "streamId": "WEATHERGOV.STATION.KSEA"
+      },
+      {
+        "id": "weathergov.station.KPDX",
+        "name": "Portland NOAA Station",
+        "selected": true,
+        "stationId": "KPDX",
+        "includeFields": [
+          "timestamp",
+          "temperature_c",
+          "dewpoint_c",
+          "relative_humidity_pct",
+          "wind_speed_mps",
+          "wind_direction_deg",
+          "barometric_pressure_pa",
+          "visibility_m",
+          "text_description"
+        ],
+        "scheduleId": "2",
+        "streamId": "WEATHERGOV.STATION.KPDX"
+      }
+    ],
+    "Logging": {
+      "logLevel": "Debug",
+      "logFileSizeLimitBytes": 34636833,
+      "logFileCountLimit": 31
+    },
+    "Schedules": [
+      {
+        "id": "1",
+        "period": "00:01:00",
+        "offset": "00:00:00"
+      },
+      {
+        "id": "2",
+        "period": "00:05:00",
+        "offset": "00:00:00"
+      },
+      {
+        "id": "3",
+        "period": "00:10:00",
+        "offset": "00:00:00"
+      }
+    ]
+  },
+  "System": {
+    "Logging": {
+      "logLevel": "Information",
+      "logFileSizeLimitBytes": 34636833,
+      "logFileCountLimit": 31
+    },
+    "HealthEndpoints": [
+      {
+        "id": "CONNECTdataservices",
+        "endpoint": "https://CONNECT_OMF_Endpoint",
+        "clientId": "none",
+        "clientSecret": "{{none}}",
+        "tokenEndpoint": "http://localhost:5005/api/v1/emm/identity/token"
+      }
+    ],
+    "Components": [
+      {
+        "componentId": "OmfEgress",
+        "componentType": "OmfEgress"
+      },
+      {
+        "componentId": "WeatherGovAdapter1",
+        "componentType": "WeatherGovAdapter"
+      }
+    ]
+  },
+  "OmfEgress": {
+    "Logging": {
+      "logLevel": "Information",
+      "logFileSizeLimitBytes": 34636833,
+      "logFileCountLimit": 31
+    },
+    "DataEndpoints": [
+      {
+        "id": "CONNECTdataservices",
+        "endpoint": "https://CONNECT_OMF_Endpoint",
+        "clientId": "none",
+        "clientSecret": "{{none}}",
+        "tokenEndpoint": "http://localhost:5005/api/v1/emm/identity/token"
+      }
+    ]
+  }
+}

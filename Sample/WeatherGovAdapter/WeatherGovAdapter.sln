@@ -1,0 +1,52 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11505.172
+MinimumVisualStudioVersion = 15.0.26124.0
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.System.Host", "AdapterFramework.Data.System.Host\AdapterFramework.Data.System.Host.csproj", "{69E54A7E-BC30-4484-8DF4-08FE35E36D81}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.Adapter.WeatherGovAdapter", "AdapterFramework.Data.Adapter.WeatherGovAdapter\AdapterFramework.Data.Adapter.WeatherGovAdapter.csproj", "{158C7D7E-11B3-4096-9461-4085668AABC4}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BuildProperties", "BuildProperties", "{9E315B8D-0F31-45B5-B72E-6FE101FC4E8D}"
+	ProjectSection(SolutionItems) = preProject
+		Directory.Build.props = Directory.Build.props
+		License.txt = License.txt
+		nuget.config = nuget.config
+		SetupKit.json = SetupKit.json
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{6DCD55F5-78CF-402B-ADB0-DF4620544FAC}"
+	ProjectSection(SolutionItems) = preProject
+		Tests\Directory.Build.props = Tests\Directory.Build.props
+	EndProjectSection
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.Adapter.WeatherGovAdapter.UnitTests", "Tests\AdapterFramework.Data.Adapter.WeatherGovAdapter.UnitTests\AdapterFramework.Data.Adapter.WeatherGovAdapter.UnitTests.csproj", "{77DD7C5C-F461-4E57-B94C-9FE1D7377003}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{69E54A7E-BC30-4484-8DF4-08FE35E36D81}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{69E54A7E-BC30-4484-8DF4-08FE35E36D81}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{69E54A7E-BC30-4484-8DF4-08FE35E36D81}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{69E54A7E-BC30-4484-8DF4-08FE35E36D81}.Release|Any CPU.Build.0 = Release|Any CPU
+		{158C7D7E-11B3-4096-9461-4085668AABC4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{158C7D7E-11B3-4096-9461-4085668AABC4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{158C7D7E-11B3-4096-9461-4085668AABC4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{158C7D7E-11B3-4096-9461-4085668AABC4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77DD7C5C-F461-4E57-B94C-9FE1D7377003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77DD7C5C-F461-4E57-B94C-9FE1D7377003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77DD7C5C-F461-4E57-B94C-9FE1D7377003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77DD7C5C-F461-4E57-B94C-9FE1D7377003}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{77DD7C5C-F461-4E57-B94C-9FE1D7377003} = {6DCD55F5-78CF-402B-ADB0-DF4620544FAC}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0CF3DF1A-2E90-4114-9BAF-61E0EC810D33}
+	EndGlobalSection
+EndGlobal

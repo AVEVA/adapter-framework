@@ -1,0 +1,46 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.33530.505
+MinimumVisualStudioVersion = 15.0.26124.0
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AdapterFramework.Adapter.Template", "AdapterFramework.Adapter.Template.csproj", "{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		BETATIMEOUT|Any CPU = BETATIMEOUT|Any CPU
+		BETATIMEOUT|x64 = BETATIMEOUT|x64
+		BETATIMEOUT|x86 = BETATIMEOUT|x86
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|Any CPU.ActiveCfg = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|Any CPU.Build.0 = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|x64.ActiveCfg = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|x64.Build.0 = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|x86.ActiveCfg = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.BETATIMEOUT|x86.Build.0 = BETATIMEOUT|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|x64.Build.0 = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Debug|x86.Build.0 = Debug|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|x64.ActiveCfg = Release|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|x64.Build.0 = Release|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|x86.ActiveCfg = Release|Any CPU
+		{ADB7165E-95BD-A4CC-31B4-1B27BADEF115}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {72FB6F54-BE9F-4BA2-A234-53D3A0178205}
+	EndGlobalSection
+EndGlobal
