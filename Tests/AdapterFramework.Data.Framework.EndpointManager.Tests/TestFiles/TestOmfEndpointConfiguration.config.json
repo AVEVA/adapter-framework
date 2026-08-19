@@ -1,0 +1,16 @@
+[
+  {
+    "Endpoint": "https://localhost:5000/api/omf",
+    "UserName": "test",
+    "Password":  "test",
+    "UseCompression": true,
+    "UseBuffering": true
+  },
+  {
+    "Endpoint": "http://localhost:5001/ingress/messages",
+    "UserName": "test",
+    "Password": "test",
+    "UseCompression": false,
+    "UseBuffering": false
+  }
+]

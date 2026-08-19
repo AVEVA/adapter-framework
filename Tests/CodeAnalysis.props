@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <!-- Code analysis ruleset settings shared by all projects -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisMode>AllEnabledByDefault</AnalysisMode>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <RunAnalyzersDuringBuild>true</RunAnalyzersDuringBuild>
+    <RunAnalyzersDuringLiveAnalysis>true</RunAnalyzersDuringLiveAnalysis>
+    <!-- <CodeAnalysisTreatWarningsAsErrors>false</CodeAnalysisTreatWarningsAsErrors> -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)stylecop.json')">
+    <DoNotAutomaticallyLoadStyleCopJson>true</DoNotAutomaticallyLoadStyleCopJson>
+  </PropertyGroup>
+
+  <!-- Establish the default code analysis settings for the solution -->
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)stylecop.json')">
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)stylecop.json" Link="stylecop.json" Visible="false" />
+  </ItemGroup>
+
+</Project>

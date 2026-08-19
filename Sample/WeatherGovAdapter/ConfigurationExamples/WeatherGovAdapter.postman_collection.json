@@ -1,0 +1,576 @@
+{
+  "info": {
+    "_postman_id": "8f911be3-4013-4fc7-bd89-f6975fcf14da",
+    "name": "WeatherGovAdapter Configuration",
+    "description": "Requests to configure and validate the WeatherGov sample adapter running in AdapterFramework.Data.System.Host. Includes host configuration facets and Weather.gov discovery helpers.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "hostBaseUrl",
+      "value": "http://127.0.0.1:5590"
+    },
+    {
+      "key": "componentId",
+      "value": "WeatherGovAdapter1"
+    },
+    {
+      "key": "weatherGovBaseUrl",
+      "value": "https://api.weather.gov"
+    },
+    {
+      "key": "userAgent",
+      "value": "WeatherGovAdapterSample/1.0 (support@example.com)"
+    },
+    {
+      "key": "seedLat",
+      "value": "47.61"
+    },
+    {
+      "key": "seedLon",
+      "value": "-122.33"
+    },
+    {
+      "key": "streamIdPrefix",
+      "value": "weathergov"
+    },
+    {
+      "key": "discoveryQuery",
+      "value": "47.61,-122.33;45.52,-122.67;39.74,-104.99;40.76,-111.89"
+    },
+    {
+      "key": "maxDiscoveryStations",
+      "value": "250"
+    }
+  ],
+  "item": [
+    {
+      "name": "Host Configuration",
+      "item": [
+        {
+          "name": "Get Full Configuration",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Adapter DataSource",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/DataSource",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "DataSource"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put Adapter DataSource",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"baseUrl\": \"https://api.weather.gov\",\n  \"requestTimeoutMs\": 10000,\n  \"maxRetries\": 3,\n  \"retryBackoffMs\": 1000,\n  \"userAgent\": \"WeatherGovAdapterSample/1.0 (support@example.com)\",\n  \"streamIdPrefix\": \"{{streamIdPrefix}}\",\n  \"dropNullMeasurements\": true\n}"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/DataSource",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "DataSource"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Adapter DataSelection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var count = Array.isArray(body) ? body.length : 0;",
+                  "pm.environment.set('lastDataSelectionCount', String(count));",
+                  "pm.test('DataSelection array returned', function () {",
+                  "  pm.expect(Array.isArray(body)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/DataSelection",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "DataSelection"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put Adapter DataSelection (Replace)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"id\": \"weathergov.station.KSEA\",\n    \"name\": \"Seattle NOAA Station\",\n    \"selected\": true,\n    \"stationId\": \"KSEA\",\n    \"includeFields\": [\n      \"timestamp\",\n      \"temperature_c\",\n      \"dewpoint_c\",\n      \"relative_humidity_pct\",\n      \"wind_speed_mps\",\n      \"wind_direction_deg\",\n      \"barometric_pressure_pa\",\n      \"visibility_m\",\n      \"text_description\"\n    ],\n    \"scheduleId\": \"1\",\n    \"streamId\": \"{{streamIdPrefix}}.station.KSEA\"\n  },\n  {\n    \"id\": \"weathergov.station.KPDX\",\n    \"name\": \"Portland NOAA Station\",\n    \"selected\": true,\n    \"stationId\": \"KPDX\",\n    \"includeFields\": [\n      \"timestamp\",\n      \"temperature_c\",\n      \"dewpoint_c\",\n      \"relative_humidity_pct\",\n      \"wind_speed_mps\",\n      \"wind_direction_deg\",\n      \"barometric_pressure_pa\",\n      \"visibility_m\",\n      \"text_description\"\n    ],\n    \"scheduleId\": \"2\",\n    \"streamId\": \"{{streamIdPrefix}}.station.KPDX\"\n  }\n]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/DataSelection",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "DataSelection"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put Adapter DataSelection (Clear)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/DataSelection",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "DataSelection"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Adapter Schedules",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/Schedules",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "Schedules"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put Adapter Schedules",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  { \"id\": \"1\", \"period\": \"00:01:00\" },\n  { \"id\": \"2\", \"period\": \"00:05:00\" },\n  { \"id\": \"3\", \"period\": \"00:10:00\" }\n]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/{{componentId}}/Schedules",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "{{componentId}}",
+                "Schedules"
+              ]
+            },
+            "description": "Defines the three selectable schedules: id 1 = 1 min, id 2 = 5 min, id 3 = 10 min. period is a TimeSpan (hh:mm:ss). DataSelection items pick one via scheduleId. weather.gov is rate-limited, so the fastest option is one minute."
+          }
+        }
+      ]
+    },
+    {
+      "name": "System And OMF Egress Configuration",
+      "item": [
+        {
+          "name": "Get System Components",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/System/Components",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "System",
+                "Components"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put System Components (Add WeatherGov + OmfEgress)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"componentId\": \"OmfEgress\",\n    \"componentType\": \"OmfEgress\"\n  },\n  {\n    \"componentId\": \"{{componentId}}\",\n    \"componentType\": \"WeatherGovAdapter\"\n  }\n]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/System/Components",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "System",
+                "Components"
+              ]
+            },
+            "description": "Replaces System.Components; include all components you need to keep."
+          }
+        },
+        {
+          "name": "Get System HealthEndpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/System/HealthEndpoints",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "System",
+                "HealthEndpoints"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put System HealthEndpoints",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"id\": \"{{omfEndpointId}}\",\n    \"endpoint\": \"{{omfEndpointUrl}}\",\n    \"clientId\": \"{{omfClientId}}\",\n    \"clientSecret\": \"{{omfClientSecret}}\",\n    \"tokenEndpoint\": null,\n    \"validateEndpointCertificate\": {{validateEndpointCertificate}}\n  }\n]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/System/HealthEndpoints",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "System",
+                "HealthEndpoints"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put System Logging",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"logLevel\": \"{{systemLogLevel}}\",\n  \"logFileSizeLimitBytes\": 34636833,\n  \"logFileCountLimit\": 31\n}"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/System/Logging",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "System",
+                "Logging"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get OmfEgress DataEndpoints",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/OmfEgress/DataEndpoints",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "OmfEgress",
+                "DataEndpoints"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put OmfEgress DataEndpoints",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "[\n  {\n    \"id\": \"{{omfEndpointId}}\",\n    \"endpoint\": \"{{omfEndpointUrl}}\",\n    \"clientId\": \"{{omfClientId}}\",\n    \"clientSecret\": \"{{omfClientSecret}}\",\n    \"tokenEndpoint\": null,\n    \"validateEndpointCertificate\": {{validateEndpointCertificate}}\n  }\n]"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/OmfEgress/DataEndpoints",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "OmfEgress",
+                "DataEndpoints"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get OmfEgress Logging",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/OmfEgress/Logging",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "OmfEgress",
+                "Logging"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Put OmfEgress Logging",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"logLevel\": \"{{omfEgressLogLevel}}\",\n  \"logFileSizeLimitBytes\": 34636833,\n  \"logFileCountLimit\": 31\n}"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/configuration/OmfEgress/Logging",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "configuration",
+                "OmfEgress",
+                "Logging"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Weather.gov Discovery Helpers",
+      "description": "Use these requests to discover stations, then build DataSelection payloads. The running host currently does not expose a Discoveries facet endpoint.",
+      "item": [
+        {
+          "name": "Start Discovery (autoSelect=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"west-coast-seeds\",\n  \"query\": \"47.61,-122.33;45.52,-122.67\",\n  \"autoSelect\": true\n}"
+            },
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/Configuration/{{componentId}}/discoveries",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "Configuration",
+                "{{componentId}}",
+                "discoveries"
+              ]
+            },
+            "description": "Starts a discovery job. Use autoSelect=true to populate DataSelection automatically from discovery results."
+          }
+        },
+        {
+          "name": "Get Discovery Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/Configuration/{{componentId}}/discoveries",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "Configuration",
+                "{{componentId}}",
+                "discoveries"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Discovery Result By Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{hostBaseUrl}}/api/v1/Configuration/{{componentId}}/discoveries/{{discoveryId}}/result",
+              "host": [
+                "{{hostBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "Configuration",
+                "{{componentId}}",
+                "discoveries",
+                "{{discoveryId}}",
+                "result"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

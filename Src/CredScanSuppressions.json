@@ -1,0 +1,37 @@
+{
+  "tool": "Credential Scanner",
+  "suppressions": [
+    {
+      "hash": "qbbpP4t5kA+zvnMZcii+xGShb6HLv0gyk0RrBXzflfs=",
+      "_justification": "Fake password used for testing."
+    },
+    {
+      "hash": "9n4LkSsn66/kP5vIl6ccOV8JFGCDVFAUEkBDXH6pklo=",
+      "_justification": "Fake username for testing."
+    },
+    {
+      "hash": "HBZuQ/lF6+aR6xSL7KCh1GoyCMDDiBOsVpqAV7RjRRY=",
+      "_justification": "Fake username for testing."
+    },
+    {
+      "hash": "5XsPs6yGO0AGW+nAM3OjFwlrltIjFYXSxH7A4kwmXQ4=",
+      "_justification": "Fake password for testing."
+    },
+    {
+      "hash": "idQdMVdmtEfsxSv+8Hvl/cBzIIs/RgRN3DVfut7odUc=",
+      "_justification": "Fake passwords for testing."
+    },
+    {
+      "hash": "k8k9nkrJaaAlbSMj76UjSdVEP92UHzrfwrU7kIWdaWE=",
+      "_justification": "Fake username for testing."
+    },
+    {
+      "hash": "b/u8LD0n/hDSX/tjs+mHJfbBmHVdM3SvrvQDl8W4egA=",
+      "_justification": "Fake passwords for testing."
+    },
+    {
+      "hash": "uPyxhuWmcWX9nmB4cJgFKXT0fZfmk9NgTHq6usIEn2k=",
+      "_justification": "Fake passwords for testing."
+    }
+  ]
+}

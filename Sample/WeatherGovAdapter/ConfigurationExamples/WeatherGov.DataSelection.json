@@ -1,0 +1,40 @@
+[
+  {
+    "id": "weathergov.station.KSEA",
+    "name": "Seattle NOAA Station",
+    "selected": true,
+    "stationId": "KSEA",
+    "includeFields": [
+      "timestamp",
+      "temperature_c",
+      "dewpoint_c",
+      "relative_humidity_pct",
+      "wind_speed_mps",
+      "wind_direction_deg",
+      "barometric_pressure_pa",
+      "visibility_m",
+      "text_description"
+    ],
+    "scheduleId": "1",
+    "streamId": "WEATHERGOV.STATION.KSEA"
+  },
+  {
+    "id": "weathergov.station.KPDX",
+    "name": "Portland NOAA Station",
+    "selected": true,
+    "stationId": "KPDX",
+    "includeFields": [
+      "timestamp",
+      "temperature_c",
+      "dewpoint_c",
+      "relative_humidity_pct",
+      "wind_speed_mps",
+      "wind_direction_deg",
+      "barometric_pressure_pa",
+      "visibility_m",
+      "text_description"
+    ],
+    "scheduleId": "2",
+    "streamId": "WEATHERGOV.STATION.KPDX"
+  }
+]

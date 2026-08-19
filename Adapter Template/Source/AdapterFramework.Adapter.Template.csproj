@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageType>Template</PackageType>
+    <PackageId>Adapter.Template</PackageId>
+    <Title>Adapter Template</Title>
+    <Description>The adapter template project.</Description>
+    <PackageTags>dotnet-new;templates;</PackageTags>
+    <TargetFramework>net10.0</TargetFramework>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+
+    <IncludeContentInPack>true</IncludeContentInPack>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <ContentTargetFolders>content</ContentTargetFolders>
+    <Configurations>Debug;Release;BETATIMEOUT</Configurations>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Template\**\*" Exclude="Template\**\bin\**;Template\**\obj\**" />
+    <Compile Remove="**\*" />
+  </ItemGroup>
+  
+</Project>

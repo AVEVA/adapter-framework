@@ -1,0 +1,48 @@
+<!--
+Copyright 2018-2026 AVEVA Group Limited
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+SPDX-License-Identifier: Apache-2.0
+-->
+ <Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Configurations>Debug;Release;BETATIMEOUT</Configurations>
+  </PropertyGroup>
+
+   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Hosting.WindowsServices" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.CancellationTokenService\AdapterFramework.Data.Framework.CancellationTokenService.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Common\AdapterFramework.Data.Framework.Common.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.ConfigurationProvider\AdapterFramework.Data.Framework.ConfigurationProvider.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.DataProtectionProvider\AdapterFramework.Data.Framework.DataProtectionProvider.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.DataProtector\AdapterFramework.Data.Framework.DataProtector.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Diagnostics\AdapterFramework.Data.Framework.Diagnostics.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Logger\AdapterFramework.Data.Framework.Logger.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.MessageProcessor\AdapterFramework.Data.Framework.MessageProcessor.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.ComponentIdProvider\AdapterFramework.Data.Framework.ComponentIdProvider.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Compression\AdapterFramework.Data.Framework.Compression.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.EndpointManager\AdapterFramework.Data.Framework.EndpointManager.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Registry\AdapterFramework.Data.Framework.Registry.csproj" />
+    <ProjectReference Include="..\AdapterFramework.Data.Framework.Serialization\AdapterFramework.Data.Framework.Serialization.csproj" />
+  </ItemGroup>
+
+</Project>

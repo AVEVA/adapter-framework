@@ -1,0 +1,57 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.33530.505
+MinimumVisualStudioVersion = 15.0.26124.0
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.System.Host", "AdapterFramework.Data.System.Host\AdapterFramework.Data.System.Host.csproj", "{AdapterHostProjectGuidPlaceholder}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.Adapter.AdapterNamePlaceholder", "AdapterFramework.Data.Adapter.AdapterNamePlaceholder\AdapterFramework.Data.Adapter.AdapterNamePlaceholder.csproj", "{AdapterMainProjectGuidPlaceholder}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BuildProperties", "BuildProperties", "{BuildPropertiesGuidPlaceholder}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+		Directory.Build.props = Directory.Build.props
+		License.txt = License.txt
+		nuget.config = nuget.config
+		SetupKit.json = SetupKit.json
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{TestsGuidPlaceholder}"
+	ProjectSection(SolutionItems) = preProject
+		Tests\Directory.Build.props = Tests\Directory.Build.props
+	EndProjectSection
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AdapterFramework.Data.Adapter.AdapterNamePlaceholder.UnitTests", "Tests\AdapterFramework.Data.Adapter.AdapterNamePlaceholder.UnitTests\AdapterFramework.Data.Adapter.AdapterNamePlaceholder.UnitTests.csproj", "{AdapterMainUnitTestProjectGuidPlaceholder}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		BETATIMEOUT|Any CPU = BETATIMEOUT|Any CPU
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AdapterHostProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.ActiveCfg = BETATIMEOUT|Any CPU
+		{AdapterHostProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.Build.0 = BETATIMEOUT|Any CPU
+		{AdapterHostProjectGuidPlaceholder}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AdapterHostProjectGuidPlaceholder}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AdapterHostProjectGuidPlaceholder}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AdapterHostProjectGuidPlaceholder}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.ActiveCfg = BETATIMEOUT|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.Build.0 = BETATIMEOUT|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AdapterMainProjectGuidPlaceholder}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.ActiveCfg = BETATIMEOUT|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.BETATIMEOUT|Any CPU.Build.0 = BETATIMEOUT|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AdapterMainUnitTestProjectGuidPlaceholder}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {SolutionGuidPlaceholder}
+	EndGlobalSection
+EndGlobal

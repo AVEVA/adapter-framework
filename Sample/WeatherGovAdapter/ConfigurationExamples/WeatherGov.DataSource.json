@@ -1,0 +1,9 @@
+{
+  "baseUrl": "https://api.weather.gov",
+  "requestTimeoutMs": 10000,
+  "maxRetries": 3,
+  "retryBackoffMs": 1000,
+  "userAgent": "WeatherGovAdapterSample/1.0 (support@example.com)",
+  "streamIdPrefix": "weathergov",
+  "dropNullMeasurements": true
+}
