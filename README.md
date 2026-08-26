@@ -42,7 +42,7 @@ These dependencies provide the foundational services and capabilities that suppo
 
 ### Open Message Format (OMF)
 
-Open Message Format (OMF) is a message-based specification used to describe data types, streams, metadata, and time-series values in a consistent way so that producers and consumers can exchange industrial data reliably. OMF is the transport contract used by the framework to serialize adapter output and send it to supported endpoints. The source code currently includes support for OMF versions 1.2 and 2.0, with the system host using OMF 2.0 for the current host entry point. 
+Open Message Format ([OMF](https://docs.aveva.com/category/omf)) is a message-based specification used to describe data types, streams, metadata, and time-series values in a consistent way so that producers and consumers can exchange industrial data reliably. OMF is the transport contract used by the framework to serialize adapter output and send it to supported endpoints. The source code currently includes support for OMF versions 1.2 and 2.0, with the system host using OMF 2.0 for the current host entry point. 
 
 OMF 1.2 and OMF 2.0 use different data modeling approaches. 
 
@@ -50,7 +50,7 @@ OMF 1.2 is based on the traditional Type, Container, and Data message model and 
 
 OMF 2.0 uses a Schema and Instance message model that supports advanced data modeling scenarios, including entities, events, relationships, and streaming data. It is the recommended version for new Adapter Framework development. 
 
-For additional information, see [OMF 1.2](https://docs.aveva.com/bundle/omf/page/1283981.html) or [OMF 2.0](https://docs.aveva.com/bundle/omf/page/1626561.html) documentation. 
+For additional information, see [OMF 1.2](https://docs.aveva.com/bundle/omf/page/1283981.html) or [OMF 2.0](https://docs.aveva.com/bundle/omf-2.0/page/1626561.html) documentation. 
 
 ### Third Party Dependencies
 
