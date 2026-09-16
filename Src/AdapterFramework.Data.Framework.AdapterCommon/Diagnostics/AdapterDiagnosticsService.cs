@@ -33,6 +33,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private const int MovingAveragePeriod = 60;
     private const int SendStreamCountPeriod = 60;
     private const int SendAssetCountPeriod = 60;
+    private const int SendEventCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
     private const int SendErrorRatePeriod = 60;
 
@@ -61,9 +62,11 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _timerTickIoRateCounter;
     private int _timerTickStreamCounter;
     private int _timerTickAssetCounter;
+    private int _timerTickEventCounter;
     private int _sentStreamCount = -1;
     private int _sentTypeCount = -1;
     private int _sentAssetCount = -1;
+    private int _sentEventCount = -1;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateErrorRate;
     private bool _failedToUpdateMessageProcessorStatistics;
@@ -165,6 +168,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         CreateDiagnosticsTypesStreams();
         SendStreamCountEvent(_sentStreamCount, _sentTypeCount);
         SendAssetCountEvent(_sentAssetCount);
+        SendEventCountEvent(_sentEventCount);
     }
 
     public void Dispose()
@@ -265,6 +269,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                 SendIoRateEvent();
                 SendStreamCountEventWhenChanged();
                 SendAssetCountEventWhenChanged();
+                SendEventCountEventWhenChanged();
             }
             finally
             {
@@ -361,6 +366,25 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         _timerTickAssetCounter--;
     }
 
+    private void SendEventCountEventWhenChanged()
+    {
+        if (_timerTickEventCounter <= 0)
+        {
+            _timerTickEventCounter = SendEventCountPeriod;
+
+            var currentEventCount = _instrumentedMessageProcessor.GetEventCount();
+
+            if (currentEventCount != _sentEventCount)
+            {
+                Interlocked.Exchange(ref _sentEventCount, currentEventCount);
+
+                SendEventCountEvent(currentEventCount);
+            }
+        }
+
+        _timerTickEventCounter--;
+    }
+
     private void SendAssetCountEvent(int assetCount)
     {
         var assetCountEvent = new AssetCountEvent
@@ -376,6 +400,26 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         catch (Exception ex)
         {
             _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping AssetCount diagnostics data collection.");
+
+            _failedToUpdateMessageProcessorStatistics = true;
+        }
+    }
+
+    private void SendEventCountEvent(int eventCount)
+    {
+        var eventCountEvent = new EventCountEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            EventCount = eventCount,
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEventCountStreamId(), Classification.Dynamic, eventCountEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process EventCount diagnostics event. Stopping EventCount diagnostics data collection.");
 
             _failedToUpdateMessageProcessorStatistics = true;
         }

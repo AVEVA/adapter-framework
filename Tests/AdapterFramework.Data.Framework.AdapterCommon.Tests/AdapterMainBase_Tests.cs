@@ -941,8 +941,8 @@ public class AdapterMainBase_Tests
         // DeviceStatus and NextHealthMessageExpected
         const int ExpectedHealthStreamsCount = 2;
 
-        // ErrorRate, IORate and StreamCount
-        const int ExpectedDiagnosticsStreamsCount = 3;
+        // ErrorRate, IORate, StreamCount, AssetCount and EventCount
+        const int ExpectedDiagnosticsStreamsCount = 5;
 
         using var cts = new CancellationTokenSource();
         using var adapter = CreateAdapter();

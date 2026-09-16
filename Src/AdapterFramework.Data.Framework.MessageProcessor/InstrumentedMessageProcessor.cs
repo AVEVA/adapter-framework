@@ -38,6 +38,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _entityIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _eventIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, object> _metaDataDictionary;
     private readonly Dictionary<StreamProperties, Action<PropertyDefinitionOverride>> _propertyOverrideActions;
     private readonly string _componentId;
@@ -47,6 +48,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private int _streamCount;
     private int _typeCount;
     private int _assetCount;
+    private int _eventCount;
     private long _eventsCount;
     private long _cacheOrderSequence;
 
@@ -208,9 +210,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
         IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteEvent(id.ToOmfIdentifier(), typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
+        var eventId = id.ToOmfIdentifier();
+
+        _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
             extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
 
+        TrackEventIdentity(eventId, messageAction);
         IncrementEventsCount();
     }
 
@@ -257,6 +262,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
+    public int GetEventCount()
+    {
+        return _eventCount;
+    }
+
+    /// <inheritdoc/>
     public long GetAndResetEventsCounter()
     {
         return Interlocked.Exchange(ref _eventsCount, 0);
@@ -269,6 +280,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         Interlocked.Exchange(ref _streamCount, 0);
         Interlocked.Exchange(ref _eventsCount, 0);
         Interlocked.Exchange(ref _assetCount, 0);
+        Interlocked.Exchange(ref _eventCount, 0);
         _relationships.Clear();
     }
 
@@ -412,6 +424,37 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             }
         }
         while (Interlocked.CompareExchange(ref _assetCount, current - 1, current) != current);
+    }
+
+    // Tracks unique event identities so GetEventCount() reports a current-state gauge, mirroring TrackEntityIdentity.
+    private void TrackEventIdentity(string eventId, MessageAction messageAction)
+    {
+        if (messageAction == MessageAction.Delete)
+        {
+            if (_eventIds.TryRemove(eventId, out _))
+            {
+                DecrementEventCountIfPositive();
+            }
+        }
+        else if (_eventIds.TryAdd(eventId, 0))
+        {
+            Interlocked.Increment(ref _eventCount);
+        }
+    }
+
+    // ClearCounters() resets _eventCount but retains _eventIds, so a delete of a previously known identity must not drive the count negative.
+    private void DecrementEventCountIfPositive()
+    {
+        int current;
+        do
+        {
+            current = _eventCount;
+            if (current <= 0)
+            {
+                return;
+            }
+        }
+        while (Interlocked.CompareExchange(ref _eventCount, current - 1, current) != current);
     }
 
     private string GetPrefixedOrSanitizedIdentifier(string id, Classification classification)

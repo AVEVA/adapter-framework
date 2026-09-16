@@ -47,6 +47,12 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     int GetAssetCount();
 
     /// <summary>
+    /// Gets the current number of unique OMF 2.0 event identities accepted and retained by the processor.
+    /// </summary>
+    /// <returns>Current event count.</returns>
+    int GetEventCount();
+
+    /// <summary>
     /// Gets and resets total number of data events sent through the processor and resets
     /// the counter back to 0.
     /// </summary>

@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ namespace AdapterFramework.Data.Framework.AdapterCommon.Tests.Diagnostics;
 
 public class AdapterDiagnosticsService_Tests
 {
-    private const int ExpectedTypeCount = 3;
-    private const int ExpectedContainerCount = 3;
+    private const int ExpectedTypeCount = 5;
+    private const int ExpectedContainerCount = 5;
     private const int DiagnosticsShutdownDelayMsecs = 1000;
     private const int DiagnosticsMessagesRunoutDelayMSecs = 2000;
     private const string UnitTestComponentId = "UnitTest";
@@ -92,7 +92,7 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataCount = 3;
+        var expectedDataCount = 4;
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
 
@@ -108,7 +108,7 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataMessageCount = 4;
+        var expectedDataMessageCount = 8;
         var expectedStreamSuffix = ".StreamCount";
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
@@ -120,7 +120,27 @@ public class AdapterDiagnosticsService_Tests
         Assert.Equal(ExpectedTypeCount, _diagnosticTypes.Count);
         Assert.Equal(ExpectedContainerCount, _diagnosticContainers.Count);
         Assert.Equal(expectedDataMessageCount, _diagnosticData.Count);
-        Assert.EndsWith(expectedStreamSuffix, _diagnosticData[3]);
+        Assert.Contains(_diagnosticData, x => x.EndsWith(expectedStreamSuffix, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResendTypesAndStreams_EventCount_Updated_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+        var expectedDataMessageCount = 8;
+        var expectedStreamSuffix = ".EventCount";
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
+
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        SpinWait.SpinUntil(() => _diagnosticData.Count.Equals(expectedDataMessageCount), DiagnosticsMessagesRunoutDelayMSecs);
+
+        Assert.Equal(ExpectedTypeCount, _diagnosticTypes.Count);
+        Assert.Equal(ExpectedContainerCount, _diagnosticContainers.Count);
+        Assert.Equal(expectedDataMessageCount, _diagnosticData.Count);
+        Assert.Contains(_diagnosticData, x => x.EndsWith(expectedStreamSuffix, StringComparison.Ordinal));
     }
 
     [Fact]

@@ -71,6 +71,8 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetAssetCountStreamId() => $"{_streamIdPrefix}.{AssetCountStreamName}";
 
+    public string GetEventCountStreamId() => $"{_streamIdPrefix}.{EventCountStreamName}";
+
     public string GetErrorRateStreamId() => $"{_streamIdPrefix}.{ErrorRateStreamName}";
 
     private static DataType[] GetTypes()
@@ -120,6 +122,16 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
+        var eventCountDiagnosticsType = new DynamicDataType
+        {
+            Id = EventCountTypeId,
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                [nameof(EventCountEvent.Timestamp)] = timestampProperty,
+                [nameof(EventCountEvent.EventCount)] = integerProperty,
+            },
+        };
+
         var dataRateDiagnosticsType = new DynamicDataType
         {
             Id = IoRateTypeId,
@@ -130,7 +142,7 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        return new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, dataRateDiagnosticsType };
+        return new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, eventCountDiagnosticsType, dataRateDiagnosticsType };
     }
 
     private static DataType GetErrorRateType()
@@ -186,6 +198,11 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
+        // Link adapter event count to adapter component health asset
+        targetLink = new DataStreamLinkNode(GetEventCountStreamId());
+        link = new Link(sourceLink, targetLink);
+        links.Add((Tokens.Link, Classification.Static, link));
+
         return links;
     }
 
@@ -221,6 +238,12 @@ public class AdapterDiagnosticsOmfMessageCreator
                 Id = GetAssetCountStreamId(),
                 TypeId = AssetCountTypeId,
                 Name = AssetCountStreamName,
+            },
+            new DataStream
+            {
+                Id = GetEventCountStreamId(),
+                TypeId = EventCountTypeId,
+                Name = EventCountStreamName,
             },
             new DataStream
             {
