@@ -281,7 +281,6 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         Interlocked.Exchange(ref _eventsCount, 0);
         Interlocked.Exchange(ref _assetCount, 0);
         Interlocked.Exchange(ref _eventCount, 0);
-        _relationships.Clear();
     }
 
     #endregion
