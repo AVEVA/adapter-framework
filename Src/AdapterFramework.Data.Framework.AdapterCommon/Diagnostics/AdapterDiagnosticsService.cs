@@ -419,7 +419,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         }
         catch (Exception ex)
         {
-            _instrumentedLogger.LogError(ex, "Failed to process EventCount diagnostics event. Stopping EventCount diagnostics data collection.");
+            _instrumentedLogger.LogError(ex, "Failed to process EventCount diagnostics event. Stopping message processor statistics diagnostics data collection.");
 
             _failedToUpdateMessageProcessorStatistics = true;
         }
