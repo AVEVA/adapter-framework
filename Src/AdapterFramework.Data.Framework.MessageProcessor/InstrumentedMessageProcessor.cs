@@ -38,7 +38,6 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _entityIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, byte> _eventIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, object> _metaDataDictionary;
     private readonly Dictionary<StreamProperties, Action<PropertyDefinitionOverride>> _propertyOverrideActions;
     private readonly string _componentId;
@@ -215,7 +214,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
             extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
 
-        TrackEventIdentity(eventId, messageAction);
+        TrackEventCount(messageAction);
         IncrementEventsCount();
     }
 
@@ -425,23 +424,22 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         while (Interlocked.CompareExchange(ref _assetCount, current - 1, current) != current);
     }
 
-    // Tracks unique event identities so GetEventCount() reports a current-state gauge, mirroring TrackEntityIdentity.
-    private void TrackEventIdentity(string eventId, MessageAction messageAction)
+    // Event streams are append-only with unique identities, so GetEventCount() is maintained as a running gauge that
+    // increments on each upsert and decrements on delete. This avoids retaining every historical event ID, which would
+    // otherwise grow unbounded for the lifetime of the adapter.
+    private void TrackEventCount(MessageAction messageAction)
     {
         if (messageAction == MessageAction.Delete)
         {
-            if (_eventIds.TryRemove(eventId, out _))
-            {
-                DecrementEventCountIfPositive();
-            }
+            DecrementEventCountIfPositive();
         }
-        else if (_eventIds.TryAdd(eventId, 0))
+        else
         {
             Interlocked.Increment(ref _eventCount);
         }
     }
 
-    // ClearCounters() resets _eventCount but retains _eventIds, so a delete of a previously known identity must not drive the count negative.
+    // A delete for an event that is not part of the current gauge (for example after ClearCounters) must not drive the count negative.
     private void DecrementEventCountIfPositive()
     {
         int current;

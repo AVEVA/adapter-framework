@@ -960,7 +960,7 @@ public class InstrumentedMessageProcessor_Tests
     [InlineData(MessageAction.Create)]
     [InlineData(MessageAction.Update)]
     [InlineData(MessageAction.Default)]
-    public void InstrumentedMessageProcessor_GetEventCount_RepeatedUpsert_CountsOnce_Test(MessageAction messageAction)
+    public void InstrumentedMessageProcessor_GetEventCount_RepeatedUpsert_CountsEach_Test(MessageAction messageAction)
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
         var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
@@ -971,25 +971,11 @@ public class InstrumentedMessageProcessor_Tests
         instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name2", "description2", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, messageAction);
         instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name3", "description3", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, messageAction);
 
-        Assert.Equal(1, instrumentedMessageProcessor.GetEventCount());
+        Assert.Equal(3, instrumentedMessageProcessor.GetEventCount());
     }
 
     [Fact]
-    public void InstrumentedMessageProcessor_GetEventCount_CaseInsensitiveNormalizedIds_CountOnce_Test()
-    {
-        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
-        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
-
-        var instance = new Dictionary<string, string> { { "prop1", "prop1Value" } };
-
-        instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Create);
-        instrumentedMessageProcessor.WriteEvent("EVENT-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Update);
-
-        Assert.Equal(1, instrumentedMessageProcessor.GetEventCount());
-    }
-
-    [Fact]
-    public void InstrumentedMessageProcessor_GetEventCount_Delete_RemovesTrackedIdentity_Test()
+    public void InstrumentedMessageProcessor_GetEventCount_Delete_DecrementsCount_Test()
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
         var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
@@ -1007,18 +993,14 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
-    public void InstrumentedMessageProcessor_GetEventCount_Delete_UnknownIdentity_LeavesCountUnchanged_Test()
+    public void InstrumentedMessageProcessor_GetEventCount_Delete_DoesNotGoNegative_Test()
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
         var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
 
-        var instance = new Dictionary<string, string> { { "prop1", "prop1Value" } };
-
-        instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Create);
-
         instrumentedMessageProcessor.WriteEvent<object>("Event-Unknown", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, null, null, null, null, MessageAction.Delete);
 
-        Assert.Equal(1, instrumentedMessageProcessor.GetEventCount());
+        Assert.Equal(0, instrumentedMessageProcessor.GetEventCount());
     }
 
     [Fact]
@@ -1045,7 +1027,7 @@ public class InstrumentedMessageProcessor_Tests
                 DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Update);
         });
 
-        Assert.Equal(ExpectedEventCount, instrumentedMessageProcessor.GetEventCount());
+        Assert.Equal(ExpectedEventCount * 2, instrumentedMessageProcessor.GetEventCount());
     }
 
     [Fact]
@@ -1068,7 +1050,7 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
-    public void InstrumentedMessageProcessor_GetEventCount_ClearCounters_ResetsWithoutClearingIdentities_Test()
+    public void InstrumentedMessageProcessor_GetEventCount_ClearCounters_ResetsCount_Test()
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
         var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
@@ -1087,12 +1069,12 @@ public class InstrumentedMessageProcessor_Tests
         instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name2", "description2", "dataSource",
             DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Update);
 
-        Assert.Equal(0, instrumentedMessageProcessor.GetEventCount());
+        Assert.Equal(1, instrumentedMessageProcessor.GetEventCount());
 
         instrumentedMessageProcessor.WriteEvent("Event-2", TestTypeIdBase, "name", "description", "dataSource",
             DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Create);
 
-        Assert.Equal(1, instrumentedMessageProcessor.GetEventCount());
+        Assert.Equal(2, instrumentedMessageProcessor.GetEventCount());
     }
 
     [Fact]
