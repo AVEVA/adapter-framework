@@ -399,7 +399,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         }
         catch (Exception ex)
         {
-            _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping AssetCount diagnostics data collection.");
+            _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping message processor statistics diagnostics data collection.");
 
             _failedToUpdateMessageProcessorStatistics = true;
         }
