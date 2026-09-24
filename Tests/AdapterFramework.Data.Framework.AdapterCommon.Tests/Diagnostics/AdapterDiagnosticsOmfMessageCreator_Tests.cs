@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,17 +40,17 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         _messageProcessor = new FakeDiagnosticsMessageProcessor(_dataTypes, _dataStreams, _data);
         _streamIdPrefix = "MyMachine.MyService.";
 
-        _messageCreator = new AdapterDiagnosticsOmfMessageCreator(UnitTestComponentId, _streamIdPrefix, new DataTypeLinkNode("a", "b"));
+        _messageCreator = new AdapterDiagnosticsOmfMessageCreator(UnitTestComponentId, _streamIdPrefix, new DataTypeLinkNode("a", "b"), OmfVersion.Omf20);
     }
 
     [Fact]
     public void AdapterDiagnosticsOmfMessageCreator_Constructor_InvalidInput_Test()
     {
         var linkNode = new DataTypeLinkNode("a", "b");
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsOmfMessageCreator(null, _streamIdPrefix, linkNode));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsOmfMessageCreator(string.Empty, _streamIdPrefix, null));
-        Assert.Throws<ArgumentOutOfRangeException>(() => new AdapterDiagnosticsOmfMessageCreator(string.Empty, _streamIdPrefix, linkNode));
-        Assert.Throws<ArgumentException>(() => new AdapterDiagnosticsOmfMessageCreator("  ", _streamIdPrefix, linkNode));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsOmfMessageCreator(null, _streamIdPrefix, linkNode, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsOmfMessageCreator(string.Empty, _streamIdPrefix, null, OmfVersion.Omf20));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new AdapterDiagnosticsOmfMessageCreator(string.Empty, _streamIdPrefix, linkNode, OmfVersion.Omf20));
+        Assert.Throws<ArgumentException>(() => new AdapterDiagnosticsOmfMessageCreator("  ", _streamIdPrefix, linkNode, OmfVersion.Omf20));
     }
 
     [Fact]
@@ -94,5 +94,31 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
     public void AdapterDiagnosticsOmfMessageCreator_GetStreamCountStreamId_Test()
     {
         Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.StreamCountStreamName}", _messageCreator.GetStreamCountStreamId());
+    }
+
+    [Fact]
+    public void AdapterDiagnosticsOmfMessageCreator_GetEventWriteCountStreamId_Test()
+    {
+        Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.EventWriteCountStreamName}", _messageCreator.GetEventWriteCountStreamId());
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf12, 3)]
+    [InlineData(OmfVersion.Omf13, 3)]
+    [InlineData(OmfVersion.Omf20, 5)]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesAssetAndEventWriteCount_Test(OmfVersion omfVersion, int expectedCount)
+    {
+        const string UnitTestComponentType = "UnitTestComponentType";
+
+        var messageCreator = new AdapterDiagnosticsOmfMessageCreator(UnitTestComponentId, _streamIdPrefix, new DataTypeLinkNode("a", "b"), omfVersion);
+
+        messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, UnitTestComponentType);
+
+        Assert.Equal(expectedCount, _dataTypes.Count);
+        Assert.Equal(expectedCount, _dataStreams.Count);
+
+        var isOmf20 = omfVersion == OmfVersion.Omf20;
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.AssetCountStreamName}", StringComparison.Ordinal)));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventWriteCountStreamName}", StringComparison.Ordinal)));
     }
 }

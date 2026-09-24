@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,6 +39,22 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     /// </summary>
     /// <returns>Current <see cref="DataType"/> count.</returns>
     int GetTypeCount();
+
+    /// <summary>
+    /// Gets the current number of unique OMF 2.0 entity identities accepted by the processor and retained.
+    /// Fed by the <c>WriteStaticValue&lt;T&gt;(typeId, id, name, ...)</c> overloads; acceptance by the processor
+    /// is not a delivery guarantee. Implementations relying on the default interface member report 0.
+    /// </summary>
+    /// <returns>Current asset count.</returns>
+    int GetAssetCount() => 0;
+
+    /// <summary>
+    /// Gets the number of OMF 2.0 event writes accepted by the processor since start or the last <see cref="ClearCounters"/>.
+    /// Fed by <c>WriteEvent&lt;T&gt;</c> excluding deletes; acceptance by the processor is not a delivery guarantee.
+    /// Implementations relying on the default interface member report 0.
+    /// </summary>
+    /// <returns>Current event write count.</returns>
+    long GetEventWriteCount() => 0;
 
     /// <summary>
     /// Gets and resets total number of data events sent through the processor and resets

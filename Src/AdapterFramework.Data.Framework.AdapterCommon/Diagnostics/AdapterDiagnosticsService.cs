@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -32,6 +32,8 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private const int MovingAveragePeriod = 60;
     private const int SendStreamCountPeriod = 60;
+    private const int SendAssetCountPeriod = 60;
+    private const int SendEventWriteCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
     private const int SendErrorRatePeriod = 60;
 
@@ -50,6 +52,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly AdapterDiagnosticsOmfMessageCreator _diagnosticsOmfMessageCreator;
     private readonly string _componentId;
     private readonly string _componentType;
+    private readonly OmfVersion _omfVersion;
 
     private Timer _errorRateTimer;
     private Timer _messageProcessorStatisticsTimer;
@@ -59,16 +62,37 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _errorRateTimerTickCounter;
     private int _timerTickIoRateCounter;
     private int _timerTickStreamCounter;
+    private int _timerTickAssetCounter;
+    private int _timerTickEventWriteCounter;
     private int _sentStreamCount = -1;
     private int _sentTypeCount = -1;
+    private int _sentAssetCount = -1;
+    private long _sentEventWriteCount = -1;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateErrorRate;
     private bool _failedToUpdateMessageProcessorStatistics;
+    private bool _failedToUpdateAssetCount;
+    private bool _failedToUpdateEventWriteCount;
     private bool _disposed;
 
     #endregion
 
     #region Public Constructor
+
+    /// <summary>
+    /// Instantiates a new instance of the <see cref="AdapterDiagnosticsService"/> class publishing with <see cref="OmfVersion.Omf12"/>.
+    /// </summary>
+    /// <param name="diagnosticsMessageProcessor">Instance of <see cref="IDiagnosticsMessageProcessor"/> service.</param>
+    /// <param name="instrumentedMessageProcessor">Instance of <see cref="IInstrumentedMessageProcessor"/> service.</param>
+    /// <param name="componentId">The adapter component ID.</param>
+    /// <param name="componentType">The adapter type.</param>
+    /// <param name="elementNode">The node to link all the created streams to.</param>
+    /// <param name="instrumentedLogger">Instance of <see cref="IInstrumentedLogger"/> service.</param>
+    public AdapterDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor, IInstrumentedLogger instrumentedLogger,
+        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor)
+        : this(diagnosticsMessageProcessor, instrumentedLogger, componentId, componentType, elementNode, instrumentedMessageProcessor, OmfVersion.Omf12)
+    {
+    }
 
     /// <summary>
     /// Instantiates a new instance of the <see cref="AdapterDiagnosticsService"/> class.
@@ -79,8 +103,10 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     /// <param name="componentType">The adapter type.</param>
     /// <param name="elementNode">The node to link all the created streams to.</param>
     /// <param name="instrumentedLogger">Instance of <see cref="IInstrumentedLogger"/> service.</param>
+    /// <param name="omfVersion">The OMF version the adapter publishes with.</param>
     public AdapterDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor, IInstrumentedLogger instrumentedLogger,
-        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor)
+        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor,
+        OmfVersion omfVersion)
     {
         ThrowHelper.ThrowIfArgumentNull(diagnosticsMessageProcessor, nameof(diagnosticsMessageProcessor));
         ThrowHelper.ThrowIfArgumentNull(instrumentedMessageProcessor, nameof(instrumentedMessageProcessor));
@@ -89,7 +115,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         ThrowHelper.ThrowIfArgumentNull(elementNode, nameof(elementNode));
         ThrowHelper.ThrowIfArgumentNull(instrumentedLogger, nameof(instrumentedLogger));
 
-        _diagnosticsOmfMessageCreator = new AdapterDiagnosticsOmfMessageCreator(componentId, diagnosticsMessageProcessor.StreamIdPrefix, elementNode);
+        _diagnosticsOmfMessageCreator = new AdapterDiagnosticsOmfMessageCreator(componentId, diagnosticsMessageProcessor.StreamIdPrefix, elementNode, omfVersion);
+
+        _omfVersion = omfVersion;
 
         _diagnosticsMessageProcessor = diagnosticsMessageProcessor;
         _instrumentedMessageProcessor = instrumentedMessageProcessor;
@@ -161,6 +189,14 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         CreateDiagnosticsTypesStreams();
         SendStreamCountEvent(_sentStreamCount, _sentTypeCount);
+
+        // AssetCount and EventWriteCount diagnostics only exist for OMF 2.0.
+        if (_omfVersion == OmfVersion.Omf20)
+        {
+            SendAssetCountEvent(_sentAssetCount >= 0 ? _sentAssetCount : _instrumentedMessageProcessor.GetAssetCount());
+            var lastSentEventWriteCount = Interlocked.Read(ref _sentEventWriteCount);
+            SendEventWriteCountEvent(lastSentEventWriteCount >= 0 ? lastSentEventWriteCount : _instrumentedMessageProcessor.GetEventWriteCount());
+        }
     }
 
     public void Dispose()
@@ -253,13 +289,32 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
                 _ioRateMovingAverage.AddSample(sentEventsCount);
 
-                if (_failedToUpdateMessageProcessorStatistics || _failedToCreateDiagnosticsTypes)
+                if (_failedToCreateDiagnosticsTypes)
                 {
                     return;
                 }
 
-                SendIoRateEvent();
-                SendStreamCountEventWhenChanged();
+                if (!_failedToUpdateMessageProcessorStatistics)
+                {
+                    SendIoRateEvent();
+                    SendStreamCountEventWhenChanged();
+                }
+
+                // AssetCount and EventWriteCount diagnostics only exist for OMF 2.0.
+                if (_omfVersion != OmfVersion.Omf20)
+                {
+                    return;
+                }
+
+                if (!_failedToUpdateAssetCount)
+                {
+                    SendAssetCountEventWhenChanged();
+                }
+
+                if (!_failedToUpdateEventWriteCount)
+                {
+                    SendEventWriteCountEventWhenChanged();
+                }
             }
             finally
             {
@@ -334,6 +389,84 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
             _instrumentedLogger.LogError(ex, "Failed to process StreamCount diagnostics event. Stopping IORate and StreamCount diagnostics data collection.");
 
             _failedToUpdateMessageProcessorStatistics = true;
+        }
+    }
+
+    private void SendAssetCountEventWhenChanged()
+    {
+        if (_timerTickAssetCounter <= 0)
+        {
+            _timerTickAssetCounter = SendAssetCountPeriod;
+
+            var currentAssetCount = _instrumentedMessageProcessor.GetAssetCount();
+
+            if (currentAssetCount != _sentAssetCount)
+            {
+                Interlocked.Exchange(ref _sentAssetCount, currentAssetCount);
+
+                SendAssetCountEvent(currentAssetCount);
+            }
+        }
+
+        _timerTickAssetCounter--;
+    }
+
+    private void SendEventWriteCountEventWhenChanged()
+    {
+        if (_timerTickEventWriteCounter <= 0)
+        {
+            _timerTickEventWriteCounter = SendEventWriteCountPeriod;
+
+            var currentEventWriteCount = _instrumentedMessageProcessor.GetEventWriteCount();
+
+            if (currentEventWriteCount != Interlocked.Read(ref _sentEventWriteCount))
+            {
+                Interlocked.Exchange(ref _sentEventWriteCount, currentEventWriteCount);
+
+                SendEventWriteCountEvent(currentEventWriteCount);
+            }
+        }
+
+        _timerTickEventWriteCounter--;
+    }
+
+    private void SendAssetCountEvent(int assetCount)
+    {
+        var assetCountEvent = new AssetCountEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            AssetCount = assetCount,
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetAssetCountStreamId(), Classification.Dynamic, assetCountEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping AssetCount diagnostics data collection.");
+
+            _failedToUpdateAssetCount = true;
+        }
+    }
+
+    private void SendEventWriteCountEvent(long eventWriteCount)
+    {
+        var eventWriteCountEvent = new EventWriteCountEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            EventWriteCount = eventWriteCount,
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEventWriteCountStreamId(), Classification.Dynamic, eventWriteCountEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process EventWriteCount diagnostics event. Stopping EventWriteCount diagnostics data collection.");
+
+            _failedToUpdateEventWriteCount = true;
         }
     }
 
