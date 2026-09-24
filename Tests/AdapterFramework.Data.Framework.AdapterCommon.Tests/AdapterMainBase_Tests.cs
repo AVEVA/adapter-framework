@@ -935,17 +935,18 @@ public class AdapterMainBase_Tests
         Assert.Equal(StreamProperties.Minimum, adapter.GetCommonService().IncludeSourceProperties);
     }
 
-    [Fact]
-    public async Task AdapterMainBase_ResendHealthMetadata_Test()
+    [Theory]
+    [InlineData(OmfVersion.Omf12, 3)]
+    [InlineData(OmfVersion.Omf13, 3)]
+    [InlineData(OmfVersion.Omf20, 5)]
+    public async Task AdapterMainBase_ResendHealthMetadata_Test(OmfVersion omfVersion, int expectedDiagnosticsStreamsCount)
     {
         // DeviceStatus and NextHealthMessageExpected
         const int ExpectedHealthStreamsCount = 2;
 
-        // ErrorRate, IORate and StreamCount
-        const int ExpectedDiagnosticsStreamsCount = 3;
-
+        // ErrorRate, IORate and StreamCount always; AssetCount and EventWriteCount only for OMF 2.0.
         using var cts = new CancellationTokenSource();
-        using var adapter = CreateAdapter();
+        using var adapter = CreateAdapter(omfVersion: omfVersion);
 
         await adapter.InitializeAsync(cts.Token);
 
@@ -957,7 +958,7 @@ public class AdapterMainBase_Tests
         Assert.NotEmpty(_healthStreams);
         Assert.NotEmpty(_diagnosticsStreams);
         Assert.Equal(ExpectedHealthStreamsCount, _healthStreams.Count);
-        Assert.Equal(ExpectedDiagnosticsStreamsCount, _diagnosticsStreams.Count);
+        Assert.Equal(expectedDiagnosticsStreamsCount, _diagnosticsStreams.Count);
     }
 
     [Fact]

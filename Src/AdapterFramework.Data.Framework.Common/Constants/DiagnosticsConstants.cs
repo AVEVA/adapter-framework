@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,6 +22,10 @@ public static class DiagnosticsConstants
     public const string ErrorRateStreamName = "ErrorRate";
     public const string StreamCountTypeId = "Diagnostics.StreamCount";
     public const string StreamCountStreamName = "StreamCount";
+    public const string AssetCountTypeId = "Diagnostics.AssetCount";
+    public const string AssetCountStreamName = "AssetCount";
+    public const string EventWriteCountTypeId = "Diagnostics.EventWriteCount";
+    public const string EventWriteCountStreamName = "EventWriteCount";
     public const string SystemDiagnosticsTypeId = "Diagnostics.System";
     public const string SystemDiagnosticsStreamId = "System.Diagnostics";
     public const string SystemDiagnosticsStreamName = "System";
