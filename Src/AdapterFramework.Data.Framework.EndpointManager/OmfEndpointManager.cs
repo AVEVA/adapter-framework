@@ -115,6 +115,18 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         return result;
     }
 
+    public IReadOnlyDictionary<string, OmfResourceCounts> GetAndResetEgressedResourceCounters()
+    {
+        var result = new Dictionary<string, OmfResourceCounts>();
+
+        foreach (var writer in _writers)
+        {
+            result[writer.Id] = writer.GetAndResetEgressedResourceCounters();
+        }
+
+        return result;
+    }
+
     public bool AddRemoveEndpoints(ConfigurationChangedEventArgs configurationChangedEvent, OmfWriterType omfWriterType)
     {
         ThrowHelper.ThrowIfArgumentNull(configurationChangedEvent, nameof(configurationChangedEvent));

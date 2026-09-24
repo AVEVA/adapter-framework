@@ -27,7 +27,7 @@ namespace AdapterFramework.Data.Framework.EgressComponent.Diagnostics;
 
 internal class EgressDiagnosticsOmfMessageCreator
 {
-    private readonly string _egressStreamIdTemplate;
+    private readonly string _egressStreamIdPrefix;
     private readonly LinkNode _elementNode;
 
     /// <summary>
@@ -42,16 +42,22 @@ internal class EgressDiagnosticsOmfMessageCreator
         ThrowHelper.ThrowIfArgumentNull(elementNode, nameof(elementNode));
 
         _elementNode = elementNode;
-
-        var egressStreamIdTemplateBase = $"{componentId}.{{0}}.{IoRateStreamName}";
-        _egressStreamIdTemplate = streamIdPrefix == null ?
-            egressStreamIdTemplateBase : streamIdPrefix + egressStreamIdTemplateBase;
+        _egressStreamIdPrefix = $"{streamIdPrefix}{componentId}.";
     }
 
     public static DataType[] GetTypes() => new[] { CreateIoRateType(), };
 
-    public DataStream CreateIoRateStream(string endpointId) =>
-        new DataStream(IoRateTypeId, string.Format(CultureInfo.InvariantCulture, _egressStreamIdTemplate, endpointId), $"{endpointId}.{IoRateStreamName}");
+    public DataStream CreateIoRateStream(string endpointId) => CreateIoRateStream(endpointId, IoRateStreamName);
+
+    /// <summary>
+    /// Creates an IO rate stream for an endpoint, such as <c>{StreamIdPrefix}{ComponentId}.{EndpointId}.StreamIORate</c>.
+    /// All IO rate streams share the <see cref="IoRateTypeId"/> type.
+    /// </summary>
+    /// <param name="endpointId">The egress endpoint id.</param>
+    /// <param name="streamName">The IO rate stream name, for example <see cref="StreamIoRateStreamName"/>.</param>
+    /// <returns>The IO rate stream.</returns>
+    public DataStream CreateIoRateStream(string endpointId, string streamName) =>
+        new DataStream(IoRateTypeId, string.Create(CultureInfo.InvariantCulture, $"{_egressStreamIdPrefix}{endpointId}.{streamName}"), $"{endpointId}.{streamName}");
 
     public ValueTuple<string, Classification, object> CreateLink(string streamId)
     {

@@ -136,6 +136,8 @@ public class Serializer_Tests : IDisposable
     [Theory]
     [InlineData(DataItemVersion.V1)]
     [InlineData(DataItemVersion.V2)]
+    [InlineData(DataItemVersion.V3)]
+    [InlineData(DataItemVersion.V4)]
     public void Serializer_SerializeDeserializeDataItem_Success(DataItemVersion dataItemVersion)
     {
         var rnd = new Random();

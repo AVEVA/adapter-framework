@@ -24,6 +24,10 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Health;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.Metadata;
+using AdapterFramework.Data.Framework.Common.Constants;
+using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 using AdapterFramework.Data.Framework.EgressComponent.Diagnostics;
 using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
@@ -234,6 +238,212 @@ public class EgressDiagnosticsService_Tests
         else
         {
             mockHealthService.Verify(x => x.ResendTypesAndStreams(), Times.Never);
+        }
+    }
+
+    [Fact]
+    public async Task Omf20_StartAsync_PublishesResourceIoRateStreamsLinksAndValues()
+    {
+        const string EndpointId = "ep1";
+        var recorder = new RecordingDiagnosticsMessageProcessor();
+        var mockHealthService = new Mock<IEdgeComponentHealthService>();
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { EndpointId, 78 } });
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedResourceCounters())
+            .Returns(new Dictionary<string, OmfResourceCounts> { { EndpointId, new OmfResourceCounts(60, 6, 12) } });
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, mockEndpointManager.Object, _node, mockHealthService.Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+        await egressService.StartAsync();
+
+        var ioRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.IoRateStreamName}";
+        var streamIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.StreamIoRateStreamName}";
+        var assetIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.AssetIoRateStreamName}";
+        var eventIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.EventIoRateStreamName}";
+        var expectedStreamIds = new[] { ioRateStreamId, streamIoRateStreamId, assetIoRateStreamId, eventIoRateStreamId };
+
+        Assert.True(SpinWait.SpinUntil(() => expectedStreamIds.All(id => recorder.GetIoRate(id).HasValue), WaitTime));
+
+        var streams = recorder.GetStreams();
+        foreach (var streamId in expectedStreamIds)
+        {
+            var stream = Assert.Single(streams, s => s.Id == streamId);
+            Assert.Equal(DiagnosticsConstants.IoRateTypeId, stream.TypeId);
+            Assert.Equal(streamId[(_id.Length + 1)..], stream.Name);
+            Assert.Contains(streamId, recorder.GetLinkTargets());
+        }
+
+        // A single one-second sample has been taken, so each rate equals that second's count.
+        Assert.Equal(78, recorder.GetIoRate(ioRateStreamId));
+        Assert.Equal(60, recorder.GetIoRate(streamIoRateStreamId));
+        Assert.Equal(6, recorder.GetIoRate(assetIoRateStreamId));
+        Assert.Equal(12, recorder.GetIoRate(eventIoRateStreamId));
+    }
+
+    [Fact]
+    public async Task Omf20_ResendTypesAndStreams_ResendsResourceIoRateStreams()
+    {
+        const string EndpointId = "ep1";
+        var recorder = new RecordingDiagnosticsMessageProcessor();
+        var mockHealthService = new Mock<IEdgeComponentHealthService>();
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { EndpointId, 0 } });
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, mockEndpointManager.Object, _node, mockHealthService.Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+        await egressService.StartAsync();
+
+        Assert.True(SpinWait.SpinUntil(() => recorder.GetStreams().Count == 4, WaitTime));
+
+        recorder.Clear();
+        egressService.ResendTypesAndStreams();
+
+        Assert.Equal(4, recorder.GetStreams().Count);
+        Assert.Equal(4, recorder.GetLinkTargets().Count);
+    }
+
+    [Fact]
+    public async Task Omf12_StartAsync_PublishesOnlyIoRateStream()
+    {
+        const string EndpointId = "ep1";
+        var recorder = new RecordingDiagnosticsMessageProcessor();
+        var mockHealthService = new Mock<IEdgeComponentHealthService>();
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { EndpointId, 5 } });
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, mockEndpointManager.Object, _node, mockHealthService.Object, OmfVersion.Omf12);
+        await egressService.InitializeAsync();
+        await egressService.StartAsync();
+
+        var ioRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.IoRateStreamName}";
+        Assert.True(SpinWait.SpinUntil(() => recorder.GetIoRate(ioRateStreamId).HasValue, WaitTime));
+
+        Assert.Equal(ioRateStreamId, Assert.Single(recorder.GetStreams()).Id);
+        mockEndpointManager.Verify(x => x.GetAndResetEgressedResourceCounters(), Times.Never);
+    }
+
+    [Fact]
+    public async Task Omf20_EndpointRemoved_StopsPublishingItsResourceIoRates()
+    {
+        var recorder = new RecordingDiagnosticsMessageProcessor();
+        var mockHealthService = new Mock<IEdgeComponentHealthService>();
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { "ep1", 1 }, { "ep2", 1 } });
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, mockEndpointManager.Object, _node, mockHealthService.Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+        await egressService.StartAsync();
+
+        Assert.True(SpinWait.SpinUntil(() => recorder.GetStreams().Count == 8, WaitTime));
+
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { "ep1", 1 } });
+        recorder.Clear();
+
+        // Removing an endpoint resends the remaining streams, which only include ep1.
+        Assert.True(SpinWait.SpinUntil(() => recorder.GetStreams().Count == 4, WaitTime));
+        Assert.All(recorder.GetStreams(), s => Assert.StartsWith($"{_id}.ep1.", s.Id, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Omf20_ResourceIoRateWriteFailure_DoesNotStopIoRate()
+    {
+        const string EndpointId = "ep1";
+        var streamIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.StreamIoRateStreamName}";
+        var recorder = new RecordingDiagnosticsMessageProcessor { FailValueWritesForStreamId = streamIoRateStreamId };
+        var mockHealthService = new Mock<IEdgeComponentHealthService>();
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { EndpointId, 3 } });
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, mockEndpointManager.Object, _node, mockHealthService.Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+        await egressService.StartAsync();
+
+        var ioRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.IoRateStreamName}";
+        Assert.True(SpinWait.SpinUntil(() => recorder.GetIoRate(ioRateStreamId).HasValue, WaitTime));
+        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage("resource IORate"), WaitTime));
+        Assert.Equal(3, recorder.GetIoRate(ioRateStreamId));
+    }
+
+    private sealed class RecordingDiagnosticsMessageProcessor : IDiagnosticsMessageProcessor
+    {
+        private readonly object _lock = new();
+        private readonly List<DataStream> _streams = new();
+        private readonly List<string> _linkTargets = new();
+        private readonly Dictionary<string, double> _ioRates = new();
+
+        public MetadataInfo StreamMetadataLevel { get; set; }
+
+        public bool SystemDiagnosticsEnabled { get; set; } = true;
+
+        public string StreamIdPrefix => null;
+
+        public string FailValueWritesForStreamId { get; init; }
+
+        public void WriteDiagnosticsTypes(DataType[] dataTypes)
+        {
+        }
+
+        public void WriteDiagnosticsStreams(DataStream[] dataStreams)
+        {
+            lock (_lock)
+            {
+                _streams.AddRange(dataStreams);
+            }
+        }
+
+        public void WriteDiagnosticsValue<T>(string id, Classification classification, T instance)
+        {
+            if (id == FailValueWritesForStreamId)
+            {
+                throw new InvalidOperationException("Simulated diagnostics write failure.");
+            }
+
+            lock (_lock)
+            {
+                switch (instance)
+                {
+                    case Link link:
+                        _linkTargets.Add(link.Target.Id);
+                        break;
+                    case IoRateEvent ioRateEvent:
+                        _ioRates[id] = ioRateEvent.IORate;
+                        break;
+                }
+            }
+        }
+
+        public List<DataStream> GetStreams()
+        {
+            lock (_lock)
+            {
+                return _streams.ToList();
+            }
+        }
+
+        public List<string> GetLinkTargets()
+        {
+            lock (_lock)
+            {
+                return _linkTargets.ToList();
+            }
+        }
+
+        public double? GetIoRate(string streamId)
+        {
+            lock (_lock)
+            {
+                return _ioRates.TryGetValue(streamId, out var value) ? value : null;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _streams.Clear();
+                _linkTargets.Clear();
+                _ioRates.Clear();
+            }
         }
     }
 }

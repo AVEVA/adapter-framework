@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Administration;
 using AdapterFramework.Data.Framework.Abstractions.Components;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
@@ -77,7 +78,8 @@ public class OmfEgressComponent : ISinkProvider, IDisposable
         _baseHierarchyCreator = new AdapterBaseHierarchyCreator(applicationManifest);
         _baseHierarchyCreator.CreateAndSendBaseHierarchy(healthMessageProcessor);
         _healthService = new EgressHealthService(healthMessageProcessor, _logger, applicationManifest, ComponentId);
-        _diagnosticsService = new EgressDiagnosticsService(diagnosticsMessageProcessor, _logger, ComponentId, _omfDataEndpointManager, _healthService.GetHealthLinkNode(), _healthService);
+        _diagnosticsService = new EgressDiagnosticsService(diagnosticsMessageProcessor, _logger, ComponentId, _omfDataEndpointManager, _healthService.GetHealthLinkNode(), _healthService,
+            applicationManifest?.OmfVersion ?? OmfVersion.Omf12);
     }
 
     public string ComponentId { get; private set; }

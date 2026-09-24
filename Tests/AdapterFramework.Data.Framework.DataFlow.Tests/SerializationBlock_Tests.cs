@@ -45,6 +45,7 @@ public class SerializationBlock_Tests
     private readonly int _staticDataByteCount;
     private int _receivedDataCount;
     private int _messageActionTriggerCount;
+    private OmfResourceCounts _receivedResourceCounts;
     
     public SerializationBlock_Tests()
     {
@@ -261,6 +262,9 @@ public class SerializationBlock_Tests
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(expectedCount, _receivedDataCount);
         Assert.Equal(8, _messageActionTriggerCount);
+
+        // OMF 1.2 data messages (including chunked ones) never carry OMF 2.0 resource counts.
+        Assert.True(_receivedResourceCounts.IsEmpty);
     }
 
     [Fact]
@@ -599,13 +603,36 @@ public class SerializationBlock_Tests
 
         using var instanceMessage = new InstanceMessage(null, rentedArray, null, null, 0, 0, entitiesArray.Length, 0, 0, MessageAction.Default, true);
 
-        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken());
+        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), OmfVersion.Omf20);
 
         serializationBlock.Post(instanceMessage);
 
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(entitiesArray.Length, _receivedDataCount);
         Assert.Equal(isMessageOversize ? 2 : 1, _messageActionTriggerCount);
+        Assert.Equal(new OmfResourceCounts(0, entitiesArray.Length, 0), _receivedResourceCounts);
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    public void SerializationBlock_Post_InstanceMessage_NonOmf20_NoResourceCounts(OmfVersion omfVersion)
+    {
+        var testLogger = new TestLogger();
+        var entitiesArray = new[] { _staticStreamData, _staticStreamData, };
+
+        var rentedArray = ArrayPool<StaticStreamData>.Shared.Rent(entitiesArray.Length);
+        entitiesArray.CopyTo(rentedArray, 0);
+
+        using var instanceMessage = new InstanceMessage(null, rentedArray, null, null, 0, 0, entitiesArray.Length, 0, 0, MessageAction.Default, true);
+
+        using var serializationBlock = new SerializationBlock(null, null, int.MaxValue, testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), omfVersion);
+
+        serializationBlock.Post(instanceMessage);
+
+        Assert.True(SpinWait.SpinUntil(() => _messageActionTriggerCount == 1, WaitTime));
+        Assert.Equal(entitiesArray.Length, _receivedDataCount);
+        Assert.True(_receivedResourceCounts.IsEmpty);
     }
 
     [Theory]
@@ -626,13 +653,14 @@ public class SerializationBlock_Tests
 
         using var instanceMessage = new InstanceMessage(null, null, rentedArray, null, 0, 0, 0, eventsArray.Length, 0, MessageAction.Default, true);
 
-        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken());
+        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), OmfVersion.Omf20);
 
         serializationBlock.Post(instanceMessage);
 
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(eventsArray.Length, _receivedDataCount);
         Assert.Equal(isMessageOversize ? 2 : 1, _messageActionTriggerCount);
+        Assert.Equal(new OmfResourceCounts(0, 0, eventsArray.Length), _receivedResourceCounts);
     }
 
     [Theory]
@@ -654,13 +682,14 @@ public class SerializationBlock_Tests
 
         using var instanceMessage = new InstanceMessage(null, null, null, rentedArray, 0, 0, 0, 0, linksArray.Length, MessageAction.Default, true);
 
-        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken());
+        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), OmfVersion.Omf20);
 
         serializationBlock.Post(instanceMessage);
 
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(linksArray.Length, _receivedDataCount);
         Assert.Equal(isMessageOversize ? 2 : 1, _messageActionTriggerCount);
+        Assert.True(_receivedResourceCounts.IsEmpty);
     }
 
     [Theory]
@@ -686,13 +715,14 @@ public class SerializationBlock_Tests
 
         using var instanceMessage = new InstanceMessage(rentedArray, null, null, null, streamingDataArray.Length, dataItems.Count, 0, 0, 0, MessageAction.Default, true, partitionKey);
 
-        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken());
+        using var serializationBlock = new SerializationBlock(null, null, instanceMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), OmfVersion.Omf20);
 
         serializationBlock.Post(instanceMessage);
 
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(dataItems.Count, _receivedDataCount);
         Assert.Equal(isMessageOversize ? 2 : 1, _messageActionTriggerCount);
+        Assert.Equal(new OmfResourceCounts(dataItems.Count, 0, 0), _receivedResourceCounts);
     }
 
     [Theory]
@@ -745,18 +775,25 @@ public class SerializationBlock_Tests
 
         var maxByteCount = isNonStreamingDataOversize ? nonStreamingDataByteCount - 1 : (isMessageOversize ? instanceMessageByteCount - 1 : instanceMessageByteCount + 1);
 
-        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken());
+        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, testLogger, -1, new OmfJsonSerializer(), null, DummyAction, new CancellationToken(), OmfVersion.Omf20);
 
         serializationBlock.Post(instanceMessage);
 
         Assert.False(SpinWait.SpinUntil(() => testLogger.AreErrorsWarningsInLog(), WaitTime));
         Assert.Equal(eventsArray.Length + entitiesArray.Length + linksArray.Length + dataItems.Count, _receivedDataCount);
         Assert.Equal(isNonStreamingDataOversize ? 3 : (isMessageOversize ? 2 : 1), _messageActionTriggerCount);
+
+        // Relationships are excluded from resource counts; every other instance is counted exactly once however the message is split.
+        Assert.Equal(new OmfResourceCounts(dataItems.Count, entitiesArray.Length, eventsArray.Length), _receivedResourceCounts);
     }
 
     private void DummyAction(ISerializedOmfMessage m)
     {
         _messageActionTriggerCount++;
-        _receivedDataCount += m.ItemCount;        
+        _receivedDataCount += m.ItemCount;
+        _receivedResourceCounts = new OmfResourceCounts(
+            _receivedResourceCounts.StreamingValues + m.ResourceCounts.StreamingValues,
+            _receivedResourceCounts.Assets + m.ResourceCounts.Assets,
+            _receivedResourceCounts.Events + m.ResourceCounts.Events);
     }
 }
