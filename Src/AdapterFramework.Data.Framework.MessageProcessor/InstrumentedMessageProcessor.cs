@@ -33,10 +33,15 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 {
     #region Private Fields
 
+    private const int IdentityWriteLockStripeCount = 64;
+
     private readonly IMessageProcessor _messageProcessor;
     private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> _entityIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object[] _entityWriteSync = CreateStripedLocks();
+    private readonly object _eventWriteCountSync = new();
     private readonly Dictionary<string, object> _metaDataDictionary;
     private readonly Dictionary<StreamProperties, Action<PropertyDefinitionOverride>> _propertyOverrideActions;
     private readonly string _componentId;
@@ -45,8 +50,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private string _streamIdPrefix;
     private int _streamCount;
     private int _typeCount;
+    private int _assetCount;
+    private long _eventWriteCount;
     private long _eventsCount;
     private long _cacheOrderSequence;
+    private int _activeEventWriteCountOperations;
+    private bool _resettingEventWriteCount;
 
     #endregion
 
@@ -183,7 +192,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        var entityId = id.ToOmfIdentifier();
+
+        PerformTrackedAssetWrite(
+            entityId,
+            () => _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction),
+            messageAction);
 
         IncrementEventsCount();
     }
@@ -191,7 +205,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction);
+        var entityId = id.ToOmfIdentifier();
+
+        PerformTrackedAssetWrite(
+            entityId,
+            () => _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction),
+            messageAction);
 
         IncrementEventsCount();
     }
@@ -200,8 +219,18 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
         IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteEvent(id.ToOmfIdentifier(), typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
-            extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        var eventId = id.ToOmfIdentifier();
+
+        if (messageAction != MessageAction.Delete)
+        {
+            ExecuteTrackedEventWrite(() => _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
+                extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction));
+        }
+        else
+        {
+            _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
+                extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        }
 
         IncrementEventsCount();
     }
@@ -243,6 +272,18 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
+    public int GetAssetCount()
+    {
+        return _assetCount;
+    }
+
+    /// <inheritdoc/>
+    public long GetEventWriteCount()
+    {
+        return Interlocked.Read(ref _eventWriteCount);
+    }
+
+    /// <inheritdoc/>
     public long GetAndResetEventsCounter()
     {
         return Interlocked.Exchange(ref _eventsCount, 0);
@@ -254,6 +295,15 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         Interlocked.Exchange(ref _typeCount, 0);
         Interlocked.Exchange(ref _streamCount, 0);
         Interlocked.Exchange(ref _eventsCount, 0);
+        ResetEventWriteCount();
+
+        // Clear the retained identity set along with the gauge so the next writes for any identity
+        // (new or previously known) are treated as new and correctly rebuild the count.
+        ExecuteWithAllLocksHeld(_entityWriteSync, () =>
+        {
+            Interlocked.Exchange(ref _assetCount, 0);
+            _entityIds.Clear();
+        });
     }
 
     #endregion
@@ -365,6 +415,148 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private static string GetRelationshipKey(Link link)
     {
         return string.Join('|', link.Source?.Id, link.Source?.Property, link.Target?.Id, link.Target?.Property);
+    }
+
+    private void PerformTrackedAssetWrite(string entityId, Action writeAction, MessageAction messageAction)
+    {
+        ExecuteTrackedWrite(_entityWriteSync, entityId, writeAction, () => TrackEntityIdentity(entityId, messageAction));
+    }
+
+    private static object[] CreateStripedLocks()
+    {
+        var locks = new object[IdentityWriteLockStripeCount];
+        for (var i = 0; i < locks.Length; i++)
+        {
+            locks[i] = new object();
+        }
+
+        return locks;
+    }
+
+    private static void ExecuteTrackedWrite(object[] identityWriteSync, string identityId, Action writeAction, Action trackAction)
+    {
+        var identitySync = identityWriteSync[GetIdentityLockIndex(identityId)];
+
+        lock (identitySync)
+        {
+            writeAction();
+            trackAction();
+        }
+    }
+
+    private void ExecuteTrackedEventWrite(Action writeAction)
+    {
+        EnterEventWriteCountOperation();
+
+        try
+        {
+            writeAction();
+            Interlocked.Increment(ref _eventWriteCount);
+        }
+        finally
+        {
+            ExitEventWriteCountOperation();
+        }
+    }
+
+    private static void ExecuteWithAllLocksHeld(object[] stripedLocks, Action action)
+    {
+        for (var i = 0; i < stripedLocks.Length; i++)
+        {
+            Monitor.Enter(stripedLocks[i]);
+        }
+
+        try
+        {
+            action();
+        }
+        finally
+        {
+            for (var i = stripedLocks.Length - 1; i >= 0; i--)
+            {
+                Monitor.Exit(stripedLocks[i]);
+            }
+        }
+    }
+
+    private static int GetIdentityLockIndex(string identityId)
+    {
+        return (StringComparer.OrdinalIgnoreCase.GetHashCode(identityId) & int.MaxValue) % IdentityWriteLockStripeCount;
+    }
+
+    private void EnterEventWriteCountOperation()
+    {
+        lock (_eventWriteCountSync)
+        {
+            while (_resettingEventWriteCount)
+            {
+                Monitor.Wait(_eventWriteCountSync);
+            }
+
+            _activeEventWriteCountOperations++;
+        }
+    }
+
+    private void ExitEventWriteCountOperation()
+    {
+        lock (_eventWriteCountSync)
+        {
+            _activeEventWriteCountOperations--;
+
+            if (_activeEventWriteCountOperations == 0)
+            {
+                Monitor.PulseAll(_eventWriteCountSync);
+            }
+        }
+    }
+
+    private void ResetEventWriteCount()
+    {
+        lock (_eventWriteCountSync)
+        {
+            _resettingEventWriteCount = true;
+
+            while (_activeEventWriteCountOperations > 0)
+            {
+                Monitor.Wait(_eventWriteCountSync);
+            }
+
+            Interlocked.Exchange(ref _eventWriteCount, 0);
+            _resettingEventWriteCount = false;
+            Monitor.PulseAll(_eventWriteCountSync);
+        }
+    }
+
+    // Tracks unique entity identities so GetAssetCount() reports a current-state gauge, mirroring the stream/type caches.
+    private void TrackEntityIdentity(string entityId, MessageAction messageAction)
+    {
+        if (messageAction == MessageAction.Delete)
+        {
+            if (_entityIds.TryRemove(entityId, out _))
+            {
+                DecrementAssetCountIfPositive();
+            }
+        }
+        else if (_entityIds.TryAdd(entityId, 0))
+        {
+            Interlocked.Increment(ref _assetCount);
+        }
+    }
+
+    // Guards against races where a delete is processed for an identity that was already removed (for example by ClearCounters()
+    // or a concurrent delete), which must not drive the count negative.
+    private void DecrementAssetCountIfPositive()
+    {
+        int current;
+        do
+        {
+            current = _assetCount;
+            if (current <= 0)
+            {
+                return;
+            }
+        }
+        while (Interlocked.CompareExchange(ref _assetCount, current - 1, current) != current);
     }
 
     private string GetPrefixedOrSanitizedIdentifier(string id, Classification classification)
