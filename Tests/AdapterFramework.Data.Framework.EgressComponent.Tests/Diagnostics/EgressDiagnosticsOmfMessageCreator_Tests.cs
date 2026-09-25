@@ -56,6 +56,25 @@ public class EgressDiagnosticsOmfMessageCreator_Tests
         Assert.NotEmpty(stream.TypeId);
     }
 
+    [Theory]
+    [InlineData(null, DiagnosticsConstants.StreamIoRateStreamName)]
+    [InlineData(null, DiagnosticsConstants.AssetIoRateStreamName)]
+    [InlineData(null, DiagnosticsConstants.EventIoRateStreamName)]
+    [InlineData("Prefix.", DiagnosticsConstants.StreamIoRateStreamName)]
+    [InlineData("Prefix.", DiagnosticsConstants.AssetIoRateStreamName)]
+    [InlineData("Prefix.", DiagnosticsConstants.EventIoRateStreamName)]
+    public void EgressDiagnosticsOmfMessageCreator_CreateResourceIoRateStream_Test(string streamIdPrefix, string streamName)
+    {
+        const string EndpointId = "UnitTestEndpoint";
+        var messageCreator = new EgressDiagnosticsOmfMessageCreator(ComponentId, new DataTypeLinkNode(EgressHealthId, LinkAssetId), streamIdPrefix);
+
+        var stream = messageCreator.CreateIoRateStream(EndpointId, streamName);
+
+        Assert.Equal($"{streamIdPrefix}{ComponentId}.{EndpointId}.{streamName}", stream.Id);
+        Assert.Equal($"{EndpointId}.{streamName}", stream.Name);
+        Assert.Equal(DiagnosticsConstants.IoRateTypeId, stream.TypeId);
+    }
+
     [Fact]
     public void EgressDiagnosticsOmfMessageCreator_CreateLink_Test()
     {

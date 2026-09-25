@@ -101,6 +101,65 @@ public class PersistentOmfMessageQueue_Tests
     }
 
     [Theory]
+    [InlineData(null, MessageAction.Create)]
+    [InlineData(PartitionKey.Key16, MessageAction.Update)]
+    [InlineData(null, MessageAction.Delete)]
+    public void PersistentOmfMessageQueue_ResourceCounts_RoundTrip_Test(PartitionKey? partitionKey, MessageAction messageAction)
+    {
+        DataItem enqueuedDataItem = null;
+        var body = new byte[] { 0x20, 0x21, 0x22 };
+        var resourceCounts = new OmfResourceCounts(1_000, 7, 3);
+        var serializedOmfMessage = new SerializedOmfMessage(MessageType.Instance, body, messageAction, 1_012, OmfVersion.Omf20, partitionKey)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Enqueue(It.IsAny<DataItem>()))
+            .Callback((DataItem dataItem) => enqueuedDataItem = dataItem);
+
+        using var persistentOmfMessageQueue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        persistentOmfMessageQueue.Enqueue(serializedOmfMessage);
+
+        Assert.NotNull(enqueuedDataItem);
+        Assert.Equal(DataItemVersion.V4, enqueuedDataItem.Version);
+
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Dequeue()).Returns(enqueuedDataItem);
+        Assert.True(persistentOmfMessageQueue.TryDequeue(out var dequeuedMessage));
+
+        Assert.Equal(MessageType.Instance, dequeuedMessage.MessageType);
+        Assert.Equal(body, dequeuedMessage.MessageBody);
+        Assert.Equal(1_012, dequeuedMessage.ItemCount);
+        Assert.Equal(messageAction, dequeuedMessage.MessageAction);
+        Assert.Equal(OmfVersion.Omf20, dequeuedMessage.OmfVersion);
+        Assert.Equal(partitionKey, dequeuedMessage.PartitionKey);
+        Assert.Equal(resourceCounts, dequeuedMessage.ResourceCounts);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Instance, OmfVersion.Omf20)]
+    [InlineData(MessageType.Schema, OmfVersion.Omf20)]
+    [InlineData(MessageType.DynamicData, OmfVersion.Omf12)]
+    public void PersistentOmfMessageQueue_NoResourceCounts_WritesV3_Test(MessageType messageType, OmfVersion omfVersion)
+    {
+        DataItem enqueuedDataItem = null;
+        var serializedOmfMessage = new SerializedOmfMessage(messageType, new byte[] { 0x20 }, MessageAction.Default, 1, omfVersion);
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Enqueue(It.IsAny<DataItem>()))
+            .Callback((DataItem dataItem) => enqueuedDataItem = dataItem);
+
+        using var persistentOmfMessageQueue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        persistentOmfMessageQueue.Enqueue(serializedOmfMessage);
+
+        Assert.Equal(DataItemVersion.V3, enqueuedDataItem.Version);
+
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Dequeue()).Returns(enqueuedDataItem);
+        Assert.True(persistentOmfMessageQueue.TryDequeue(out var dequeuedMessage));
+        Assert.True(dequeuedMessage.ResourceCounts.IsEmpty);
+    }
+
+    [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]
     [InlineData(MessageType.Data)]

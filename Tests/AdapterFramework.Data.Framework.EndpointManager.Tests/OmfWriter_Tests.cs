@@ -516,6 +516,86 @@ public class OmfWriter_Tests : IDisposable
         Assert.True(_omfWriter.GetAndResetEgressedValuesCounter() == 0);
     }
 
+    [Fact]
+    public void OmfWriter_SendMessage_Success_CountsResources()
+    {
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_success";
+        var resourceCounts = new OmfResourceCounts(10, 2, 3);
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        _omfWriter.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) == 1, TimeToWaitForBufferedRetry));
+
+        var egressed = default(OmfResourceCounts);
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                var counts = _omfWriter.GetAndResetEgressedResourceCounters();
+                egressed = new OmfResourceCounts(egressed.StreamingValues + counts.StreamingValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                return egressed == resourceCounts;
+            },
+            SuccessfulSendExpectedWaitTime));
+
+        Assert.True(_omfWriter.GetAndResetEgressedResourceCounters().IsEmpty);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public void OmfWriter_SendMessage_Rejected_DoesNotCountResources(HttpStatusCode statusCode)
+    {
+        _testEndpoint.SetHttpResponse(statusCode);
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_rejected";
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = new OmfResourceCounts(10, 2, 3),
+        };
+
+        _omfWriter.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) >= 1, TimeToWaitForBufferedRetry));
+
+        // The existing IORate counter still counts processed-but-rejected messages; the per-resource counters only count delivered ones.
+        Assert.True(SpinWait.SpinUntil(() => _omfWriter.GetAndResetEgressedValuesCounter() == 15, SuccessfulSendExpectedWaitTime));
+        Assert.True(_omfWriter.GetAndResetEgressedResourceCounters().IsEmpty);
+    }
+
+    [Fact]
+    public void OmfWriterWithBuffering_SendMessage_RetriedThenDelivered_CountsResourcesOnce()
+    {
+        _testEndpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { { "Retry-After", "1" } });
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_retried";
+        var resourceCounts = new OmfResourceCounts(10, 2, 3);
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        _omfWriterBuffered.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) >= 2, TimeToWaitForBufferedRetry));
+        Assert.True(_omfWriterBuffered.GetAndResetEgressedResourceCounters().IsEmpty);
+
+        var attemptsBeforeRecovery = _testEndpoint.NumberOfTimesMessageReceived(TestMessage);
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) > attemptsBeforeRecovery, TimeToWaitForBufferedRetry));
+        Thread.Sleep(SuccessfulSendExpectedWaitTime);
+
+        Assert.Equal(resourceCounts, _omfWriterBuffered.GetAndResetEgressedResourceCounters());
+        Assert.True(_omfWriterBuffered.GetAndResetEgressedResourceCounters().IsEmpty);
+    }
+
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]

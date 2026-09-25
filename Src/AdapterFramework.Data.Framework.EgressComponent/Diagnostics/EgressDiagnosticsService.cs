@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -23,9 +24,11 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Diagnostics;
 using AdapterFramework.Data.Framework.Abstractions.Health;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Common;
 using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 using AdapterFramework.Data.Framework.Extensions;
+using static AdapterFramework.Data.Framework.Common.Constants.DiagnosticsConstants;
 
 namespace AdapterFramework.Data.Framework.EgressComponent.Diagnostics;
 
@@ -44,6 +47,8 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly SemaphoreSlim _stateChangeSemaphore = new SemaphoreSlim(1, 1);
     private readonly Dictionary<string, string> _egressIdToStreamId = new Dictionary<string, string>();
     private readonly Dictionary<string, MovingAverage> _egressIdToIoRateMovingAverage;
+    private readonly ConcurrentDictionary<string, ResourceIoRates> _egressIdToResourceIoRates = new();
+    private readonly bool _resourceIoRatesEnabled;
     private readonly ILogger _logger;
     private readonly IEdgeComponentHealthService _healthService;
     private readonly IDiagnosticsMessageProcessor _diagnosticsMessageProcessor;
@@ -55,6 +60,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _timerTickValueRateCounter;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateIoRate;
+    private bool _failedToUpdateResourceIoRates;
     private bool _disposed;
 
     #endregion
@@ -72,6 +78,24 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     /// <param name="healthService">Instance of <see cref="IEdgeComponentHealthService"/>.</param>
     public EgressDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor,
         ILogger logger, string componentId, IOmfDataEndpointManager dataEndpointManager, LinkNode elementNodeLink, IEdgeComponentHealthService healthService)
+        : this(diagnosticsMessageProcessor, logger, componentId, dataEndpointManager, elementNodeLink, healthService, OmfVersion.Omf12)
+    {
+    }
+
+    /// <summary>
+    /// Instantiates a new instance of the <see cref="EgressDiagnosticsService"/> class.
+    /// </summary>
+    /// <param name="diagnosticsMessageProcessor">Instance of <see cref="IDiagnosticsMessageProcessor"/> service.</param>
+    /// <param name="logger">The adapter logger.</param>
+    /// <param name="componentId">The component id.</param>
+    /// <param name="dataEndpointManager">Instance of <see cref="IOmfDataEndpointManager"/> service.</param>
+    /// <param name="elementNodeLink">The node to link all the diagnostics stream to.</param>
+    /// <param name="healthService">Instance of <see cref="IEdgeComponentHealthService"/>.</param>
+    /// <param name="omfVersion">The OMF version the adapter egresses. OMF 2.0 adds the per-resource
+    /// <c>StreamIORate</c>, <c>AssetIORate</c> and <c>EventIORate</c> streams for every endpoint.</param>
+    public EgressDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor,
+        ILogger logger, string componentId, IOmfDataEndpointManager dataEndpointManager, LinkNode elementNodeLink, IEdgeComponentHealthService healthService,
+        OmfVersion omfVersion)
     {
         ThrowHelper.ThrowIfArgumentNull(diagnosticsMessageProcessor, nameof(diagnosticsMessageProcessor));
         ThrowHelper.ThrowIfArgumentNull(logger, nameof(logger));
@@ -84,6 +108,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         _dataEndpointManager = dataEndpointManager;
         _healthService = healthService;
         _egressIdToIoRateMovingAverage = new Dictionary<string, MovingAverage>();
+        _resourceIoRatesEnabled = omfVersion == OmfVersion.Omf20;
     }
 
     #endregion
@@ -131,6 +156,11 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                 movingAverage.ClearSamples();
             }
 
+            foreach (var resourceIoRates in _egressIdToResourceIoRates.Values)
+            {
+                resourceIoRates.ClearSamples();
+            }
+
             _logger.LogDebug("{ServiceName} is stopped.", nameof(EgressDiagnosticsService));
         }
         finally
@@ -146,6 +176,11 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         foreach (var item in _egressIdToIoRateMovingAverage)
         {
             CreateIoRateStreamAndLink(item.Key);
+        }
+
+        foreach (var resourceIoRates in _egressIdToResourceIoRates.Values)
+        {
+            CreateResourceIoRateStreamsAndLinks(resourceIoRates);
         }
     }
 
@@ -184,6 +219,10 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         // toss old data because it may skew average.
         _dataEndpointManager.GetAndResetEgressedValuesCounters();
+        if (_resourceIoRatesEnabled)
+        {
+            _dataEndpointManager.GetAndResetEgressedResourceCounters();
+        }
 
         if (_valueRateTimer == null)
         {
@@ -207,6 +246,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     return;
                 }
 
+                var egressResourceCounts = _resourceIoRatesEnabled ? _dataEndpointManager.GetAndResetEgressedResourceCounters() : null;
                 var resendTypesStreamsLinks = false;
 
                 foreach (var (streamId, valueCount) in egressDataCount)
@@ -219,9 +259,21 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                         _egressIdToIoRateMovingAverage[streamId] = new MovingAverage(MovingAveragePeriod);
                         _egressIdToStreamId[streamId] = stream.Id;
                         _timerTickValueRateCounter = 0;
+
+                        if (_resourceIoRatesEnabled)
+                        {
+                            _egressIdToResourceIoRates[streamId] = new ResourceIoRates(_egressDiagnosticsOmfMessageCreator, streamId);
+                        }
                     }
 
                     _egressIdToIoRateMovingAverage[streamId].AddSample(valueCount);
+
+                    if (_resourceIoRatesEnabled && _egressIdToResourceIoRates.TryGetValue(streamId, out var resourceIoRates))
+                    {
+                        OmfResourceCounts resourceCounts = default;
+                        egressResourceCounts?.TryGetValue(streamId, out resourceCounts);
+                        resourceIoRates.AddSamples(resourceCounts);
+                    }
                 }
 
                 // an egress was removed.
@@ -233,6 +285,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     {
                         _egressIdToIoRateMovingAverage.Remove(streamId);
                         _egressIdToStreamId.Remove(streamId);
+                        _egressIdToResourceIoRates.TryRemove(streamId, out _);
                     }
                 }
 
@@ -241,7 +294,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     ResendAllTypesAndStreams();
                 }
 
-                if (_failedToUpdateIoRate || _failedToCreateDiagnosticsTypes)
+                if (_failedToCreateDiagnosticsTypes || (_failedToUpdateIoRate && !CanSendResourceIoRates()))
                 {
                     return;
                 }
@@ -255,35 +308,76 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
+    private bool CanSendResourceIoRates() => _resourceIoRatesEnabled && !_failedToUpdateResourceIoRates;
+
     private void SendDataRateEvent()
     {
         if (_timerTickValueRateCounter <= 0)
         {
             _timerTickValueRateCounter = SendIoRatePeriod;
 
-            foreach (var item in _egressIdToIoRateMovingAverage)
+            if (!_failedToUpdateIoRate)
             {
-                var dataRateMovingAverageValue = new IoRateEvent
-                {
-                    Timestamp = DateTime.UtcNow,
-                    IORate = item.Value.ComputeAverage(),
-                };
+                SendIoRateEvents();
+            }
 
-                try
-                {
-                    _diagnosticsMessageProcessor.WriteDiagnosticsValue(_egressIdToStreamId[item.Key],
-                        Classification.Dynamic, dataRateMovingAverageValue);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to process IORate diagnostics event. Stopping IORate diagnostics data collection.");
-
-                    _failedToUpdateIoRate = true;
-                }
+            if (CanSendResourceIoRates())
+            {
+                SendResourceIoRateEvents();
             }
         }
 
         _timerTickValueRateCounter--;
+    }
+
+    private void SendIoRateEvents()
+    {
+        foreach (var item in _egressIdToIoRateMovingAverage)
+        {
+            var dataRateMovingAverageValue = new IoRateEvent
+            {
+                Timestamp = DateTime.UtcNow,
+                IORate = item.Value.ComputeAverage(),
+            };
+
+            try
+            {
+                _diagnosticsMessageProcessor.WriteDiagnosticsValue(_egressIdToStreamId[item.Key],
+                    Classification.Dynamic, dataRateMovingAverageValue);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to process IORate diagnostics event. Stopping IORate diagnostics data collection.");
+
+                _failedToUpdateIoRate = true;
+            }
+        }
+    }
+
+    private void SendResourceIoRateEvents()
+    {
+        foreach (var resourceIoRates in _egressIdToResourceIoRates.Values)
+        {
+            foreach (var (streamId, movingAverage) in resourceIoRates.GetRates())
+            {
+                var ioRateEvent = new IoRateEvent
+                {
+                    Timestamp = DateTime.UtcNow,
+                    IORate = movingAverage.ComputeAverage(),
+                };
+
+                try
+                {
+                    _diagnosticsMessageProcessor.WriteDiagnosticsValue(streamId, Classification.Dynamic, ioRateEvent);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics event. Stopping resource IORate diagnostics data collection.");
+
+                    _failedToUpdateResourceIoRates = true;
+                }
+            }
+        }
     }
 
     private void CreateDiagnosticsTypesStreams()
@@ -316,6 +410,68 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         _healthService.ResendTypesAndStreams();
         ResendTypesAndStreams();
+    }
+
+    private void CreateResourceIoRateStreamsAndLinks(ResourceIoRates resourceIoRates)
+    {
+        var streams = resourceIoRates.Streams;
+        _diagnosticsMessageProcessor.WriteDiagnosticsStreams(streams);
+
+        foreach (var stream in streams)
+        {
+            var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
+        }
+    }
+
+    #endregion
+
+    #region Nested Types
+
+    /// <summary>
+    /// OMF 2.0 per-resource IO rate moving averages and streams for a single egress endpoint.
+    /// </summary>
+    private sealed class ResourceIoRates
+    {
+        private readonly MovingAverage _streamingValues = new(MovingAveragePeriod);
+        private readonly MovingAverage _assets = new(MovingAveragePeriod);
+        private readonly MovingAverage _events = new(MovingAveragePeriod);
+
+        public ResourceIoRates(EgressDiagnosticsOmfMessageCreator messageCreator, string endpointId)
+        {
+            Streams =
+            [
+                messageCreator.CreateIoRateStream(endpointId, StreamIoRateStreamName),
+                messageCreator.CreateIoRateStream(endpointId, AssetIoRateStreamName),
+                messageCreator.CreateIoRateStream(endpointId, EventIoRateStreamName),
+            ];
+        }
+
+        /// <summary>
+        /// Gets the StreamIORate, AssetIORate and EventIORate streams, in that order.
+        /// </summary>
+        public DataStream[] Streams { get; }
+
+        public void AddSamples(OmfResourceCounts resourceCounts)
+        {
+            _streamingValues.AddSample(resourceCounts.StreamingValues);
+            _assets.AddSample(resourceCounts.Assets);
+            _events.AddSample(resourceCounts.Events);
+        }
+
+        public void ClearSamples()
+        {
+            _streamingValues.ClearSamples();
+            _assets.ClearSamples();
+            _events.ClearSamples();
+        }
+
+        public IEnumerable<(string StreamId, MovingAverage MovingAverage)> GetRates()
+        {
+            yield return (Streams[0].Id, _streamingValues);
+            yield return (Streams[1].Id, _assets);
+            yield return (Streams[2].Id, _events);
+        }
     }
 
     #endregion

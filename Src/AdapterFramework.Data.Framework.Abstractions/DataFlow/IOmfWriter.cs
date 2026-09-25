@@ -39,6 +39,12 @@ public interface IOmfWriter : IDisposable
     long GetAndResetEgressedValuesCounter();
 
     /// <summary>
+    /// Gets the number of OMF 2.0 streaming values, assets and events successfully delivered since the last call to this method.
+    /// </summary>
+    /// <returns>The per-resource number of instances successfully delivered.</returns>
+    OmfResourceCounts GetAndResetEgressedResourceCounters() => default;
+
+    /// <summary>
     /// Updates configuration for an OmfWriter. Must be equivalent to previous configuration (.Equals)
     /// </summary>
     /// <param name="configuration">The configuration to be updated to.</param>
