@@ -1014,6 +1014,217 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
+    public void InstrumentedMessageProcessor_ResendTypesAndStreams_PreservesSchemaPartitionKey_Test()
+    {
+        var resending = false;
+        var resentTypeKeys = new List<PartitionKey>();
+        var resentStreamKeys = new List<PartitionKey>();
+        var resentLinkKeys = new List<PartitionKey>();
+        var resentWithoutKeysCount = 0;
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataType _, PartitionKey key, MessageAction _) => AddIfResending(resentTypeKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteStream(It.IsAny<DataStream>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataStream _, PartitionKey key, MessageAction _) => AddIfResending(resentStreamKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteSchemaRelationship(It.IsAny<Link>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((Link _, PartitionKey key, MessageAction _) => AddIfResending(resentLinkKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<MessageAction>()))
+            .Callback(() => resentWithoutKeysCount += resending ? 1 : 0);
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase + "Keyed" }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase + "Unkeyed" }, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(new DataStream { Id = TestStreamIdBase }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteSchemaRelationship(new Link(new DataTypeLinkNode("E1", null) { Property = "p1" }, new DataTypeLinkNode("int", null)), PartitionKey.Key1, MessageAction.Create);
+
+        resending = true;
+        instrumentedMessageProcessor.ResendTypesAndStreams();
+
+        Assert.Equal(PartitionKey.Key1, Assert.Single(resentTypeKeys));
+        Assert.Equal(PartitionKey.Key1, Assert.Single(resentStreamKeys));
+        Assert.Equal(PartitionKey.Key1, Assert.Single(resentLinkKeys));
+        Assert.Equal(1, resentWithoutKeysCount);
+
+        void AddIfResending(List<PartitionKey> target, PartitionKey key)
+        {
+            if (resending)
+            {
+                target.Add(key);
+            }
+        }
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_ResendTypesAndStreams_ResendsOncePerKeyWrittenAcrossRewrites_Test()
+    {
+        var resending = false;
+        var resentTypeKeys = new List<PartitionKey>();
+        var resentStreamKeys = new List<PartitionKey>();
+        var resentLinkKeys = new List<PartitionKey>();
+        var resentTypesWithoutKeysCount = 0;
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataType _, PartitionKey key, MessageAction _) => AddIfResending(resentTypeKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteStream(It.IsAny<DataStream>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataStream _, PartitionKey key, MessageAction _) => AddIfResending(resentStreamKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteSchemaRelationship(It.IsAny<Link>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((Link _, PartitionKey key, MessageAction _) => AddIfResending(resentLinkKeys, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<MessageAction>()))
+            .Callback(() => resentTypesWithoutKeysCount += resending ? 1 : 0);
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key2, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key3, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, MessageAction.Create);
+
+        instrumentedMessageProcessor.WriteStream(new DataStream { Id = TestStreamIdBase }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(new DataStream { Id = TestStreamIdBase }, PartitionKey.Key4, MessageAction.Create);
+
+        instrumentedMessageProcessor.WriteSchemaRelationship(CreateLink(), PartitionKey.Key5, MessageAction.Create);
+        instrumentedMessageProcessor.WriteSchemaRelationship(CreateLink(), PartitionKey.Key6, MessageAction.Create);
+
+        resending = true;
+        instrumentedMessageProcessor.ResendTypesAndStreams();
+
+        Assert.Equal([PartitionKey.Key1, PartitionKey.Key2, PartitionKey.Key3], resentTypeKeys);
+        Assert.Equal(1, resentTypesWithoutKeysCount);
+        Assert.Equal([PartitionKey.Key1, PartitionKey.Key4], resentStreamKeys);
+        Assert.Equal([PartitionKey.Key5, PartitionKey.Key6], resentLinkKeys);
+
+        static Link CreateLink() => new(new DataTypeLinkNode("E1", null) { Property = "p1" }, new DataTypeLinkNode("int", null));
+
+        void AddIfResending(List<PartitionKey> target, PartitionKey key)
+        {
+            if (resending)
+            {
+                target.Add(key);
+            }
+        }
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_ResendTypesAndStreams_GroupsByPartitionKeyInCacheOrder_Test()
+    {
+        var resending = false;
+        var resent = new List<(string Id, PartitionKey? Key)>();
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataType dataType, PartitionKey key, MessageAction _) => AddIfResending(dataType.Id, key));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<MessageAction>()))
+            .Callback((DataType dataType, MessageAction _) => AddIfResending(dataType.Id, null));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteStream(It.IsAny<DataStream>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataStream dataStream, PartitionKey key, MessageAction _) => AddIfResending(dataStream.Id, key));
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        var typeA = new DynamicDataType { Id = TestTypeIdBase + "A" };
+        var typeB = new DynamicDataType { Id = TestTypeIdBase + "B" };
+        var typeC = new DynamicDataType { Id = TestTypeIdBase + "C" };
+        var stream = new DataStream { Id = TestStreamIdBase };
+
+        instrumentedMessageProcessor.WriteType(typeA, PartitionKey.Key2, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(typeB, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(typeC, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(typeC, PartitionKey.Key2, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(typeB, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(stream, PartitionKey.Key1, MessageAction.Create);
+
+        resending = true;
+        instrumentedMessageProcessor.ResendTypesAndStreams();
+
+        (string, PartitionKey?)[] expected =
+        [
+            (typeB.Id, null),
+            (typeB.Id, PartitionKey.Key1),
+            (typeC.Id, PartitionKey.Key1),
+            (typeA.Id, PartitionKey.Key2),
+            (typeC.Id, PartitionKey.Key2),
+            (stream.Id, PartitionKey.Key1),
+        ];
+        Assert.Equal(expected, resent);
+
+        void AddIfResending(string id, PartitionKey? key)
+        {
+            if (resending)
+            {
+                resent.Add((id, key));
+            }
+        }
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_WriteStream_SameObjectPerPartitionKey_PrefixesIdOnce_Test()
+    {
+        const string Prefix = "Prefix1.";
+        var sentIds = new List<(string Id, PartitionKey? Key)>();
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteStream(It.IsAny<DataStream>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataStream dataStream, PartitionKey key, MessageAction _) => sentIds.Add((dataStream.Id, key)));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteStream(It.IsAny<DataStream>(), It.IsAny<MessageAction>()))
+            .Callback((DataStream dataStream, MessageAction _) => sentIds.Add((dataStream.Id, null)));
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+        instrumentedMessageProcessor.SetStreamIdPrefix(Prefix);
+
+        var dataStream = new DataStream { Id = TestStreamIdBase };
+
+        instrumentedMessageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(dataStream, PartitionKey.Key2, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(dataStream, MessageAction.Create);
+
+        const string ExpectedId = Prefix + TestStreamIdBase;
+        (string, PartitionKey?)[] expected = [(ExpectedId, PartitionKey.Key1), (ExpectedId, PartitionKey.Key2), (ExpectedId, null)];
+        Assert.Equal(expected, sentIds);
+        Assert.Equal(ExpectedId, dataStream.Id);
+        Assert.Equal(1, instrumentedMessageProcessor.GetStreamCount());
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_WriteStreams_SameArrayPerPartitionKey_PrefixesIdsOnce_Test()
+    {
+        const string Prefix = "Prefix1.";
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+        instrumentedMessageProcessor.SetStreamIdPrefix(Prefix);
+
+        DataStream[] dataStreams = [new DataStream { Id = TestStreamIdBase + "1" }, new DataStream { Id = TestStreamIdBase + "2" }];
+
+        instrumentedMessageProcessor.WriteStreams(dataStreams, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStreams(dataStreams, PartitionKey.Key2, MessageAction.Create);
+
+        Assert.Equal([Prefix + TestStreamIdBase + "1", Prefix + TestStreamIdBase + "2"], dataStreams.Select(x => x.Id));
+        Assert.Equal(2, instrumentedMessageProcessor.GetStreamCount());
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_WriteStream_SameObjectAfterCallerResetsId_PrefixesAgain_Test()
+    {
+        const string Prefix = "Prefix1.";
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+        instrumentedMessageProcessor.SetStreamIdPrefix(Prefix);
+
+        var dataStream = new DataStream { Id = TestStreamIdBase };
+        instrumentedMessageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create);
+
+        dataStream.Id = TestStreamIdBase;
+        instrumentedMessageProcessor.WriteStream(dataStream, PartitionKey.Key2, MessageAction.Create);
+
+        Assert.Equal(Prefix + TestStreamIdBase, dataStream.Id);
+        Assert.Equal(1, instrumentedMessageProcessor.GetStreamCount());
+    }
+
+    [Fact]
     public void InstrumentedMessageProcessor_WriteType_ReWrite_PreservesOriginalOrderAndUpdatesAction_Test()
     {
         var sentTypes = new List<(string Id, MessageAction Action)>();

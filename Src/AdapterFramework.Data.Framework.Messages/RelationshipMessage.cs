@@ -17,10 +17,13 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 
 namespace AdapterFramework.Data.Framework.Messages;
 
-public class RelationshipMessage(Link relationship, MessageAction messageAction) : Message
+public class RelationshipMessage(Link relationship, MessageAction messageAction, PartitionKey? partitionKey = null) : Message
 {
     public Link Relationship { get; } = relationship;
 
     /// <summary>Gets the <see cref="Abstractions.Messages.MessageAction"/> describing the schema operation.</summary>
     public MessageAction MessageAction { get; } = messageAction;
+
+    /// <summary>Gets the PartitionKey that will be sent with the relationship to the OMFIngress Service.</summary>
+    public PartitionKey? PartitionKey { get; } = partitionKey;
 }

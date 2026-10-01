@@ -167,12 +167,30 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     }
 
     /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+
+        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(1, [dataType], messageAction));
+        _schemaGroupingBlock?.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
 
         _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
         _schemaGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
+    }
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+
+        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
+        _schemaGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -185,12 +203,30 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     }
 
     /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+
+        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction));
+        _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
 
         _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
         _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
+    }
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+
+        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
+        _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -311,6 +347,11 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default)
     {
         _schemaGroupingBlock?.Post(new RelationshipMessage(link, messageAction));
+    }
+
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    {
+        _schemaGroupingBlock?.Post(new RelationshipMessage(link, messageAction, partitionKey));
     }
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)

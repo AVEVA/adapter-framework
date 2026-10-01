@@ -454,6 +454,129 @@ public class SerializationBlock_Tests
         Assert.Equal(1, _messageActionTriggerCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SerializationBlock_Post_SchemaMessage_WithPartitionKey_SendsEachChunkWithPartitionKey(bool isMessageOversize)
+    {
+        var testLogger = new TestLogger();
+        var typesArray = new[] { _dataType, _dataType, };
+        var flushedMessages = new List<ISerializedOmfMessage>();
+
+        var rentedArray = ArrayPool<DataType>.Shared.Rent(typesArray.Length);
+        typesArray.CopyTo(rentedArray, 0);
+
+        var schemaMessageByteCount = new OmfJsonSerializer().Serialize(new SchemaMessageWrapper
+        {
+            Types = new ArraySegment<DataType>(rentedArray, 0, typesArray.Length),
+        }).Length;
+
+        using var schemaMessage = new SchemaMessage(rentedArray, null, null, typesArray.Length, 0, 0, MessageAction.Default, true, PartitionKey.Key2);
+
+        using var serializationBlock = new SerializationBlock(null, null, schemaMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null,
+            message =>
+            {
+                lock (flushedMessages)
+                {
+                    flushedMessages.Add(message);
+                }
+            },
+            new CancellationToken());
+
+        serializationBlock.Post(schemaMessage);
+
+        var expectedMessageCount = isMessageOversize ? 2 : 1;
+        Assert.True(SpinWait.SpinUntil(() => { lock (flushedMessages) { return flushedMessages.Count >= expectedMessageCount; } }, WaitTime));
+
+        // Give any unexpected extra copies a chance to arrive.
+        Thread.Sleep(200);
+
+        lock (flushedMessages)
+        {
+            Assert.Equal(expectedMessageCount, flushedMessages.Count);
+            Assert.All(flushedMessages, message => Assert.Equal(PartitionKey.Key2, message.PartitionKey));
+            Assert.All(flushedMessages, message => Assert.Equal(MessageType.Schema, message.MessageType));
+            Assert.Equal(typesArray.Length, flushedMessages.Sum(message => message.ItemCount));
+        }
+    }
+
+    [Fact]
+    public void SerializationBlock_Post_SchemaMessage_WithPartitionKey_SplitByPart_SendsEachPartWithPartitionKey()
+    {
+        var testLogger = new TestLogger();
+        var serializer = new OmfJsonSerializer();
+        var link = new Link(new DataTypeLinkNode("sourceId", "sourceIndex"), new DataTypeLinkNode("targetId", "targetIndex"));
+        var flushedMessages = new List<ISerializedOmfMessage>();
+
+        var typesByteCount = serializer.Serialize(new SchemaMessageWrapper { Types = new[] { _dataType } }).Length;
+        var streamsByteCount = serializer.Serialize(new SchemaMessageWrapper { Streams = new[] { _stream } }).Length;
+        var linksByteCount = serializer.Serialize(new SchemaMessageWrapper { Relationships = new[] { link } }).Length;
+        var wholeByteCount = serializer.Serialize(new SchemaMessageWrapper { Types = new[] { _dataType }, Streams = new[] { _stream }, Relationships = new[] { link } }).Length;
+        var maxByteCount = Math.Max(typesByteCount, Math.Max(streamsByteCount, linksByteCount));
+
+        // Precondition: the whole message is oversized but each part fits on its own.
+        Assert.True(wholeByteCount > maxByteCount);
+
+        using var schemaMessage = new SchemaMessage([_dataType], [_stream], [link], 1, 1, 1, MessageAction.Default, false, PartitionKey.Key1);
+
+        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, testLogger, -1, serializer, null,
+            message =>
+            {
+                lock (flushedMessages)
+                {
+                    flushedMessages.Add(message);
+                }
+            },
+            new CancellationToken());
+
+        serializationBlock.Post(schemaMessage);
+
+        const int partCount = 3;
+        Assert.True(SpinWait.SpinUntil(() => { lock (flushedMessages) { return flushedMessages.Count == partCount; } }, WaitTime));
+        Assert.False(testLogger.AreErrorsWarningsInLog());
+        Assert.All(flushedMessages, message => Assert.Equal(PartitionKey.Key1, message.PartitionKey));
+        Assert.All(flushedMessages, message => Assert.Equal(1, message.ItemCount));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SerializationBlock_Post_SchemaMessage_WithoutPartitionKey_SendsWithoutPartitionKey(bool isMessageOversize)
+    {
+        var testLogger = new TestLogger();
+        var typesArray = new[] { _dataType, _dataType, };
+        var flushedMessages = new List<ISerializedOmfMessage>();
+
+        var schemaMessageByteCount = new OmfJsonSerializer().Serialize(new SchemaMessageWrapper { Types = typesArray }).Length;
+
+        using var schemaMessage = new SchemaMessage(typesArray, null, null, typesArray.Length, 0, 0, MessageAction.Default, false);
+
+        using var serializationBlock = new SerializationBlock(null, null, schemaMessageByteCount + (isMessageOversize ? -1 : 1), testLogger, -1, new OmfJsonSerializer(), null,
+            message =>
+            {
+                lock (flushedMessages)
+                {
+                    flushedMessages.Add(message);
+                }
+            },
+            new CancellationToken());
+
+        serializationBlock.Post(schemaMessage);
+
+        var expectedMessageCount = isMessageOversize ? 2 : 1;
+        Assert.True(SpinWait.SpinUntil(() => { lock (flushedMessages) { return flushedMessages.Count >= expectedMessageCount; } }, WaitTime));
+
+        // Give any unexpected extra copies a chance to arrive.
+        Thread.Sleep(200);
+
+        lock (flushedMessages)
+        {
+            Assert.Equal(expectedMessageCount, flushedMessages.Count);
+            Assert.All(flushedMessages, message => Assert.Null(message.PartitionKey));
+            Assert.Equal(typesArray.Length, flushedMessages.Sum(message => message.ItemCount));
+        }
+    }
+
     [Fact]
     public void SerializationBlock_Post_SchemaMessage_OverSize_Types_Success()
     {

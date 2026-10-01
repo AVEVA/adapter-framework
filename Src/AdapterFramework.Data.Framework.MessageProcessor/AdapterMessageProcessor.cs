@@ -122,9 +122,23 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     }
 
     /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowIfInvalidSchemaPartitionKey(partitionKey);
+        _messageProcessor.WriteType(dataType, partitionKey, messageAction);
+    }
+
+    /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
     {
         _messageProcessor.WriteTypes(dataTypes, messageAction);
+    }
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowIfInvalidSchemaPartitionKey(partitionKey);
+        _messageProcessor.WriteTypes(dataTypes, partitionKey, messageAction);
     }
 
     /// <inheritdoc/>
@@ -134,9 +148,23 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     }
 
     /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowIfInvalidSchemaPartitionKey(partitionKey);
+        _messageProcessor.WriteStream(dataStream, partitionKey, messageAction);
+    }
+
+    /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
     {
         _messageProcessor.WriteStreams(dataStreams, messageAction);
+    }
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowIfInvalidSchemaPartitionKey(partitionKey);
+        _messageProcessor.WriteStreams(dataStreams, partitionKey, messageAction);
     }
 
     /// <inheritdoc/>
@@ -272,6 +300,17 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
         _messageProcessor.WriteSchemaRelationship(link, messageAction);
     }
 
+    public void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    {
+        if (_omfVersion == OmfVersion.Omf12)
+        {
+            throw new NotSupportedException("Type relationships are not supported in OMF 1.2.");
+        }
+
+        ThrowIfInvalidPartitionKey(partitionKey);
+        _messageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
+    }
+
     public void WriteEvent<T>(string typeId, string id, string name, string description, DateTime startTime, DateTime? endTime, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null,
         MessageAction messageAction = MessageAction.Default) where T : class
@@ -283,5 +322,19 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
 
         _messageProcessor.WriteEvent(id, typeId, name, description, null, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
     }
+    #endregion
+
+    #region Private Methods
+
+    private void ThrowIfInvalidSchemaPartitionKey(PartitionKey partitionKey)
+    {
+        if (_omfVersion == OmfVersion.Omf12)
+        {
+            throw new NotSupportedException("Schema partition keys are not supported in OMF 1.2.");
+        }
+
+        ThrowIfInvalidPartitionKey(partitionKey);
+    }
+
     #endregion
 }
