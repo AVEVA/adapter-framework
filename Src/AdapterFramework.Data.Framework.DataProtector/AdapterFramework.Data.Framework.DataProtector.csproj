@@ -1,4 +1,4 @@
-<!--
+﻿<!--
 Copyright 2018-2026 AVEVA Group Limited
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.DataProtection.Extensions" Version="10.0.10" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>
