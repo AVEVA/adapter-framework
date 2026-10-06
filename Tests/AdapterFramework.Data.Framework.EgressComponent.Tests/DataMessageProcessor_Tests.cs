@@ -467,6 +467,36 @@ public class DataMessageProcessor_Tests
     }
 
     [Fact]
+    public void DataMessageProcessor_WriteSchemaWithPartitionKey_Omf12_Throws()
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf12);
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            new Mock<IFailoverDataMessageProcessor>().Object,
+            mockApplicationManifest.Object);
+
+        var dataType = new DynamicDataType { Id = "TestType" };
+        var dataStream = new DataStream { Id = "TestStreamId", TypeId = dataType.Id };
+        var link = new Link(new DataTypeLinkNode("TestType", null), new DataTypeLinkNode("int", null));
+
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteTypes([dataType], PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStreams([dataStream], PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteSchemaRelationship(link, PartitionKey.Key1, MessageAction.Create));
+    }
+
+    [Fact]
     public void DataMessageProcessor_WriteSchemaOncePerPartitionKey_Omf20_SendsOneSchemaMessagePerPartitionKey()
     {
         var sentMessages = new List<ISerializedOmfMessage>();

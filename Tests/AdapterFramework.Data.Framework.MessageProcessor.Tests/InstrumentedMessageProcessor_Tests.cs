@@ -1109,6 +1109,45 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
+    public void InstrumentedMessageProcessor_ResendTypesAndStreams_DeleteOnOneKey_ResendsDeleteToEveryPartitionWritten_Test()
+    {
+        var resending = false;
+        var resent = new List<(PartitionKey? Key, MessageAction Action)>();
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()))
+            .Callback((DataType _, PartitionKey key, MessageAction action) => AddIfResending(key, action));
+        mockOmfMessageProcessor.Setup(mp => mp.WriteType(It.IsAny<DataType>(), It.IsAny<MessageAction>()))
+            .Callback((DataType _, MessageAction action) => AddIfResending(null, action));
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key2, MessageAction.Create);
+        instrumentedMessageProcessor.WriteType(new DynamicDataType { Id = TestTypeIdBase }, PartitionKey.Key2, MessageAction.Delete);
+
+        resending = true;
+        instrumentedMessageProcessor.ResendTypesAndStreams();
+
+        (PartitionKey?, MessageAction)[] expected =
+        [
+            (null, MessageAction.Delete),
+            (PartitionKey.Key1, MessageAction.Delete),
+            (PartitionKey.Key2, MessageAction.Delete),
+        ];
+        Assert.Equal(expected, resent);
+
+        void AddIfResending(PartitionKey? key, MessageAction action)
+        {
+            if (resending)
+            {
+                resent.Add((key, action));
+            }
+        }
+    }
+
+    [Fact]
     public void InstrumentedMessageProcessor_ResendTypesAndStreams_GroupsByPartitionKeyInCacheOrder_Test()
     {
         var resending = false;
@@ -1203,6 +1242,29 @@ public class InstrumentedMessageProcessor_Tests
 
         Assert.Equal([Prefix + TestStreamIdBase + "1", Prefix + TestStreamIdBase + "2"], dataStreams.Select(x => x.Id));
         Assert.Equal(2, instrumentedMessageProcessor.GetStreamCount());
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_WriteStream_WithoutMetadata_DoesNotShareMetadataAcrossStreams_Test()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType)
+        {
+            StreamMetadataLevel = MetadataInfo.Low,
+        };
+
+        var firstStream = new DataStream { Id = TestStreamIdBase + "1" };
+        var secondStream = new DataStream { Id = TestStreamIdBase + "2" };
+
+        instrumentedMessageProcessor.WriteStream(firstStream, PartitionKey.Key1, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStream(secondStream, PartitionKey.Key1, MessageAction.Create);
+        var firstStreamMetadata = firstStream.Metadata;
+        instrumentedMessageProcessor.WriteStream(firstStream, PartitionKey.Key2, MessageAction.Create);
+
+        Assert.NotSame(firstStream.Metadata, secondStream.Metadata);
+        Assert.Same(firstStreamMetadata, firstStream.Metadata);
+        Assert.Equal(TestComponentType, firstStream.Metadata[EdgeSystemConstants.AdapterTypeString]);
+        Assert.Equal(TestComponentType, secondStream.Metadata[EdgeSystemConstants.AdapterTypeString]);
     }
 
     [Fact]

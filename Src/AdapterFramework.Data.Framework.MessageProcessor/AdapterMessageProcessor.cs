@@ -300,6 +300,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
         _messageProcessor.WriteSchemaRelationship(link, messageAction);
     }
 
+    /// <inheritdoc/>
     public void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
     {
         if (_omfVersion == OmfVersion.Omf12)

@@ -492,7 +492,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         {
             if (dataStream.Metadata == null)
             {
-                dataStream.Metadata = _metaDataDictionary;
+                dataStream.Metadata = new Dictionary<string, object>(_metaDataDictionary);
             }
             else
             {
@@ -553,7 +553,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
     #region Private Types
 
-    // Merged on rewrite so a resend reaches every partition the item was ever written to.
+    // Keys are only ever added: schema must stay ahead of dependent instance data in every partition it has reached.
     // IncludeDefaultPartition is additive to Keys: it also sends once with no key, which the service routes by client identity.
     private readonly record struct PartitionTargets(PartitionKey[] Keys, bool IncludeDefaultPartition)
     {

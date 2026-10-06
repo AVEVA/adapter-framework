@@ -170,9 +170,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        ThrowIfSchemaPartitionKeysUnsupported();
 
-        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(1, [dataType], messageAction));
-        _schemaGroupingBlock?.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -188,9 +188,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        ThrowIfSchemaPartitionKeysUnsupported();
 
-        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
-        _schemaGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -206,9 +206,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        ThrowIfSchemaPartitionKeysUnsupported();
 
-        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction));
-        _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -224,9 +224,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        ThrowIfSchemaPartitionKeysUnsupported();
 
-        _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
-        _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -349,9 +349,13 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         _schemaGroupingBlock?.Post(new RelationshipMessage(link, messageAction));
     }
 
+    /// <inheritdoc/>
     public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
     {
-        _schemaGroupingBlock?.Post(new RelationshipMessage(link, messageAction, partitionKey));
+        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new RelationshipMessage(link, messageAction, partitionKey));
     }
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
@@ -401,6 +405,15 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
 
         failoverDataMessageProcessor.Initialize();
         return failoverDataMessageProcessor.ProcessOmfMessage;
+    }
+
+    // Only the OMF 2.0+ pipeline has a schema grouping block; the OMF 1.2 pipeline would drop the key.
+    private void ThrowIfSchemaPartitionKeysUnsupported()
+    {
+        if (_schemaGroupingBlock == null)
+        {
+            throw new NotSupportedException("Schema partition keys are not supported in OMF 1.2.");
+        }
     }
 
     #endregion
