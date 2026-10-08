@@ -1,6 +1,7 @@
 # OMF 2.0 Awaitable Acceptance: Implementation Progress
 
 **Date:** 2026-10-07  
+**Updated:** 2026-10-08, Phase 1 stragglers  
 **Branch:** `features/acceptance-api`, based on 2261f3a  
 **Design documents (Research repo, `4981647-test-apps/docs`):**
 
@@ -19,7 +20,7 @@ the review.
 | --- | --- |
 | AW-1. `SerializationBlock` single-producer violation | Done |
 | AW-2. Failover conversion drops the OMF version and partition key | Done |
-| Phase 1. Contracts and coordinator | Done. The coordinator isn't connected to the host or the pipeline yet (§6). |
+| Phase 1. Contracts and coordinator | Done, including host wiring. No processor creates scopes until Phase 2. |
 | Phase 2. Scope identity through grouping and serialization | Not started |
 | Phase 3. Persistence | Not started |
 | Phase 4. Delivery and acceptance | Not started |
@@ -96,12 +97,27 @@ with a simulated pipeline. [OmfOutcomeReason_Tests.cs](../Tests/AdapterFramework
 covers reason codes and message truncation. The new test project is added to `AdapterFramework.sln`
 by hand, because `dotnet sln add` adds x64 and x86 configurations to every project.
 
-### 2.5 Running the tests
+### 2.5 Phase 1: host wiring
+
+- [EgressComponentExtensions.cs](../Src/AdapterFramework.Data.Framework.EgressComponent/Extensions/EgressComponentExtensions.cs)
+  registers one `OmfAwaitableCoordinator` singleton in `AddEgress`.
+- [DataMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.EgressComponent/DataMessageProcessor.cs)
+  takes the coordinator as an optional last constructor parameter and sets the OMF version from the
+  application manifest.
+- [FailoverDataMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.Failover/FailoverDataMessageProcessor.cs)
+  takes the coordinator as an optional last constructor parameter and sets the failover mode in
+  `UpdateMode`.
+- Both parameters default to null, so existing callers and test doubles are unchanged.
+- Tests check the singleton registration, that OMF 2.0 allows scopes and OMF 1.2 doesn't, and that
+  hot mode blocks scopes until the mode changes to warm.
+
+### 2.6 Running the tests
 
 ```powershell
 dotnet test Tests\AdapterFramework.Data.Framework.Messages.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.Abstractions.Tests --filter "FullyQualifiedName~Awaitable"
 dotnet test Tests\AdapterFramework.Data.Framework.Failover.Tests
+dotnet test Tests\AdapterFramework.Data.Framework.EgressComponent.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.DataFlow.Tests --filter "FullyQualifiedName~SerializationBlock_Tests"
 ```
 
@@ -256,7 +272,7 @@ They are implemented and tested, and recorded in the departures document:
 | --- | --- |
 | Failures complete the outcome early, before materialization | Implemented and tested. Departs from plan §7.9. |
 | `AnyCompleteEndpoint` with non-overlapping endpoint sets gives `Discarded` (`NoEndpoints`) | Implemented and tested |
-| A mix of local and peer coverage gives `PeerCovered` | Implemented. Only the fully peer-covered case is tested; the mixed case can't happen before Phase 6. |
+| A mix of local and peer coverage gives `PeerCovered` | Implemented and tested in both endpoint modes. It can't happen in practice before Phase 6. |
 | Active-scope limit of 1,000 | Placeholder; still an open decision |
 
 ### 5.4 When do non-overlapping endpoint sets occur?
@@ -287,8 +303,12 @@ bodies per scope × endpoints:
   adding bodies. Scopes that are never disposed also hold their tracking.
 
 Scopes are meant for bounded units of work, such as one page or one scan interval. A per-scope body
-limit can be added if real use needs it. Plan §15.8 calls for a test that memory stays bounded
-during a long outage; it isn't written yet.
+limit can be added if real use needs it.
+
+`Tracking_AtActiveScopeLimitDuringOutage_StaysBoundedAndIsReleasedOnDispose` covers plan §15.8: two
+scopes at the limit with 50 bodies each and two endpoints receive 200 retry attempts per delivery.
+The tracked body count stays at 100, each delivery keeps only its latest reason, new scopes are
+refused, and disposing both scopes releases every body.
 
 ### 5.6 Which phase adds the grouping block sidecars?
 
@@ -296,17 +316,27 @@ Phase 2, step 2, together with per-scope pending counts, seal and materializatio
 `FlushOnSeal`. Step 1 passes the scope token through the processor chain, and step 3 slices the
 sidecars through serialization and registers bodies.
 
-### 5.7 What's left of Phase 1?
+### 5.7 What was left of Phase 1, and how was it closed?
 
-The plan's three steps are done and its exit criterion is met. What remains:
+| Item | Resolution |
+| --- | --- |
+| Host wiring | Done (§2.5). The coordinator is a singleton, and the OMF version and failover mode reach it from the pipeline. |
+| Mixed peer-coverage test | Done, for both endpoint modes |
+| Bounded memory during an outage (plan §15.8) | Done (§5.5) |
+| Shutdown order (plan §12) | Safe today; becomes structural in Phase 4 (below) |
+| Metrics (plan §7.9) | Deferred to Phase 4, when there are real events to count |
 
-- **Host wiring.** The coordinator isn't registered for dependency injection, and nothing calls
-  `SetOmfVersion` or `SetFailoverMode`. In a running host, `TryCreateScope` would always throw
-  `NotSupportedException`. Nothing calls it yet.
-- **Shutdown order.** Waits should be cancelled only after producers and writers stop (plan §12).
-  This depends on when the host disposes the coordinator.
-- **Tests:** the mixed peer-coverage case, and bounded memory during an outage (plan §15.8).
-- **Metrics (plan §7.9):** deferred to Phase 4, when there are real events to count.
+**Shutdown order.** Plan §12 cancels waits only after producers and writers stop. The host stops
+adapters in `HostedComponentsService.StopAsync` before the container disposes anything, so no adapter
+is still waiting when the coordinator is disposed. The container disposes singletons in reverse order
+of creation. Today the coordinator is created after the endpoint manager, so it's disposed before the
+writers' final flush. That doesn't matter yet, because nothing waits by then. In Phase 4 the endpoint
+manager and writers depend on the coordinator, so it's created before them and disposed after them.
+
+**Known gap until Phase 6.** Changing the failover mode to hot while scopes are active blocks new
+scopes, but doesn't touch existing ones. Their later bodies go to the failover buffer, never get
+deliveries, and their waits time out. Mode changes are rare configuration events, and Phase 6
+defines what happens to them.
 
 ### 5.8 Why is hot failover rejected?
 
@@ -342,9 +372,8 @@ criterion includes warm and cold. Caveats:
 
 ## 6. Next steps
 
-1. Register the coordinator for dependency injection, and have `DataMessageProcessor` and
-   `FailoverDataMessageProcessor` set the OMF version and failover mode.
-2. Add the mixed peer-coverage and bounded-memory tests.
-3. Phase 2: `IScopedMessageProcessor` and core write methods through the processor chain, the scope
+1. Phase 2: `IScopedMessageProcessor` and core write methods through the processor chain, the scope
    classes that implement the write methods, sidecars and barriers in the grouping blocks, and
    sidecar slicing in serialization.
+2. Phase 4: make the endpoint manager and writers depend on the coordinator, which also fixes the
+   shutdown order (§5.7), and add coordinator metrics.
