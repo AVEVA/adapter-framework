@@ -83,7 +83,7 @@ public class OmfWriter : IOmfWriter
     private bool _firstStatusSent;
     private bool _disposed;
     private long _valueCount;
-    private long _streamingValueCount;
+    private long _streamValueCount;
     private long _assetCount;
     private long _eventCount;
     private MessageType _messageType;
@@ -213,7 +213,7 @@ public class OmfWriter : IOmfWriter
     public OmfResourceCounts GetAndResetEgressedResourceCounters()
     {
         return new OmfResourceCounts(
-            Interlocked.Exchange(ref _streamingValueCount, 0),
+            Interlocked.Exchange(ref _streamValueCount, 0),
             Interlocked.Exchange(ref _assetCount, 0),
             Interlocked.Exchange(ref _eventCount, 0));
     }
@@ -418,7 +418,7 @@ public class OmfWriter : IOmfWriter
             return;
         }
 
-        Interlocked.Add(ref _streamingValueCount, resourceCounts.StreamingValues);
+        Interlocked.Add(ref _streamValueCount, resourceCounts.StreamValues);
         Interlocked.Add(ref _assetCount, resourceCounts.Assets);
         Interlocked.Add(ref _eventCount, resourceCounts.Events);
     }
@@ -436,6 +436,9 @@ public class OmfWriter : IOmfWriter
         {
             HandleResponse(_cachedResponse, serializedMessage);
             _messageType = serializedMessage.MessageType;
+
+            // Dropped without being sent. IORate still counts it (ItemCount), as it did before resource counts
+            // existed, but the resource rates only count messages the endpoint accepted.
             return (true, false);
         }
 

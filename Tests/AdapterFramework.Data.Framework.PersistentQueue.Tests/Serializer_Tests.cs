@@ -156,6 +156,25 @@ public class Serializer_Tests : IDisposable
     }
 
     [Fact]
+    public void Serializer_DeserializeDataItem_V3ThenV4InSameStream_Success()
+    {
+        var v3Item = new DataItem(DataItemVersion.V3, new byte[] { 1, 2, 3 });
+        var v4Item = new DataItem(DataItemVersion.V4, new byte[] { 4, 5, 6, 7 });
+
+        _serializer.SerializeDataItem(_stream, v3Item);
+        _serializer.SerializeDataItem(_stream, v4Item);
+        _stream.Position = 0;
+
+        var first = _serializer.DeserializeDataItem(_stream);
+        var second = _serializer.DeserializeDataItem(_stream);
+
+        Assert.Equal(DataItemVersion.V3, first.Version);
+        Assert.Equal(v3Item.Data, first.Data);
+        Assert.Equal(DataItemVersion.V4, second.Version);
+        Assert.Equal(v4Item.Data, second.Data);
+    }
+
+    [Fact]
     public void Serializer_DeserializeDataItem_FileNotLongEnough_ResetsStreamPositionReturnsNull()
     {
         // Test empty stream

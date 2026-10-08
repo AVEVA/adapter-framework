@@ -174,8 +174,8 @@ public class SerializationBlock : BaseBlock<Message>
         return numItems;
     }
 
-    private static OmfResourceCounts GetStreamingValueResourceCounts(MessageType messageType, int streamingValueCount) =>
-        messageType == MessageType.Instance ? new OmfResourceCounts(streamingValueCount, 0, 0) : default;
+    private static OmfResourceCounts GetStreamValueResourceCounts(MessageType messageType, int streamValueCount) =>
+        messageType == MessageType.Instance ? new OmfResourceCounts(streamValueCount, 0, 0) : default;
 
     private static OmfResourceCounts GetInstanceResourceCounts<T>(int count)
     {
@@ -647,7 +647,7 @@ public class SerializationBlock : BaseBlock<Message>
                 }
 
                 var count = GetStreamDataValuesCount(segment, messageType);
-                Flush(count, messageType, bytes, messageAction, partitionKey, GetStreamingValueResourceCounts(messageType, count));
+                Flush(count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, count));
             }
         }
     }
@@ -698,7 +698,7 @@ public class SerializationBlock : BaseBlock<Message>
             }
             else
             {
-                Flush(segment.Count, messageType, bytes, messageAction, partitionKey, GetStreamingValueResourceCounts(messageType, segment.Count));
+                Flush(segment.Count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, segment.Count));
             }
         }
     }
@@ -713,8 +713,8 @@ public class SerializationBlock : BaseBlock<Message>
     {
         _flushAction(new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey)
         {
-            // OMF 1.3 also uses instance messages, but per-resource egress rates are only published for OMF 2.0.
-            ResourceCounts = _omfVersion == OmfVersion.Omf20 ? resourceCounts : default,
+            // OMF 1.3 also uses instance messages, but per-resource egress rates are only published for OMF 2.0 and later.
+            ResourceCounts = _omfVersion >= OmfVersion.Omf20 ? resourceCounts : default,
         });
     }
 

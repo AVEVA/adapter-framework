@@ -792,7 +792,7 @@ public class SerializationBlock_Tests
         _messageActionTriggerCount++;
         _receivedDataCount += m.ItemCount;
         _receivedResourceCounts = new OmfResourceCounts(
-            _receivedResourceCounts.StreamingValues + m.ResourceCounts.StreamingValues,
+            _receivedResourceCounts.StreamValues + m.ResourceCounts.StreamValues,
             _receivedResourceCounts.Assets + m.ResourceCounts.Assets,
             _receivedResourceCounts.Events + m.ResourceCounts.Events);
     }

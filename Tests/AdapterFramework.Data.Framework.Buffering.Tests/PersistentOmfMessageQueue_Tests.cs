@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Buffers.Binary;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -157,6 +158,66 @@ public class PersistentOmfMessageQueue_Tests
         mockPersistentQueue.Setup(persistentQueue => persistentQueue.Dequeue()).Returns(enqueuedDataItem);
         Assert.True(persistentOmfMessageQueue.TryDequeue(out var dequeuedMessage));
         Assert.True(dequeuedMessage.ResourceCounts.IsEmpty);
+    }
+
+    [Fact]
+    public void PersistentOmfMessageQueue_MixedV3AndV4Records_ReadAfterUpgrade_Test()
+    {
+        const string FilePrefix = "data";
+        var bufferDirectory = Path.Combine(Path.GetTempPath(), $"omf-buffer-{Guid.NewGuid():N}");
+
+        try
+        {
+            // Before upgrade: V3 records exactly as the previous build wrote them.
+            using (var fileQueue = new FileQueue(bufferDirectory, FilePrefix))
+            {
+                fileQueue.Enqueue(CreateV3DataItem(MessageType.Instance, 5, new byte[] { 0x10, 0x11 }, PartitionKey.Key5, MessageAction.Create, OmfVersion.Omf20));
+                fileQueue.Enqueue(CreateV3DataItem(MessageType.DynamicData, 2, new byte[] { 0x20 }, null, MessageAction.Default, OmfVersion.Omf12));
+                fileQueue.FlushEnqueues();
+            }
+
+            // After upgrade: reopen the same buffer with the new code and append a V4 record.
+            var v4Counts = new OmfResourceCounts(1_000, 7, 3);
+            using var reopenedFileQueue = new FileQueue(bufferDirectory, FilePrefix);
+            using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, reopenedFileQueue, null);
+            queue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x30, 0x31, 0x32 }, MessageAction.Update, 1_010, OmfVersion.Omf20, PartitionKey.Key16)
+            {
+                ResourceCounts = v4Counts,
+            });
+
+            Assert.True(queue.TryDequeue(out var first));
+            Assert.Equal(MessageType.Instance, first.MessageType);
+            Assert.Equal(new byte[] { 0x10, 0x11 }, first.MessageBody);
+            Assert.Equal(5, first.ItemCount);
+            Assert.Equal(PartitionKey.Key5, first.PartitionKey);
+            Assert.Equal(MessageAction.Create, first.MessageAction);
+            Assert.Equal(OmfVersion.Omf20, first.OmfVersion);
+            Assert.True(first.ResourceCounts.IsEmpty);
+
+            Assert.True(queue.TryDequeue(out var second));
+            Assert.Equal(MessageType.DynamicData, second.MessageType);
+            Assert.Equal(new byte[] { 0x20 }, second.MessageBody);
+            Assert.Equal(2, second.ItemCount);
+            Assert.Null(second.PartitionKey);
+            Assert.Equal(OmfVersion.Omf12, second.OmfVersion);
+            Assert.True(second.ResourceCounts.IsEmpty);
+
+            Assert.True(queue.TryDequeue(out var third));
+            Assert.Equal(new byte[] { 0x30, 0x31, 0x32 }, third.MessageBody);
+            Assert.Equal(1_010, third.ItemCount);
+            Assert.Equal(PartitionKey.Key16, third.PartitionKey);
+            Assert.Equal(MessageAction.Update, third.MessageAction);
+            Assert.Equal(v4Counts, third.ResourceCounts);
+
+            Assert.False(queue.TryDequeue(out _));
+        }
+        finally
+        {
+            if (Directory.Exists(bufferDirectory))
+            {
+                Directory.Delete(bufferDirectory, recursive: true);
+            }
+        }
     }
 
     [Theory]
@@ -346,5 +407,18 @@ public class PersistentOmfMessageQueue_Tests
         persistentOmfMessageQueue.Clear();
 
         Assert.True(deleteBuffersCalled);
+    }
+
+    // Byte layout used by builds before V4: [type][itemCount int32 LE][body][partitionKey][action][omfVersion].
+    private static DataItem CreateV3DataItem(MessageType messageType, int itemCount, byte[] body, PartitionKey? partitionKey, MessageAction messageAction, OmfVersion omfVersion)
+    {
+        var data = new byte[1 + sizeof(int) + body.Length + 3];
+        data[0] = (byte)messageType;
+        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(1), itemCount);
+        body.CopyTo(data, 1 + sizeof(int));
+        data[^3] = (byte)(partitionKey ?? 0);
+        data[^2] = (byte)messageAction;
+        data[^1] = (byte)omfVersion;
+        return new DataItem(DataItemVersion.V3, data);
     }
 }

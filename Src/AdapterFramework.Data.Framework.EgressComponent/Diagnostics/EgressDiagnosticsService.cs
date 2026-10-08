@@ -45,8 +45,8 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private readonly TimeSpan _messageRateSpan = TimeSpan.FromSeconds(1);
     private readonly SemaphoreSlim _stateChangeSemaphore = new SemaphoreSlim(1, 1);
-    private readonly Dictionary<string, string> _egressIdToStreamId = new Dictionary<string, string>();
-    private readonly Dictionary<string, MovingAverage> _egressIdToIoRateMovingAverage;
+    private readonly ConcurrentDictionary<string, string> _egressIdToStreamId = new();
+    private readonly ConcurrentDictionary<string, MovingAverage> _egressIdToIoRateMovingAverage = new();
     private readonly ConcurrentDictionary<string, ResourceIoRates> _egressIdToResourceIoRates = new();
     private readonly bool _resourceIoRatesEnabled;
     private readonly ILogger _logger;
@@ -107,8 +107,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         _logger = logger;
         _dataEndpointManager = dataEndpointManager;
         _healthService = healthService;
-        _egressIdToIoRateMovingAverage = new Dictionary<string, MovingAverage>();
-        _resourceIoRatesEnabled = omfVersion == OmfVersion.Omf20;
+        _resourceIoRatesEnabled = omfVersion >= OmfVersion.Omf20;
     }
 
     #endregion
@@ -246,6 +245,8 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     return;
                 }
 
+                // Read separately from the value counters above, so a message delivered between the two reads
+                // can land in different ticks for IORate and the resource rates. That's fine for a 60 s average.
                 var egressResourceCounts = _resourceIoRatesEnabled ? _dataEndpointManager.GetAndResetEgressedResourceCounters() : null;
                 var resendTypesStreamsLinks = false;
 
@@ -283,8 +284,8 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     var removedItems = _egressIdToIoRateMovingAverage.Keys.Except(egressDataCount.Keys);
                     foreach (var streamId in removedItems)
                     {
-                        _egressIdToIoRateMovingAverage.Remove(streamId);
-                        _egressIdToStreamId.Remove(streamId);
+                        _egressIdToIoRateMovingAverage.TryRemove(streamId, out _);
+                        _egressIdToStreamId.TryRemove(streamId, out _);
                         _egressIdToResourceIoRates.TryRemove(streamId, out _);
                     }
                 }
@@ -395,15 +396,23 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
-    private DataStream CreateIoRateStreamAndLink(string streamId)
+    private void CreateIoRateStreamAndLink(string streamId)
     {
-        var stream = _egressDiagnosticsOmfMessageCreator.CreateIoRateStream(streamId);
-        _diagnosticsMessageProcessor.WriteDiagnosticsStreams(new[] { stream, });
+        try
+        {
+            var stream = _egressDiagnosticsOmfMessageCreator.CreateIoRateStream(streamId);
+            _diagnosticsMessageProcessor.WriteDiagnosticsStreams(new[] { stream, });
 
-        var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
-        _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
+            var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
+        }
+        catch (Exception ex)
+        {
+            // Can run on the timer thread, where an unhandled exception would terminate the process.
+            _logger.LogError(ex, "Failed to process IORate diagnostics stream. Stopping IORate diagnostics data collection.");
 
-        return stream;
+            _failedToUpdateIoRate = true;
+        }
     }
 
     private void ResendAllTypesAndStreams()
@@ -414,13 +423,23 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private void CreateResourceIoRateStreamsAndLinks(ResourceIoRates resourceIoRates)
     {
-        var streams = resourceIoRates.Streams;
-        _diagnosticsMessageProcessor.WriteDiagnosticsStreams(streams);
-
-        foreach (var stream in streams)
+        try
         {
-            var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
-            _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
+            var streams = resourceIoRates.Streams;
+            _diagnosticsMessageProcessor.WriteDiagnosticsStreams(streams);
+
+            foreach (var stream in streams)
+            {
+                var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
+                _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Can run on the timer thread, where an unhandled exception would terminate the process.
+            _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics streams. Stopping resource IORate diagnostics data collection.");
+
+            _failedToUpdateResourceIoRates = true;
         }
     }
 
@@ -433,44 +452,46 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     /// </summary>
     private sealed class ResourceIoRates
     {
-        private readonly MovingAverage _streamingValues = new(MovingAveragePeriod);
-        private readonly MovingAverage _assets = new(MovingAveragePeriod);
-        private readonly MovingAverage _events = new(MovingAveragePeriod);
+        private readonly ResourceIoRate _streamIoRate;
+        private readonly ResourceIoRate _assetIoRate;
+        private readonly ResourceIoRate _eventIoRate;
 
         public ResourceIoRates(EgressDiagnosticsOmfMessageCreator messageCreator, string endpointId)
         {
-            Streams =
-            [
-                messageCreator.CreateIoRateStream(endpointId, StreamIoRateStreamName),
-                messageCreator.CreateIoRateStream(endpointId, AssetIoRateStreamName),
-                messageCreator.CreateIoRateStream(endpointId, EventIoRateStreamName),
-            ];
+            _streamIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, StreamIoRateStreamName));
+            _assetIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, AssetIoRateStreamName));
+            _eventIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, EventIoRateStreamName));
+            Streams = [_streamIoRate.Stream, _assetIoRate.Stream, _eventIoRate.Stream];
         }
 
-        /// <summary>
-        /// Gets the StreamIORate, AssetIORate and EventIORate streams, in that order.
-        /// </summary>
         public DataStream[] Streams { get; }
 
         public void AddSamples(OmfResourceCounts resourceCounts)
         {
-            _streamingValues.AddSample(resourceCounts.StreamingValues);
-            _assets.AddSample(resourceCounts.Assets);
-            _events.AddSample(resourceCounts.Events);
+            _streamIoRate.MovingAverage.AddSample(resourceCounts.StreamValues);
+            _assetIoRate.MovingAverage.AddSample(resourceCounts.Assets);
+            _eventIoRate.MovingAverage.AddSample(resourceCounts.Events);
         }
 
         public void ClearSamples()
         {
-            _streamingValues.ClearSamples();
-            _assets.ClearSamples();
-            _events.ClearSamples();
+            _streamIoRate.MovingAverage.ClearSamples();
+            _assetIoRate.MovingAverage.ClearSamples();
+            _eventIoRate.MovingAverage.ClearSamples();
         }
 
         public IEnumerable<(string StreamId, MovingAverage MovingAverage)> GetRates()
         {
-            yield return (Streams[0].Id, _streamingValues);
-            yield return (Streams[1].Id, _assets);
-            yield return (Streams[2].Id, _events);
+            yield return (_streamIoRate.Stream.Id, _streamIoRate.MovingAverage);
+            yield return (_assetIoRate.Stream.Id, _assetIoRate.MovingAverage);
+            yield return (_eventIoRate.Stream.Id, _eventIoRate.MovingAverage);
+        }
+
+        private sealed class ResourceIoRate(DataStream stream)
+        {
+            public DataStream Stream { get; } = stream;
+
+            public MovingAverage MovingAverage { get; } = new(MovingAveragePeriod);
         }
     }
 

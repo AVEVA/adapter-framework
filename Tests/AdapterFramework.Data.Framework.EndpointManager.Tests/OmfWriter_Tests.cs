@@ -537,7 +537,7 @@ public class OmfWriter_Tests : IDisposable
             () =>
             {
                 var counts = _omfWriter.GetAndResetEgressedResourceCounters();
-                egressed = new OmfResourceCounts(egressed.StreamingValues + counts.StreamingValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
                 return egressed == resourceCounts;
             },
             SuccessfulSendExpectedWaitTime));

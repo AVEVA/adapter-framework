@@ -14,7 +14,6 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
@@ -57,7 +56,7 @@ internal class EgressDiagnosticsOmfMessageCreator
     /// <param name="streamName">The IO rate stream name, for example <see cref="StreamIoRateStreamName"/>.</param>
     /// <returns>The IO rate stream.</returns>
     public DataStream CreateIoRateStream(string endpointId, string streamName) =>
-        new DataStream(IoRateTypeId, string.Create(CultureInfo.InvariantCulture, $"{_egressStreamIdPrefix}{endpointId}.{streamName}"), $"{endpointId}.{streamName}");
+        new DataStream(IoRateTypeId, $"{_egressStreamIdPrefix}{endpointId}.{streamName}", $"{endpointId}.{streamName}");
 
     public ValueTuple<string, Classification, object> CreateLink(string streamId)
     {

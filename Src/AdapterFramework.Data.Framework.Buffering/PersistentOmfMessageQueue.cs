@@ -67,7 +67,7 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         }
 
         var countsSpan = dataBuffer.AsSpan(v3Size);
-        BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamingValues);
+        BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamValues);
         BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Assets);
         BinaryPrimitives.WriteInt64LittleEndian(countsSpan[(2 * sizeof(long))..], resourceCounts.Events);
 

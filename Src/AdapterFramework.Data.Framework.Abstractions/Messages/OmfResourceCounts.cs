@@ -20,13 +20,13 @@ namespace AdapterFramework.Data.Framework.Abstractions.Messages;
 /// <remarks>
 /// Only streaming values, assets and events are counted. Relationships, types, stream definitions and other schema objects are not.
 /// </remarks>
-/// <param name="StreamingValues">Number of individual streaming values.</param>
+/// <param name="StreamValues">Number of individual stream values. Feeds the <c>StreamIORate</c> stream.</param>
 /// <param name="Assets">Number of asset instances.</param>
 /// <param name="Events">Number of event instances.</param>
-public readonly record struct OmfResourceCounts(long StreamingValues, long Assets, long Events)
+public readonly record struct OmfResourceCounts(long StreamValues, long Assets, long Events)
 {
     /// <summary>
     /// Gets a value indicating whether no resource instances are counted.
     /// </summary>
-    public bool IsEmpty => StreamingValues == 0 && Assets == 0 && Events == 0;
+    public bool IsEmpty => StreamValues == 0 && Assets == 0 && Events == 0;
 }
