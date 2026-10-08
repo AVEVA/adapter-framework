@@ -29,6 +29,7 @@ internal class Serializer : ISerializer
     private static readonly byte[] _dataItemStartBytesV1 = new byte[DataItemStartByteCount] { 0x81, 0x4c, 0xed, 0x2f, 0x2f, 0x37, 0x4a, 0x15 };
     private static readonly byte[] _dataItemStartBytesV2 = new byte[DataItemStartByteCount] { 0x42, 0x1c, 0x4b, 0x99, 0x8e, 0x7d, 0x11, 0x41 };
     private static readonly byte[] _dataItemStartBytesV3 = new byte[DataItemStartByteCount] { 0x32, 0x4c, 0x42, 0x92, 0x23, 0x32, 0x13, 0x42 };
+    private static readonly byte[] _dataItemStartBytesV4 = new byte[DataItemStartByteCount] { 0x7a, 0x13, 0xe4, 0x5c, 0x0b, 0x9d, 0x61, 0xc8 };
     private static readonly Encoding _payloadEncoding = new UTF8Encoding(false);
 
     #region Public Methods
@@ -227,6 +228,10 @@ internal class Serializer : ISerializer
         {
             stream.Write(_dataItemStartBytesV3, 0, DataItemStartByteCount);
         }
+        else if (dataItemVersion == DataItemVersion.V4)
+        {
+            stream.Write(_dataItemStartBytesV4, 0, DataItemStartByteCount);
+        }
         else
         {
             throw new ArgumentException("Failed to serialize data item start bytes due to invalid data item version");
@@ -273,7 +278,11 @@ internal class Serializer : ISerializer
     private static DataItemVersion GetDataItemVersion(byte[] dataItemStartBytes)
     {
         DataItemVersion dataItemVersion;
-        if (_dataItemStartBytesV3.SequenceEqual(dataItemStartBytes))
+        if (_dataItemStartBytesV4.SequenceEqual(dataItemStartBytes))
+        {
+            dataItemVersion = DataItemVersion.V4;
+        }
+        else if (_dataItemStartBytesV3.SequenceEqual(dataItemStartBytes))
         {
             dataItemVersion = DataItemVersion.V3;
         }

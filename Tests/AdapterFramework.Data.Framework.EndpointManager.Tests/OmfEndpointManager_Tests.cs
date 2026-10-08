@@ -495,6 +495,63 @@ public class OmfEndpointManager_Tests : IDisposable
     }
 
     [Fact]
+    public void OmfEndpointManager_GetAndResetResourceCounters_CountsPerEndpoint()
+    {
+        _testEndpoint.StartListening();
+
+        var config = new EndpointConfigurationBase()
+        {
+            Id = "Hello",
+            Endpoint = _testUri,
+            UserName = UserName,
+            Password = Password,
+        };
+
+        // Nothing listens on this endpoint, so nothing is delivered to it.
+        var config2 = new EndpointConfigurationBase()
+        {
+            Id = "Hello2",
+            Endpoint = "http://localhost:5466/api/omf/",
+            UserName = UserName,
+            Password = Password,
+        };
+
+        var configList = new[] { config, config2 };
+
+        using var omfEndpointManager = CreateEndpointManager(configList, out _, out _);
+        omfEndpointManager.Initialize("UnitTest", DefaultFacetName);
+
+        Assert.True(SpinWait.SpinUntil(() => configList.Length == omfEndpointManager.GetAndResetEgressedResourceCounters().Count, MaximumWaitTime));
+
+        var resourceCounts = new OmfResourceCounts(5, 1, 2);
+        var message = "testMsg_resourceCounts_endpointManager";
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(message), MessageAction.Create, 8, OmfVersion.Omf20)
+        {
+            ResourceCounts = resourceCounts,
+        };
+        omfEndpointManager.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(message) == 1, BufferedMessageWaitTime), "Message wasn't received.");
+
+        IReadOnlyDictionary<string, OmfResourceCounts> counters = null;
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                counters = omfEndpointManager.GetAndResetEgressedResourceCounters();
+                return !counters[config.Id].IsEmpty;
+            },
+            MaximumWaitTime));
+
+        Assert.Equal(configList.Length, counters.Count);
+        Assert.Equal(resourceCounts, counters[config.Id]);
+        Assert.True(counters[config2.Id].IsEmpty);
+
+        counters = omfEndpointManager.GetAndResetEgressedResourceCounters();
+        Assert.True(counters[config.Id].IsEmpty);
+        Assert.True(counters[config2.Id].IsEmpty);
+    }
+
+    [Fact]
     public void OmfEndpointManager_UpdateRequired_BothNull()
     {
         using var omfEndpointManager = CreateEndpointManager(Array.Empty<EndpointConfigurationBase>(), out _, out _);
