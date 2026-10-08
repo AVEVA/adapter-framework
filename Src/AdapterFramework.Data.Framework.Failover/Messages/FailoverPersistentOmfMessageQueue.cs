@@ -35,11 +35,12 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
     #region Protected overrides
 
+    // V3: type, count, body, ticks, partition key, action, OMF version. Legacy V2 ends with ticks, action.
     protected override DataItem CreateDataItem(IFailoverSerializedOmfMessage message)
     {
         if (message == null)
         {
-            return new DataItem(DataItemVersion.V2, Array.Empty<byte>());
+            return new DataItem(DataItemVersion.V3, Array.Empty<byte>());
         }
 
         var dataBuffer = new byte[message.GetMessageSizeInBytes()];
@@ -64,29 +65,44 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length,
             ProcessTimeTicksLength);
 
-        dataBuffer[^1] = (byte)message.MessageAction;
+        dataBuffer[^3] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^2] = (byte)message.MessageAction;
+        dataBuffer[^1] = (byte)message.OmfVersion;
 
-        return new DataItem(DataItemVersion.V2, dataBuffer);
+        return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
-        if (serializedWithType == null)
+        var trailerLength = dataItem?.Version == DataItemVersion.V3
+            ? PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize
+            : MessageActionEnumSize;
+
+        if (serializedWithType == null || serializedWithType.Length < MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + trailerLength)
         {
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 
         var messageType = (MessageType)serializedWithType[0];
-        var messageAction = (MessageAction)dataItem.Data[^1];
         var valueCount = BitConverter.ToInt32(serializedWithType, MessageTypeEnumSize);
 
-        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize];
+        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - trailerLength];
         Buffer.BlockCopy(serializedWithType, MessageTypeEnumSize + ValueCountSize, messageBody, 0, messageBody.Length);
 
         var processTimeTicks = BitConverter.ToInt64(serializedWithType, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
 
-        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount)
+        var messageAction = (MessageAction)serializedWithType[^1];
+        var omfVersion = OmfVersion.Omf12;
+        PartitionKey? partitionKey = null;
+        if (dataItem.Version == DataItemVersion.V3)
+        {
+            partitionKey = serializedWithType[^3] == 0 ? null : (PartitionKey)serializedWithType[^3];
+            messageAction = (MessageAction)serializedWithType[^2];
+            omfVersion = (OmfVersion)serializedWithType[^1];
+        }
+
+        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey)
         {
             ProcessTimeTicks = processTimeTicks,
         };

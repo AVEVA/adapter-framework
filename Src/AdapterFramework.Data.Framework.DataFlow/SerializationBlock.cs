@@ -66,7 +66,7 @@ public class SerializationBlock : BaseBlock<Message>
         Action<ISerializedOmfMessage> flushAction,
         CancellationToken token,
         OmfVersion omfVersion = OmfVersion.Omf12)
-        : base(logger, capacity, false, true, token)
+        : base(logger, capacity, false, false, token)
     {
         ThrowHelper.ThrowIfArgumentNull(serializer, nameof(serializer));
 

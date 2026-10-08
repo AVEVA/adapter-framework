@@ -84,7 +84,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             var messageReceivedTime = DateTime.UtcNow;
 
             // convert the ISerializedOmfMessage to a failover message so we can add process time ticks
-            var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody, message.MessageAction, message.ItemCount);
+            var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody, message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
 
             if (CurrentFailoverMode == FailoverMode.Hot)
             {

@@ -29,8 +29,10 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     /// <param name="body">Message body in byte array.</param>
     /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that will be sent with the message.</param>
     /// <param name="valueCount">The number of values contained inside the <see paramref="body"/>.</param>
-    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount = 0) 
-        : base(type, body, messageAction, valueCount)
+    /// <param name="omfVersion">The OMF version that should be used to send this message.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service.</param>
+    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount = 0, OmfVersion omfVersion = OmfVersion.Omf12, PartitionKey? partitionKey = null)
+        : base(type, body, messageAction, valueCount, omfVersion, partitionKey)
     {
     }
 
@@ -38,5 +40,5 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     public long ProcessTimeTicks { get; set; }
 
     public override int GetMessageSizeInBytes() =>
-        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength;
+        base.GetMessageSizeInBytes() + BufferingConstants.ProcessTimeTicksLength;
 }

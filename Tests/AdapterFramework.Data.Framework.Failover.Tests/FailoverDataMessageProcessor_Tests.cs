@@ -26,6 +26,7 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Failover.Messages;
+using AdapterFramework.Data.Framework.Messages;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests;
@@ -149,6 +150,34 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(messageToProcess.ItemCount, _sentMessages[0].ItemCount);
         Assert.Equal(secondMessageToProcess.MessageType, _sentMessages[1].MessageType);
         Assert.Equal(secondMessageToProcess.ItemCount, _sentMessages[1].ItemCount);
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    [Fact]
+    public void FailoverDataMessageProcessor_ProcessOmfMessage_HotMode_PreservesOmfVersionAndPartitionKey()
+    {
+        var mockLogger = new Mock<ILogger>();
+        var mockConfigurationProvider = GetMockConfigurationProvider("ProcessOmfMessage_HotMode_PreservesOmfVersionAndPartitionKey");
+        var mockOmfDataEndpointManager = GetMockOmfDataEndpointManager();
+
+        using var failoverDataMessageProcessor = new FailoverDataMessageProcessor(mockLogger.Object, mockConfigurationProvider.Object, mockOmfDataEndpointManager.Object);
+        failoverDataMessageProcessor.Initialize();
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        failoverDataMessageProcessor.UpdateState(FailoverRole.Secondary, default);
+
+        var messageToProcess = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
+        failoverDataMessageProcessor.ProcessOmfMessage(messageToProcess);
+        Assert.Empty(_sentMessages);
+
+        failoverDataMessageProcessor.UpdateState(FailoverRole.Primary, default);
+
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, 1500));
+        Assert.Equal(MessageType.Instance, _sentMessages[0].MessageType);
+        Assert.Equal(MessageAction.Update, _sentMessages[0].MessageAction);
+        Assert.Equal(3, _sentMessages[0].ItemCount);
+        Assert.Equal(OmfVersion.Omf20, _sentMessages[0].OmfVersion);
+        Assert.Equal(PartitionKey.Key5, _sentMessages[0].PartitionKey);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }

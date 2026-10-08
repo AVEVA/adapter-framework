@@ -754,6 +754,65 @@ public class SerializationBlock_Tests
         Assert.Equal(isNonStreamingDataOversize ? 3 : (isMessageOversize ? 2 : 1), _messageActionTriggerCount);
     }
 
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf20)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public async Task SerializationBlock_ConcurrentProducers_HandleEveryMessageOnce(OmfVersion omfVersion)
+    {
+        const int MessagesPerProducer = 5000;
+        var testLogger = new TestLogger();
+        var flushedItems = 0;
+        var flushedMessages = 0;
+        using var allReceived = new ManualResetEventSlim(false);
+
+        void CountingAction(ISerializedOmfMessage message)
+        {
+            Interlocked.Add(ref flushedItems, message.ItemCount);
+            if (Interlocked.Increment(ref flushedMessages) == 2 * MessagesPerProducer)
+            {
+                allReceived.Set();
+            }
+        }
+
+        using var serializationBlock = new SerializationBlock(null, null, int.MaxValue, testLogger, -1,
+            new OmfJsonSerializer(), null, CountingAction, CancellationToken.None, omfVersion);
+
+        Message CreateSchemaSideMessage() => omfVersion == OmfVersion.Omf20
+            ? new SchemaMessage(Array.Empty<DataType>(), new[] { _stream }, Array.Empty<Link>(), 0, 1, 0, MessageAction.Create)
+            : new OmfMessage<DataStream>(1, new[] { _stream }, MessageAction.Create);
+
+        Message CreateInstanceSideMessage() => omfVersion == OmfVersion.Omf20
+            ? new InstanceMessage(Array.Empty<StreamingDataInstance>(), new[] { _staticStreamData }, Array.Empty<Event>(), Array.Empty<Link>(), 0, 0, 1, 0, 0, MessageAction.Default)
+            : new OmfMessage<DynamicStreamData>(1, new[] { _dynamicStreamData }, MessageAction.Default);
+
+        using var start = new ManualResetEventSlim(false);
+        var schemaProducer = Task.Run(() =>
+        {
+            start.Wait();
+            for (var i = 0; i < MessagesPerProducer; i++)
+            {
+                Assert.True(serializationBlock.Post(CreateSchemaSideMessage()));
+            }
+        });
+        var instanceProducer = Task.Run(() =>
+        {
+            start.Wait();
+            for (var i = 0; i < MessagesPerProducer; i++)
+            {
+                Assert.True(serializationBlock.Post(CreateInstanceSideMessage()));
+            }
+        });
+
+        start.Set();
+        await Task.WhenAll(schemaProducer, instanceProducer);
+
+        Assert.True(allReceived.Wait(WaitTime * 4), $"Received {Volatile.Read(ref flushedMessages)} of {2 * MessagesPerProducer} messages.");
+        Assert.False(SpinWait.SpinUntil(() => Volatile.Read(ref flushedMessages) > 2 * MessagesPerProducer, 200));
+        Assert.Equal(2 * MessagesPerProducer, Volatile.Read(ref flushedItems));
+        Assert.False(testLogger.AreErrorsWarningsInLog());
+    }
+
     private void DummyAction(ISerializedOmfMessage m)
     {
         _messageActionTriggerCount++;
