@@ -25,6 +25,7 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.Buffering;
 using AdapterFramework.Data.Framework.Failover.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 
 namespace AdapterFramework.Data.Framework.Failover;
@@ -34,6 +35,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private readonly ILogger _logger;
     private readonly IConfigurationProvider _configurationProvider;
     private readonly IOmfDataEndpointManager _dataEndpointManager;
+    private readonly OmfAwaitableCoordinator _awaitableCoordinator;
     private readonly object _lockObject = new();
 
     private BufferingConfiguration _bufferingConfiguration;
@@ -47,11 +49,12 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
     private bool _disposed;
 
-    public FailoverDataMessageProcessor(ILogger logger, IConfigurationProvider configurationProvider, IOmfDataEndpointManager dataEndpointManager)
+    public FailoverDataMessageProcessor(ILogger logger, IConfigurationProvider configurationProvider, IOmfDataEndpointManager dataEndpointManager, OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         _logger = logger;
         _configurationProvider = configurationProvider;
         _dataEndpointManager = dataEndpointManager;
+        _awaitableCoordinator = awaitableCoordinator;
     }
 
     #region Public Properties
@@ -150,6 +153,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             }
 
             CurrentFailoverMode = newFailoverMode;
+            _awaitableCoordinator?.SetFailoverMode(newFailoverMode);
         }
     }
 

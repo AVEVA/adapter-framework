@@ -25,8 +25,10 @@ using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests;
@@ -180,6 +182,26 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(PartitionKey.Key5, _sentMessages[0].PartitionKey);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    [Fact]
+    public async Task FailoverDataMessageProcessor_UpdateMode_SetsCoordinatorFailoverMode()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        coordinator.SetOmfVersion(OmfVersion.Omf20);
+        using var failoverDataMessageProcessor = new FailoverDataMessageProcessor(
+            new Mock<ILogger>().Object,
+            GetMockConfigurationProvider("UpdateMode_SetsCoordinatorFailoverMode").Object,
+            GetMockOmfDataEndpointManager().Object,
+            coordinator);
+        failoverDataMessageProcessor.Initialize();
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Warm);
+        Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+        await scope.DisposeAsync();
     }
 
     [Fact]

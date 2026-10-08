@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using AdapterFramework.Data.Framework.Abstractions.Components;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
@@ -24,6 +25,7 @@ using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
 using AdapterFramework.Data.Framework.EgressComponent.Services;
 using AdapterFramework.Data.Framework.EndpointManager;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.EgressComponent.Extensions;
 
@@ -36,6 +38,7 @@ public static class EgressComponentExtensions
         var egressComponentId = componentIdService.GetEdgeComponentId(EdgeSystemConstants.OmfEgressComponentType);
 
         services.AddSingleton<IEgressComponentIdService>(new EgressComponentIdService(egressComponentId));
+        services.TryAddSingleton(_ => new OmfAwaitableCoordinator());
         services.AddSingleton<IMessageProcessor, DataMessageProcessor>();
         services.AddSingleton<IDiagnosticsMessageProcessor, DiagnosticsMessageProcessor>();
         services.AddSingleton<ISinkProvider, OmfEgressComponent>();

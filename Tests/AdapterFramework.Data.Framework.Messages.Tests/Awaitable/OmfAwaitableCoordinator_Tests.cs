@@ -503,6 +503,87 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfAcceptanceOutcome.Filtered, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
     }
 
+    [Theory]
+    [InlineData(OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch)]
+    [InlineData(OmfAwaitableEndpointMode.AnyCompleteEndpoint)]
+    public async Task Wait_MixedLocalAndPeerCoverage_IsPeerCovered(OmfAwaitableEndpointMode endpointMode)
+    {
+        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = endpointMode });
+        var (localBody, peerBody) = SimulateTwoBodies(scope, new[] { TargetA }, new[] { TargetA });
+
+        _coordinator.RecordDisposition(localBody, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
+
+        _coordinator.RecordDisposition(peerBody, EndpointA, OmfDeliveryState.PeerCovered, null, null);
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+
+        Assert.Equal(OmfAcceptanceOutcome.PeerCovered, result.Outcome);
+        Assert.Null(result.Reason);
+    }
+
+    [Fact]
+    public async Task Tracking_AtActiveScopeLimitDuringOutage_StaysBoundedAndIsReleasedOnDispose()
+    {
+        const int BodiesPerScope = 50;
+        const int AttemptsPerDelivery = 200;
+        var scopes = new[] { CreateScope(), CreateScope() };
+        var bodies = new List<Guid>();
+        foreach (var scope in scopes)
+        {
+            scope.EnterWrite();
+            _coordinator.RecordAdmitted(scope, BodiesPerScope);
+            scope.ExitWrite();
+            for (var i = 0; i < BodiesPerScope; i++)
+            {
+                var bodyId = Guid.NewGuid();
+                _coordinator.RegisterBody(bodyId, new Dictionary<ScopeToken, int> { [scope] = 1 });
+                _coordinator.RegisterDeliveries(bodyId, new[] { TargetA, TargetB });
+                bodies.Add(bodyId);
+            }
+
+            _coordinator.CloseMaterialization(scope);
+        }
+
+        for (var attempt = 1; attempt <= AttemptsPerDelivery; attempt++)
+        {
+            var reason = new OmfOutcomeReason(OmfReasonCode.Retrying, $"503 Service Unavailable, attempt {attempt}");
+            foreach (var bodyId in bodies)
+            {
+                _coordinator.RecordAttempt(bodyId, EndpointA, HttpStatusCode.ServiceUnavailable, reason);
+                _coordinator.RecordAttempt(bodyId, EndpointB, HttpStatusCode.ServiceUnavailable, reason);
+            }
+        }
+
+        Assert.False(_coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+        Assert.Equal(2 * BodiesPerScope, _coordinator.TrackedBodyCount);
+        var result = await scopes[0].WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, result.Outcome);
+        Assert.Equal(2 * BodiesPerScope, result.Deliveries.Count);
+        Assert.All(result.Deliveries, delivery => Assert.EndsWith($"attempt {AttemptsPerDelivery}", delivery.Reason.Message, StringComparison.Ordinal));
+
+        foreach (var scope in scopes)
+        {
+            await scope.DisposeAsync();
+        }
+
+        Assert.Equal(0, _coordinator.TrackedBodyCount);
+        Assert.Equal(0, _coordinator.ActiveScopeCount);
+    }
+
+    [Fact]
+    public async Task Release_BodySharedByTwoScopes_IsKeptUntilBothAreDisposed()
+    {
+        var first = CreateScope();
+        var second = CreateScope();
+        _coordinator.RegisterBody(Guid.NewGuid(), new Dictionary<ScopeToken, int> { [first] = 1, [second] = 1 });
+
+        await first.DisposeAsync();
+        Assert.Equal(1, _coordinator.TrackedBodyCount);
+
+        await second.DisposeAsync();
+        Assert.Equal(0, _coordinator.TrackedBodyCount);
+    }
+
     [Fact]
     public async Task RecordDisposition_FailureWithoutReasonOrPendingState_Throws()
     {

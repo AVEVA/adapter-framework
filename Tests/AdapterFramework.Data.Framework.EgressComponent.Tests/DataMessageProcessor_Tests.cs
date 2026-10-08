@@ -19,15 +19,18 @@ using System.Dynamic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.AdapterCommon;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using Moq;
 using AdapterFramework.Data.Framework.Serialization;
 using Xunit;
@@ -1034,6 +1037,39 @@ public class DataMessageProcessor_Tests
         // delaying for flushTime + 10ms and received a message
         Thread.Sleep(20000);
         Assert.NotNull(receivedMessage);
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf20, true)]
+    [InlineData(OmfVersion.Omf12, false)]
+    public async Task DataMessageProcessor_SetsCoordinatorOmfVersion(OmfVersion omfVersion, bool scopesSupported)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
+        using var coordinator = new OmfAwaitableCoordinator();
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            null,
+            mockApplicationManifest.Object,
+            coordinator);
+
+        if (scopesSupported)
+        {
+            Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+            await scope.DisposeAsync();
+        }
+        else
+        {
+            Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+        }
     }
 
     private static Dictionary<string, object> DeserializeValues(IEnumerable<object> values)

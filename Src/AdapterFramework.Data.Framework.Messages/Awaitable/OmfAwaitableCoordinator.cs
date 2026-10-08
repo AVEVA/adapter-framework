@@ -17,12 +17,14 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 
+[assembly: InternalsVisibleTo("AdapterFramework.Data.Framework.Messages.Tests")]
 namespace AdapterFramework.Data.Framework.Messages.Awaitable;
 
 /// <summary>
@@ -78,6 +80,17 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     internal Task ShutdownTask => _shutdown.Task;
+
+    internal int TrackedBodyCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _bodies.Count;
+            }
+        }
+    }
 
     /// <summary>
     /// Sets the OMF version of the data pipeline. Scopes require OMF 2.0.

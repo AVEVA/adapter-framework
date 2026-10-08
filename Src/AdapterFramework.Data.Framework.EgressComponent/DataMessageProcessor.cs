@@ -29,6 +29,7 @@ using AdapterFramework.Data.Framework.DataFlow.Strategy;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using static AdapterFramework.Data.Framework.Abstractions.Constants.EdgeSystemConstants;
 
 namespace AdapterFramework.Data.Framework.EgressComponent;
@@ -78,7 +79,8 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         IEgressComponentIdService egressComponentIdService,
         IConfigurationProvider configurationProvider,
         IFailoverDataMessageProcessor failoverDataMessageProcessor = null,
-        IApplicationManifest applicationManifest = null)
+        IApplicationManifest applicationManifest = null,
+        OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         ThrowHelper.ThrowIfArgumentNull(logManager, nameof(logManager));
         ThrowHelper.ThrowIfArgumentNull(egressComponentIdService, nameof(egressComponentIdService));
@@ -96,6 +98,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+        awaitableCoordinator?.SetOmfVersion(omfVersion);
         var tuningParameters = omfVersion == OmfVersion.Omf20
             ? new TuningParameters
             {
