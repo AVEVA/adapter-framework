@@ -32,6 +32,8 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private const int MovingAveragePeriod = 60;
     private const int SendStreamCountPeriod = 60;
+    private const int SendAssetCountPeriod = 60;
+    private const int SendEventCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
     private const int SendErrorRatePeriod = 60;
 
@@ -50,6 +52,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly AdapterDiagnosticsOmfMessageCreator _diagnosticsOmfMessageCreator;
     private readonly string _componentId;
     private readonly string _componentType;
+    private readonly bool _publishOmf20Diagnostics;
 
     private Timer _errorRateTimer;
     private Timer _messageProcessorStatisticsTimer;
@@ -59,16 +62,37 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _errorRateTimerTickCounter;
     private int _timerTickIoRateCounter;
     private int _timerTickStreamCounter;
+    private int _timerTickAssetCounter;
+    private int _timerTickEventCounter;
     private int _sentStreamCount = -1;
     private int _sentTypeCount = -1;
+    private int _sentAssetCount = -1;
+    private long _sentEventCount = -1;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateErrorRate;
     private bool _failedToUpdateMessageProcessorStatistics;
+    private bool _failedToUpdateAssetCount;
+    private bool _failedToUpdateEventCount;
     private bool _disposed;
 
     #endregion
 
     #region Public Constructor
+
+    /// <summary>
+    /// Instantiates a new instance of the <see cref="AdapterDiagnosticsService"/> class publishing with <see cref="OmfVersion.Omf12"/>.
+    /// </summary>
+    /// <param name="diagnosticsMessageProcessor">Instance of <see cref="IDiagnosticsMessageProcessor"/> service.</param>
+    /// <param name="instrumentedMessageProcessor">Instance of <see cref="IInstrumentedMessageProcessor"/> service.</param>
+    /// <param name="componentId">The adapter component ID.</param>
+    /// <param name="componentType">The adapter type.</param>
+    /// <param name="elementNode">The node to link all the created streams to.</param>
+    /// <param name="instrumentedLogger">Instance of <see cref="IInstrumentedLogger"/> service.</param>
+    public AdapterDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor, IInstrumentedLogger instrumentedLogger,
+        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor)
+        : this(diagnosticsMessageProcessor, instrumentedLogger, componentId, componentType, elementNode, instrumentedMessageProcessor, OmfVersion.Omf12)
+    {
+    }
 
     /// <summary>
     /// Instantiates a new instance of the <see cref="AdapterDiagnosticsService"/> class.
@@ -79,8 +103,10 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     /// <param name="componentType">The adapter type.</param>
     /// <param name="elementNode">The node to link all the created streams to.</param>
     /// <param name="instrumentedLogger">Instance of <see cref="IInstrumentedLogger"/> service.</param>
+    /// <param name="omfVersion">The OMF version the adapter publishes with.</param>
     public AdapterDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor, IInstrumentedLogger instrumentedLogger,
-        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor)
+        string componentId, string componentType, LinkNode elementNode, IInstrumentedMessageProcessor instrumentedMessageProcessor,
+        OmfVersion omfVersion)
     {
         ThrowHelper.ThrowIfArgumentNull(diagnosticsMessageProcessor, nameof(diagnosticsMessageProcessor));
         ThrowHelper.ThrowIfArgumentNull(instrumentedMessageProcessor, nameof(instrumentedMessageProcessor));
@@ -89,7 +115,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         ThrowHelper.ThrowIfArgumentNull(elementNode, nameof(elementNode));
         ThrowHelper.ThrowIfArgumentNull(instrumentedLogger, nameof(instrumentedLogger));
 
-        _diagnosticsOmfMessageCreator = new AdapterDiagnosticsOmfMessageCreator(componentId, diagnosticsMessageProcessor.StreamIdPrefix, elementNode);
+        _diagnosticsOmfMessageCreator = new AdapterDiagnosticsOmfMessageCreator(componentId, diagnosticsMessageProcessor.StreamIdPrefix, elementNode, omfVersion);
+
+        _publishOmf20Diagnostics = omfVersion >= OmfVersion.Omf20;
 
         _diagnosticsMessageProcessor = diagnosticsMessageProcessor;
         _instrumentedMessageProcessor = instrumentedMessageProcessor;
@@ -161,6 +189,22 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         CreateDiagnosticsTypesStreams();
         SendStreamCountEvent(_sentStreamCount, _sentTypeCount);
+
+        // AssetCount and EventCount diagnostics only exist for OMF 2.0, and are skipped once creating the diagnostics types has failed.
+        if (!_publishOmf20Diagnostics || _failedToCreateDiagnosticsTypes)
+        {
+            return;
+        }
+
+        if (!_failedToUpdateAssetCount)
+        {
+            ResendAssetCount();
+        }
+
+        if (!_failedToUpdateEventCount)
+        {
+            ResendEventCount();
+        }
     }
 
     public void Dispose()
@@ -253,13 +297,32 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
                 _ioRateMovingAverage.AddSample(sentEventsCount);
 
-                if (_failedToUpdateMessageProcessorStatistics || _failedToCreateDiagnosticsTypes)
+                if (_failedToCreateDiagnosticsTypes)
                 {
                     return;
                 }
 
-                SendIoRateEvent();
-                SendStreamCountEventWhenChanged();
+                if (!_failedToUpdateMessageProcessorStatistics)
+                {
+                    SendIoRateEvent();
+                    SendStreamCountEventWhenChanged();
+                }
+
+                // AssetCount and EventCount diagnostics only exist for OMF 2.0.
+                if (!_publishOmf20Diagnostics)
+                {
+                    return;
+                }
+
+                if (!_failedToUpdateAssetCount)
+                {
+                    SendAssetCountEventWhenChanged();
+                }
+
+                if (!_failedToUpdateEventCount)
+                {
+                    SendEventCountEventWhenChanged();
+                }
             }
             finally
             {
@@ -334,6 +397,113 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
             _instrumentedLogger.LogError(ex, "Failed to process StreamCount diagnostics event. Stopping IORate and StreamCount diagnostics data collection.");
 
             _failedToUpdateMessageProcessorStatistics = true;
+        }
+    }
+
+    private void SendAssetCountEventWhenChanged()
+    {
+        if (_timerTickAssetCounter <= 0)
+        {
+            _timerTickAssetCounter = SendAssetCountPeriod;
+
+            var currentAssetCount = _instrumentedMessageProcessor.GetAssetCount();
+
+            if (currentAssetCount != Volatile.Read(ref _sentAssetCount))
+            {
+                Interlocked.Exchange(ref _sentAssetCount, currentAssetCount);
+
+                SendAssetCountEvent(currentAssetCount);
+            }
+        }
+
+        _timerTickAssetCounter--;
+    }
+
+    private void SendEventCountEventWhenChanged()
+    {
+        if (_timerTickEventCounter <= 0)
+        {
+            _timerTickEventCounter = SendEventCountPeriod;
+
+            var currentEventCount = _instrumentedMessageProcessor.GetEventCount();
+
+            if (currentEventCount != Interlocked.Read(ref _sentEventCount))
+            {
+                Interlocked.Exchange(ref _sentEventCount, currentEventCount);
+
+                SendEventCountEvent(currentEventCount);
+            }
+        }
+
+        _timerTickEventCounter--;
+    }
+
+    // ResendTypesAndStreams() can run on any thread, so the last sent values are always read atomically.
+    private void ResendAssetCount()
+    {
+        var assetCount = Volatile.Read(ref _sentAssetCount);
+
+        if (assetCount < 0)
+        {
+            // Nothing has been sent yet, so publish the live count and record it so the next timer tick does not publish it again.
+            assetCount = _instrumentedMessageProcessor.GetAssetCount();
+            Interlocked.Exchange(ref _sentAssetCount, assetCount);
+        }
+
+        SendAssetCountEvent(assetCount);
+    }
+
+    private void ResendEventCount()
+    {
+        var eventCount = Interlocked.Read(ref _sentEventCount);
+
+        if (eventCount < 0)
+        {
+            // Nothing has been sent yet, so publish the live count and record it so the next timer tick does not publish it again.
+            eventCount = _instrumentedMessageProcessor.GetEventCount();
+            Interlocked.Exchange(ref _sentEventCount, eventCount);
+        }
+
+        SendEventCountEvent(eventCount);
+    }
+
+    private void SendAssetCountEvent(int assetCount)
+    {
+        var assetCountEvent = new AssetCountEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            AssetCount = assetCount,
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetAssetCountStreamId(), Classification.Dynamic, assetCountEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping AssetCount diagnostics data collection.");
+
+            _failedToUpdateAssetCount = true;
+        }
+    }
+
+    private void SendEventCountEvent(long eventCount)
+    {
+        var eventCountEvent = new EventCountEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            EventCount = eventCount,
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEventCountStreamId(), Classification.Dynamic, eventCountEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process EventCount diagnostics event. Stopping EventCount diagnostics data collection.");
+
+            _failedToUpdateEventCount = true;
         }
     }
 

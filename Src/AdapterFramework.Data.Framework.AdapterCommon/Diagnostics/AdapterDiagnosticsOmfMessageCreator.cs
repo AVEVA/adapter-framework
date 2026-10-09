@@ -28,14 +28,22 @@ public class AdapterDiagnosticsOmfMessageCreator
 {
     #region Private Fields
 
+    private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
+
     private readonly LinkNode _assetNode;
     private readonly string _streamIdPrefix;
+    private readonly bool _publishOmf20Diagnostics;
 
     #endregion
 
     #region Constructors
 
     public AdapterDiagnosticsOmfMessageCreator(string componentId, string streamIdPrefix, LinkNode assetNode)
+        : this(componentId, streamIdPrefix, assetNode, OmfVersion.Omf12)
+    {
+    }
+
+    public AdapterDiagnosticsOmfMessageCreator(string componentId, string streamIdPrefix, LinkNode assetNode, OmfVersion omfVersion)
     {
         ThrowHelper.ThrowIfArgumentNull(assetNode, nameof(assetNode));
         ThrowHelper.ThrowIfArgumentNullEmptyOrWhiteSpace(componentId, nameof(componentId));
@@ -45,6 +53,7 @@ public class AdapterDiagnosticsOmfMessageCreator
             : componentId;
 
         _assetNode = assetNode;
+        _publishOmf20Diagnostics = omfVersion >= OmfVersion.Omf20;
     }
 
     #endregion
@@ -69,16 +78,20 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetStreamCountStreamId() => $"{_streamIdPrefix}.{StreamCountStreamName}";
 
+    public string GetAssetCountStreamId() => $"{_streamIdPrefix}.{AssetCountStreamName}";
+
+    public string GetEventCountStreamId() => $"{_streamIdPrefix}.{EventCountStreamName}";
+
     public string GetErrorRateStreamId() => $"{_streamIdPrefix}.{ErrorRateStreamName}";
 
-    private static DataType[] GetTypes()
+    private DataType[] GetTypes()
     {
         var errorRateType = new[] { GetErrorRateType() };
         var otherTypes = GetMessageProcessorDiagnosticsTypes();
         return [.. errorRateType.Union(otherTypes)];
     }
 
-    private static DataType[] GetMessageProcessorDiagnosticsTypes()
+    private DataType[] GetMessageProcessorDiagnosticsTypes()
     {
         var timestampProperty = new PropertyDefinition
         {
@@ -90,6 +103,11 @@ public class AdapterDiagnosticsOmfMessageCreator
         {
             Type = Tokens.IntegerToken,
             Format = Tokens.Int32Token,
+        };
+        var longProperty = new PropertyDefinition
+        {
+            Type = Tokens.IntegerToken,
+            Format = Tokens.Int64Token,
         };
         var doubleProperty = new PropertyDefinition
         {
@@ -108,6 +126,27 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
+        var assetCountDiagnosticsType = new DynamicDataType
+        {
+            Id = AssetCountTypeId,
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                [nameof(AssetCountEvent.Timestamp)] = timestampProperty,
+                [nameof(AssetCountEvent.AssetCount)] = integerProperty,
+            },
+        };
+
+        var eventCountDiagnosticsType = new DynamicDataType
+        {
+            Id = EventCountTypeId,
+            Description = EventCountDescription,
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                [nameof(EventCountEvent.Timestamp)] = timestampProperty,
+                [nameof(EventCountEvent.EventCount)] = longProperty,
+            },
+        };
+
         var dataRateDiagnosticsType = new DynamicDataType
         {
             Id = IoRateTypeId,
@@ -118,7 +157,10 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        return new DataType[] { streamCountDiagnosticsType, dataRateDiagnosticsType };
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        return _publishOmf20Diagnostics
+            ? new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, eventCountDiagnosticsType, dataRateDiagnosticsType }
+            : new DataType[] { streamCountDiagnosticsType, dataRateDiagnosticsType };
     }
 
     private static DataType GetErrorRateType()
@@ -169,6 +211,20 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
+        if (_publishOmf20Diagnostics)
+        {
+            // Link adapter asset count to adapter component health asset
+            targetLink = new DataStreamLinkNode(GetAssetCountStreamId());
+            link = new Link(sourceLink, targetLink);
+            links.Add((Tokens.Link, Classification.Static, link));
+
+            // Link adapter event count to adapter component health asset
+            targetLink = new DataStreamLinkNode(GetEventCountStreamId());
+            link = new Link(sourceLink, targetLink);
+            links.Add((Tokens.Link, Classification.Static, link));
+        }
+
         return links;
     }
 
@@ -191,20 +247,43 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     private DataStream[] GetMessageProcessorDiagnosticsStream()
     {
+        var streamCountStream = new DataStream
+        {
+            Id = GetStreamCountStreamId(),
+            TypeId = StreamCountTypeId,
+            Name = StreamCountStreamName,
+        };
+
+        var ioRateStream = new DataStream
+        {
+            Id = GetIoRateStreamId(),
+            TypeId = IoRateTypeId,
+            Name = IoRateStreamName,
+        };
+
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        if (!_publishOmf20Diagnostics)
+        {
+            return new[] { streamCountStream, ioRateStream };
+        }
+
         return new[]
         {
+            streamCountStream,
             new DataStream
             {
-                Id = GetStreamCountStreamId(),
-                TypeId = StreamCountTypeId,
-                Name = StreamCountStreamName,
+                Id = GetAssetCountStreamId(),
+                TypeId = AssetCountTypeId,
+                Name = AssetCountStreamName,
             },
             new DataStream
             {
-                Id = GetIoRateStreamId(),
-                TypeId = IoRateTypeId,
-                Name = IoRateStreamName,
+                Id = GetEventCountStreamId(),
+                TypeId = EventCountTypeId,
+                Name = EventCountStreamName,
+                Description = EventCountDescription,
             },
+            ioRateStream,
         };
     }
 
