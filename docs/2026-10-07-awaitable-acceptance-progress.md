@@ -1,7 +1,7 @@
 # OMF 2.0 Awaitable Acceptance: Implementation Progress
 
 **Date:** 2026-10-07  
-**Updated:** 2026-10-08, Phase 1 stragglers and Phase 2; 2026-10-09, MVP Phase 3  
+**Updated:** 2026-10-08, Phase 1 stragglers and Phase 2; 2026-10-09, MVP Phases 3 and 4  
 **Branch:** `features/acceptance-api`, based on 2261f3a  
 **Design documents (Research repo, `4981647-test-apps/docs`):**
 
@@ -22,9 +22,9 @@ the review.
 | AW-1. `SerializationBlock` single-producer violation | Done |
 | AW-2. Failover conversion drops the OMF version and partition key | Done |
 | Phase 1. Contracts and coordinator | Done, including host wiring |
-| Phase 2. Scope identity through grouping and serialization | Done. Scopes can be created on OMF 2.0 pipelines, but waits end in `TimedOut` until Phase 4 registers deliveries. |
-| Phase 3. Persistence | MVP Phase 3 done: `V4` writer records and the per-file serialized-ID index. Phase 4 reports the losses to the coordinator. |
-| Phase 4. Delivery and acceptance | Not started |
+| Phase 2. Scope identity through grouping and serialization | Done |
+| Phase 3. Persistence | MVP Phase 3 done: `V4` writer records and the per-file serialized-ID index |
+| Phase 4. Delivery and acceptance | MVP Phase 4 done: deliveries, attempts, dispositions, receipts, queue-level reports, shutdown order, and metrics. Scopes now complete as `Accepted`. |
 | Phase 6. Hot failover | Not started |
 | Phase 7. Client-level monitoring (optional) | Not started |
 
@@ -203,8 +203,8 @@ dotnet test Tests\AdapterFramework.Data.Framework.Buffering.Tests
 ```
 
 The DataFlow, EgressComponent, EndpointManager, and AdapterCommon suites take minutes. Last full run
-(2026-10-09, after Phase 3): every test project passes, including PersistentQueue 87, Buffering 76,
-Messages 40, DataFlow 170, EgressComponent 87, EndpointManager 206, AdapterCommon 543.
+(2026-10-09, after Phase 4): every test project passes, including PersistentQueue 87, Buffering 78,
+Messages 41, DataFlow 170, EgressComponent 87, EndpointManager 224, AdapterCommon 543.
 
 ### 2.11 Phase 3: V4 writer records
 
@@ -249,8 +249,8 @@ deleted.
 | `DeleteBuffers` | `Cleared` | `BuffersReset` |
 
 - [PersistentOmfMessageQueueBase.cs](../Src/AdapterFramework.Data.Framework.Buffering/PersistentOmfMessageQueueBase.cs)
-  maps the reason, logs a warning, and raises `SerializedBodiesDiscarded`. Nothing subscribes yet:
-  Phase 4 forwards it to the coordinator with the endpoint ID.
+  maps the reason, logs a warning, and raises `SerializedBodiesDiscarded`. `OmfWriter` forwards it to
+  the coordinator with its endpoint ID (§2.15).
 - The index covers only the running process, because scopes don't survive a restart. Records from an
   earlier run aren't indexed.
 - Both events are raised while the queue holds its locks, so handlers must not call back into the
@@ -258,9 +258,9 @@ deleted.
 - `IPersistentQueue.TrackedItemsLost` is a default member with empty accessors, so other
   implementers are unchanged.
 
-Not in Phase 3 (MVP Phase 4, step 4): a write that still fails after freeing disk space stays in the
-queue's pending list and is written by a later flush, so it isn't lost yet; and an item larger than a
-queue file throws on enqueue.
+Not in Phase 3: a write that still fails after freeing disk space stays in the queue's pending list
+and is written by a later flush, so it isn't lost (Phase 4 reports it as a pending reason, §2.15); and
+an item larger than a queue file throws on enqueue (not handled, §8).
 
 ### 2.13 Phase 3 tests
 
@@ -271,6 +271,81 @@ queue file throws on enqueue.
 | [PersistentOmfMessageQueue_Tests.cs](../Tests/AdapterFramework.Data.Framework.Buffering.Tests/PersistentOmfMessageQueue_Tests.cs) | A scoped body is written as `V4` with the ID last and as the tracking ID; an unscoped body is still `V3`; both round-trip with every field, and only the scoped one has an ID; each loss reason maps to its reason code |
 
 Existing tests already cover reading `V1` to `V3` records.
+
+### 2.14 Phase 4: dispatch
+
+[OmfEndpointManager.cs](../Src/AdapterFramework.Data.Framework.EndpointManager/OmfEndpointManager.cs)
+takes the coordinator as an optional last constructor parameter and uses it only when initialized for
+data endpoints, so the health endpoint manager reports nothing.
+
+- **Registration.** For a body with a serialized ID, `SendMessage` takes one writer snapshot, calls
+  `RegisterDeliveries` with each writer's endpoint ID and `TargetUri`, and sends to the same snapshot.
+  An empty snapshot gives `Dispatch/NoEndpoints`.
+- **Enqueue failure.** A writer that throws from `SendMessage` gets `Discarded` (`Dispatch/EnqueueFailed`).
+- **Removal.** Removing a writer reports `RecordEndpointDiscarded`: `Buffering/EndpointRemoved` for a
+  configuration change, `Buffering/BuffersReset` for `ResetDataBuffersAsync`. A lock orders
+  registration against removal, so a body registered to a writer is always discarded when the writer
+  goes, and a body registered after removal never includes it.
+- `IOmfWriter` gains `TargetUri`, a default member that returns `null`; `OmfWriter` returns its client URI.
+
+### 2.15 Phase 4: delivery and queue reports
+
+- [OmfByteHttpClient.cs](../Src/AdapterFramework.Data.Framework.EndpointManager/OmfByteHttpClient.cs)
+  puts the raw status on every `EndpointResponse` (`StatusCode`), reads every 2xx body regardless of
+  log level, and parses it into `Receipt` with
+  [OmfIngressReceiptParser.cs](../Src/AdapterFramework.Data.Framework.EndpointManager/OmfIngressReceiptParser.cs).
+  Names match case-insensitively; a value that doesn't parse, such as a non-GUID `Operation-Id`, is
+  left null, and parse failures never change classification. The local per-attempt GUID used for
+  debug file names is renamed `httpTraceId`.
+- [OmfWriter.cs](../Src/AdapterFramework.Data.Framework.EndpointManager/OmfWriter.cs) takes the
+  coordinator as an optional last constructor parameter; `OmfWriterFactory` passes it to data writers
+  only. For bodies with a serialized ID:
+
+| Event | Report |
+| --- | --- |
+| Retryable response (`Fail`, `DelayRequired`), each attempt | `RecordAttempt`: `Delivery/Retrying` with the raw status |
+| Dequeued after exactly 202 | `Accepted` with the receipt |
+| Dequeued after another 2xx | `Rejected` (`Delivery/NonAcceptedSuccess`) with the receipt |
+| Dequeued after a terminal status, including the cached-404 path | `Rejected` (`Delivery/RejectedByEndpoint`) |
+| Volatile overflow with no persistent queue (`BackedUpOmfMessageQueueBase.SerializedBodiesDiscarded`) | `Discarded` (`Buffering/BufferFull`) |
+| Per-file index losses (`PersistentOmfMessageQueueBase.SerializedBodiesDiscarded`, §2.12) | `Discarded` (`BufferFull`, `CorruptRecord`, or `BuffersReset`) |
+| Disk flush failure (`PersistentOmfMessageQueueBase.SerializedBodyWriteFailed`) | `RecordAttempt`: `Buffering/DiskError`, still pending, because the queue keeps the body and writes it on a later flush |
+
+- The writer unsubscribes from its queues before disposing them, so shutdown and removal don't report
+  losses; removal is already reported by the endpoint manager.
+- The Phase 3 event args are renamed `SerializedBodiesEventArgs`, because they now carry disk write
+  failures too.
+
+### 2.16 Phase 4: wiring, shutdown order, and metrics
+
+- `OmfEndpointManager` and `OmfWriterFactory` take the coordinator from the container, so it's created
+  before them and disposed after the writers' final flush. This closes the shutdown order in §5.7.
+  Hosts without `AddEgress` register no coordinator, and both default to null.
+- The coordinator publishes on the meter `OmfAwaitableCoordinator.MeterName`
+  (`AdapterFramework.Data.Framework.Awaitable`), from
+  [OmfAwaitableMetrics.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/OmfAwaitableMetrics.cs):
+
+| Instrument | Type | Tags |
+| --- | --- | --- |
+| `omf.awaitable.scopes.active` | Up-down counter | none |
+| `omf.awaitable.scope.outcomes` | Counter | `outcome`, `reason` |
+| `omf.awaitable.delivery.dispositions` | Counter | `state`, `reason` |
+| `omf.awaitable.wait.duration` | Histogram, seconds | `result`: the outcome, or `Canceled` |
+
+  Polling metrics belong to confirmation and aren't added.
+
+### 2.17 Phase 4 tests
+
+| Test | Covers |
+| --- | --- |
+| [OmfEndpointManagerAcceptance_Tests.cs](../Tests/AdapterFramework.Data.Framework.EndpointManager.Tests/OmfEndpointManagerAcceptance_Tests.cs) | One delivery per writer with its URI; `EnqueueFailed`; `NoEndpoints`; `EndpointRemoved`; `BuffersReset`; the health facet registers nothing |
+| [OmfWriterAcceptance_Tests.cs](../Tests/AdapterFramework.Data.Framework.EndpointManager.Tests/OmfWriterAcceptance_Tests.cs) | Against a local endpoint: 202 is `Accepted` with the parsed receipt; 200 is `NonAcceptedSuccess`; 400 is `RejectedByEndpoint`; 503 stays pending with `Retrying` and the status; with persistent buffering, a body retried while it moves to disk and a body read back from disk are both `Accepted` |
+| [OmfIngressReceiptParser_Tests.cs](../Tests/AdapterFramework.Data.Framework.EndpointManager.Tests/OmfIngressReceiptParser_Tests.cs) | The platform body, camel case, a non-GUID operation ID, and bodies without a receipt |
+| `BackedUpOmfMessageQueue_SizeLimitReached_NoPersistentQueue_ReportsScopedBody` | Volatile overflow reports `BufferFull` for scoped bodies only |
+| `PersistentOmfMessageQueue_Enqueue_FlushFails_RaisesWriteFailedForScopedBody` | Disk flush failure reports `DiskError` for scoped bodies only |
+| [OmfAwaitableMetrics_Tests.cs](../Tests/AdapterFramework.Data.Framework.Messages.Tests/Awaitable/OmfAwaitableMetrics_Tests.cs) | Active scopes, outcome, and wait-duration measurements |
+
+`TestEndpoint` can now return a POST response body (`SetPostResponseBody`).
 
 ---
 
@@ -322,9 +397,10 @@ lookup. Reports about unknown scopes or bodies are ignored.
 | `SerializationBlock`, before dispatch | `RegisterBody` | Creates the body and adds to `Serialized` per scope |
 | `SerializationBlock`, when every barrier has arrived | `CloseMaterialization` | Sets `Materialized` and checks counts |
 | `OmfEndpointManager`, before sending | `RegisterDeliveries` | One delivery per endpoint; no endpoints means `NoEndpoints` |
-| `OmfWriter`, retryable attempt | `RecordAttempt` | Updates `LastStatusCode` and `Reason`; still pending |
-| `OmfWriter` and queues, final decision | `RecordDisposition` | Accepted, rejected, discarded, or peer-covered; the first one wins |
-| `OmfEndpointManager`, writer removed | `RecordEndpointDiscarded` | Discards that endpoint's pending deliveries |
+| `OmfWriter`, retryable attempt or disk write failure | `RecordAttempt` | Updates `LastStatusCode` and `Reason`; still pending |
+| `OmfWriter`, on dequeue or on a queue's loss report | `RecordDisposition` | Accepted, rejected, discarded, or peer-covered; the first one wins |
+| `OmfEndpointManager`, writer throws on enqueue | `RecordDisposition` | Discarded (`EnqueueFailed`) |
+| `OmfEndpointManager`, writer removed or buffers reset | `RecordEndpointDiscarded` | Discards that endpoint's pending deliveries |
 
 The count check in `CloseMaterialization` catches items lost without a report: if
 `Admitted > Serialized + Discarded`, the shortfall is recorded as `Discarded` (`CountMismatch`).
@@ -372,8 +448,8 @@ After each report that could change a scope, the coordinator applies these rules
 
 ## 4. How a scope's data flows
 
-Steps 1–4 are implemented (Phase 2); step 5 is Phase 4. The departures document records where they
-differ from the plan.
+Steps 1–4 are implemented in Phase 2 and step 5 in Phase 4. The departures document records where
+they differ from the plan.
 
 1. **Admission (Phase 2).** A scope starts with no count. Each write through the scope runs the
    normal processor chain, including data filters. Just before `DataMessageProcessor` posts an
@@ -393,7 +469,8 @@ differ from the plan.
    calls `CloseMaterialization`, which runs the count check. Without this step the coordinator
    can't tell the last body from one still in a grouping block, so `Accepted` is never reached.
 5. **Dispatch and delivery (Phase 4).** The endpoint manager calls `RegisterDeliveries` with its
-   writer snapshot before sending. Each writer reports attempts and a final disposition.
+   writer snapshot before sending. Each writer reports attempts and a final disposition, and forwards
+   its queues' loss reports (§2.14, §2.15).
 
 Acceptance needs both: materialization closed, and every required delivery accepted.
 
@@ -474,15 +551,16 @@ registers bodies. All three are done (§2.6–§2.8).
 | Host wiring | Done (§2.5). The coordinator is a singleton, and the OMF version and failover mode reach it from the pipeline. |
 | Mixed peer-coverage test | Done, for both endpoint modes |
 | Bounded memory during an outage (plan §15.8) | Done (§5.5) |
-| Shutdown order (plan §12) | Safe today; becomes structural in Phase 4 (below) |
-| Metrics (plan §7.9) | Deferred to Phase 4, when there are real events to count |
+| Shutdown order (plan §12) | Done in Phase 4 (§2.16) |
+| Metrics (plan §7.9) | Done in Phase 4 (§2.16) |
 
 **Shutdown order.** Plan §12 cancels waits only after producers and writers stop. The host stops
 adapters in `HostedComponentsService.StopAsync` before the container disposes anything, so no adapter
 is still waiting when the coordinator is disposed. The container disposes singletons in reverse order
-of creation. Today the coordinator is created after the endpoint manager, so it's disposed before the
-writers' final flush. That doesn't matter yet, because nothing waits by then. In Phase 4 the endpoint
-manager and writers depend on the coordinator, so it's created before them and disposed after them.
+of creation. Before Phase 4 the coordinator was created after the endpoint manager, so it was disposed
+before the writers' final flush; that didn't matter, because nothing waited by then. Phase 4 makes the
+endpoint manager and writer factory depend on the coordinator, so it's created before them and
+disposed after them.
 
 **Known gap until Phase 6.** Changing the failover mode to hot while scopes are active blocks new
 scopes, but doesn't touch existing ones. Their later bodies go to the failover buffer, never get
@@ -619,9 +697,9 @@ Not covered yet. None of these block Phase 3, which depends only on AW-2.
 
 ## 8. Next steps
 
-1. Phase 4: make the endpoint manager and writers depend on the coordinator, register deliveries and
-   dispositions, which also fixes the shutdown order (§5.7), and add coordinator metrics. This
-   includes forwarding `SerializedBodiesDiscarded` from each writer's persistent queue to the
-   coordinator with the writer's endpoint ID (§2.12), and the queue-level dispositions that Phase 3
-   leaves out.
-2. Close the Phase 2 test gaps in §7 before the MVP ships.
+1. Close the Phase 2 test gaps in §7 before the MVP ships.
+2. Settle the open MVP decisions (MVP plan §7): hot-mode switch with active scopes, default wait
+   timeout, scope limit, 401 and 413 handling, and convenience methods.
+3. Not handled: a body larger than a disk buffer file (20 MB) throws when it spills to disk. OMF 2.0
+   bodies are capped at 512 KB, and a single larger item is dropped as `ItemTooLarge`, so it can't
+   happen for scoped bodies.

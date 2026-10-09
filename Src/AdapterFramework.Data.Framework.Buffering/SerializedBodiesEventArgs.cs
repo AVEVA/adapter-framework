@@ -19,28 +19,28 @@ using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 namespace AdapterFramework.Data.Framework.Buffering;
 
 /// <summary>
-/// Carries the serialized message IDs of persisted bodies that were lost before they were dequeued.
+/// Carries the serialized message IDs of buffered bodies that a queue lost or couldn't write, and why.
 /// </summary>
-public sealed class SerializedBodiesDiscardedEventArgs : EventArgs
+public sealed class SerializedBodiesEventArgs : EventArgs
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="SerializedBodiesDiscardedEventArgs"/> class.
+    /// Initializes a new instance of the <see cref="SerializedBodiesEventArgs"/> class.
     /// </summary>
-    /// <param name="serializedMessageIds">The serialized message IDs of the lost bodies.</param>
-    /// <param name="reason">Why the bodies were lost.</param>
-    public SerializedBodiesDiscardedEventArgs(IReadOnlyList<Guid> serializedMessageIds, OmfReasonCode reason)
+    /// <param name="serializedMessageIds">The serialized message IDs of the bodies.</param>
+    /// <param name="reason">What happened to the bodies.</param>
+    public SerializedBodiesEventArgs(IReadOnlyList<Guid> serializedMessageIds, OmfReasonCode reason)
     {
         SerializedMessageIds = serializedMessageIds;
         Reason = reason;
     }
 
     /// <summary>
-    /// Gets the serialized message IDs of the lost bodies.
+    /// Gets the serialized message IDs of the bodies.
     /// </summary>
     public IReadOnlyList<Guid> SerializedMessageIds { get; }
 
     /// <summary>
-    /// Gets why the bodies were lost: <see cref="OmfReasonCode.BufferFull"/>, <see cref="OmfReasonCode.CorruptRecord"/>, or <see cref="OmfReasonCode.BuffersReset"/>.
+    /// Gets what happened to the bodies, for example <see cref="OmfReasonCode.BufferFull"/> or <see cref="OmfReasonCode.DiskError"/>.
     /// </summary>
     public OmfReasonCode Reason { get; }
 }

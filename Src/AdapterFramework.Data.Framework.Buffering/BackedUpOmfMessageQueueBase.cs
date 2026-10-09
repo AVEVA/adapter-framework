@@ -20,6 +20,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Buffering.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 
@@ -83,6 +84,16 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
             await ConsolidateQueuesTimedTaskAsync();
         });
     }
+
+    #endregion
+
+    #region Public Events
+
+    /// <summary>
+    /// Raised when a body with a serialized message ID is dropped because the volatile queue is full and there is no persistent queue.
+    /// Handlers run under the queue lock, so they must not call back into the queue.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
 
     #endregion
 
@@ -230,6 +241,10 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                     if (_persistentQueue == null)
                     {
                         _logger.LogDebug(MaxBufferSizeReachedMessage);
+                        if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } serializedMessageId)
+                        {
+                            SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, OmfReasonCode.BufferFull));
+                        }
                     }
                 }
             }

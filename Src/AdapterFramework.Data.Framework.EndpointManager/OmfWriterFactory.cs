@@ -20,6 +20,7 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Security;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.EndpointManager;
 
@@ -39,6 +40,7 @@ public class OmfWriterFactory : IOmfWriterFactory
     private readonly IConfigurationProvider _configurationProvider;
     private readonly IApplicationManifest _applicationManifest;
     private readonly IEdgeEventProvider _edgeEventProvider;
+    private readonly OmfAwaitableCoordinator _awaitableCoordinator;
 
     #endregion
 
@@ -53,13 +55,15 @@ public class OmfWriterFactory : IOmfWriterFactory
     /// <param name="applicationManifest"><see cref="IApplicationManifest"/> instance.</param>
     /// <param name="compressor"><see cref="ICompressor"/> instance.</param>
     /// <param name="edgeEventProvider"><see cref="IEdgeEventProvider"/> instance.</param>
+    /// <param name="awaitableCoordinator">Optional coordinator that data writers report attempts and dispositions to.</param>
     public OmfWriterFactory(
         IEdgeDataProtector dataProtector,
         ISerializer serializer,
         IConfigurationProvider configurationProvider,
         IApplicationManifest applicationManifest,
         ICompressor compressor = null,
-        IEdgeEventProvider edgeEventProvider = null)
+        IEdgeEventProvider edgeEventProvider = null,
+        OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         _serializer = serializer;
         _compressor = compressor;
@@ -67,6 +71,7 @@ public class OmfWriterFactory : IOmfWriterFactory
         _configurationProvider = configurationProvider;
         _applicationManifest = applicationManifest;
         _edgeEventProvider = edgeEventProvider;
+        _awaitableCoordinator = awaitableCoordinator;
     }
 
     #endregion
@@ -86,9 +91,11 @@ public class OmfWriterFactory : IOmfWriterFactory
         var bufferFilesPath = GetBufferPartitionPath(writerConfiguration, omfWriterType, bufferingConfiguration);
 
         IEdgeEventProvider omfedgeEventProvider = null;
+        OmfAwaitableCoordinator awaitableCoordinator = null;
         if (omfWriterType == OmfWriterType.Data)
         {
             omfedgeEventProvider = _edgeEventProvider;
+            awaitableCoordinator = _awaitableCoordinator;
         }
 
         var debugLogsPath = Path.Combine(
@@ -110,7 +117,8 @@ public class OmfWriterFactory : IOmfWriterFactory
             debugLogsPath,
             omfWriterType,
             deviceStatusHandler,
-            omfedgeEventProvider);
+            omfedgeEventProvider,
+            awaitableCoordinator);
     }
 
     #endregion

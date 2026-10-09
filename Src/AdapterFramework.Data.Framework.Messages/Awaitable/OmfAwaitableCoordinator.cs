@@ -42,6 +42,11 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// </summary>
     public const int DefaultMaxActiveScopes = 1000;
 
+    /// <summary>
+    /// The name of the meter that publishes awaitable scope metrics.
+    /// </summary>
+    public const string MeterName = "AdapterFramework.Data.Framework.Awaitable";
+
     private readonly object _lock = new();
     private readonly Dictionary<OmfAwaitableScopeState, ScopeTracking> _scopes = new();
     private readonly Dictionary<Guid, BodyTracking> _bodies = new();
@@ -166,6 +171,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
 
             scope = new OmfAwaitableScopeState(this, options);
             _scopes.Add(scope, new ScopeTracking(scope));
+            OmfAwaitableMetrics.ScopeCreated();
             return true;
         }
     }
@@ -471,6 +477,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 return;
             }
 
+            OmfAwaitableMetrics.ScopeReleased();
+
             foreach (var body in tracking.Bodies)
             {
                 body.Membership.Remove(tracking);
@@ -521,6 +529,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         delivery.Reason = reason;
         delivery.Receipt = receipt ?? delivery.Receipt;
         delivery.CompletedAtUtc = DateTimeOffset.UtcNow;
+        OmfAwaitableMetrics.DeliveryCompleted(state, reason);
     }
 
     private static void Evaluate(ScopeTracking tracking, OmfAcceptanceOutcome? failureOutcome, OmfOutcomeReason failureReason, ref List<OmfAwaitableScopeState> completed)
@@ -556,6 +565,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     {
         tracking.Outcome = outcome;
         tracking.OutcomeReason = reason;
+        OmfAwaitableMetrics.OutcomeCompleted(outcome, reason);
         (completed ??= new List<OmfAwaitableScopeState>()).Add(tracking.Scope);
     }
 

@@ -67,7 +67,12 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
     /// Raised when persisted bodies with a serialized message ID are lost before they are dequeued.
     /// Handlers run while the persistent queue holds its locks, so they must not call back into the queue.
     /// </summary>
-    public event EventHandler<SerializedBodiesDiscardedEventArgs> SerializedBodiesDiscarded;
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
+
+    /// <summary>
+    /// Raised when writing a body with a serialized message ID to disk fails. The queue keeps the body and writes it on a later flush.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodyWriteFailed;
 
     #endregion
 
@@ -90,6 +95,10 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         {
             // This should only happen for an out of disk space exception when using FileQueue as the IPersistentQueue
             _logger?.LogError(ex, "Error flushing {MessageType} to disk in buffer for {TargetIdentifier}.", message.MessageType, _targetIdentifier);
+            if (message.SerializedMessageId is { } serializedMessageId)
+            {
+                SerializedBodyWriteFailed?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, OmfReasonCode.DiskError));
+            }
         }
     }
 
@@ -178,7 +187,7 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         };
 
         _logger?.LogWarning("{Count} persisted bodies with serialized message IDs were lost in buffer for {TargetIdentifier}: {Reason}.", e.TrackingIds.Count, _targetIdentifier, reason);
-        SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesDiscardedEventArgs(e.TrackingIds, reason));
+        SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesEventArgs(e.TrackingIds, reason));
     }
 
     #endregion

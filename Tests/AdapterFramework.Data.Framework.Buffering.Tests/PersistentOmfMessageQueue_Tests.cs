@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -374,7 +375,7 @@ public class PersistentOmfMessageQueue_Tests
     public void PersistentOmfMessageQueue_TrackedItemsLost_RaisesSerializedBodiesDiscarded(TrackedItemLossReason lossReason, OmfReasonCode expected)
     {
         var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
-        SerializedBodiesDiscardedEventArgs raised = null;
+        SerializedBodiesEventArgs raised = null;
         var mockPersistentQueue = new Mock<IPersistentQueue>();
 
         using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
@@ -384,5 +385,26 @@ public class PersistentOmfMessageQueue_Tests
         Assert.NotNull(raised);
         Assert.Equal(expected, raised.Reason);
         Assert.Equal(ids, raised.SerializedMessageIds);
+    }
+
+    /// <summary>
+    /// A failed disk flush of a scoped body raises <see cref="PersistentOmfMessageQueueBase{TMessage}.SerializedBodyWriteFailed"/> with <see cref="OmfReasonCode.DiskError"/>; an unscoped body raises nothing.
+    /// </summary>
+    [Fact]
+    public void PersistentOmfMessageQueue_Enqueue_FlushFails_RaisesWriteFailedForScopedBody()
+    {
+        var id = Guid.NewGuid();
+        var raised = new List<SerializedBodiesEventArgs>();
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.FlushEnqueues()).Throws(new IOException("UnitTest is out of space!"));
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.SerializedBodyWriteFailed += (_, e) => raised.Add(e);
+        queue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20));
+        queue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id });
+
+        var single = Assert.Single(raised);
+        Assert.Equal(OmfReasonCode.DiskError, single.Reason);
+        Assert.Equal(new[] { id }, single.SerializedMessageIds);
     }
 }

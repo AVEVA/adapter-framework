@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
@@ -124,6 +125,7 @@ public sealed class OmfAwaitableScopeState : ScopeToken, IAwaitableScope
         cancellationToken.ThrowIfCancellationRequested();
         Seal();
 
+        var started = Stopwatch.GetTimestamp();
         if (!_completion.Task.IsCompleted)
         {
             var waitEnded = Task.WhenAny(_completion.Task, _disposedSignal.Task, _coordinator.ShutdownTask);
@@ -135,14 +137,22 @@ public sealed class OmfAwaitableScopeState : ScopeToken, IAwaitableScope
             {
                 // A timed-out wait reports the current state; tracking continues.
             }
+            catch (OperationCanceledException)
+            {
+                OmfAwaitableMetrics.WaitEnded(Stopwatch.GetElapsedTime(started).TotalSeconds, "Canceled");
+                throw;
+            }
 
             if (!_completion.Task.IsCompleted && (_disposedSignal.Task.IsCompleted || _coordinator.ShutdownTask.IsCompleted))
             {
+                OmfAwaitableMetrics.WaitEnded(Stopwatch.GetElapsedTime(started).TotalSeconds, "Canceled");
                 throw new OperationCanceledException("The awaitable scope was disposed or the framework is shutting down.");
             }
         }
 
-        return _coordinator.GetResult(this);
+        var result = _coordinator.GetResult(this);
+        OmfAwaitableMetrics.WaitEnded(Stopwatch.GetElapsedTime(started).TotalSeconds, result.Outcome.ToString());
+        return result;
     }
 
     /// <summary>
