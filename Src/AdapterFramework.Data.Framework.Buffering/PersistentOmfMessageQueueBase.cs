@@ -17,6 +17,7 @@ using System.IO;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
@@ -55,7 +56,18 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         _targetIdentifier = targetIdentifier;
         _persistentQueue = persistentQueue;
         _logger = logger;
+        _persistentQueue.TrackedItemsLost += OnTrackedItemsLost;
     }
+
+    #endregion
+
+    #region Public Events
+
+    /// <summary>
+    /// Raised when persisted bodies with a serialized message ID are lost before they are dequeued.
+    /// Handlers run while the persistent queue holds its locks, so they must not call back into the queue.
+    /// </summary>
+    public event EventHandler<SerializedBodiesDiscardedEventArgs> SerializedBodiesDiscarded;
 
     #endregion
 
@@ -139,11 +151,34 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         {
             if (disposing)
             {
+                _persistentQueue.TrackedItemsLost -= OnTrackedItemsLost;
                 _persistentQueue.Dispose();
             }
 
             _disposed = true;
         }
+    }
+
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Re-raises lost tracked items as <see cref="SerializedBodiesDiscarded"/> with the matching reason code.
+    /// </summary>
+    /// <param name="sender">The persistent queue.</param>
+    /// <param name="e">The lost tracking IDs and the loss reason.</param>
+    private void OnTrackedItemsLost(object sender, TrackedItemsLostEventArgs e)
+    {
+        var reason = e.Reason switch
+        {
+            TrackedItemLossReason.Evicted => OmfReasonCode.BufferFull,
+            TrackedItemLossReason.Cleared => OmfReasonCode.BuffersReset,
+            _ => OmfReasonCode.CorruptRecord,
+        };
+
+        _logger?.LogWarning("{Count} persisted bodies with serialized message IDs were lost in buffer for {TargetIdentifier}: {Reason}.", e.TrackingIds.Count, _targetIdentifier, reason);
+        SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesDiscardedEventArgs(e.TrackingIds, reason));
     }
 
     #endregion

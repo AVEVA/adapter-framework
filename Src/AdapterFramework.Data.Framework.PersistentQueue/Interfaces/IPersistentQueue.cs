@@ -35,6 +35,16 @@ namespace AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 public interface IPersistentQueue : IDisposable
 {
     /// <summary>
+    /// Raised when written items with a <see cref="DataItem.TrackingId"/> are lost before they are dequeued.
+    /// Handlers run while the queue holds its locks, so they must not call back into the queue.
+    /// </summary>
+    event EventHandler<TrackedItemsLostEventArgs> TrackedItemsLost
+    {
+        add { }
+        remove { }
+    }
+
+    /// <summary>
     /// Updates the maximum number of files retained by the queue.
     /// </summary>
     /// <param name="maxQueueFiles">The maximum number of queue files to retain. A value of 0 means unlimited.</param>

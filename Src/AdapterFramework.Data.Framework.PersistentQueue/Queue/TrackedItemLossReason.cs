@@ -14,11 +14,23 @@
 // SPDX-License-Identifier: Apache-2.0
 namespace AdapterFramework.Data.Framework.PersistentQueue.Queue;
 
-public enum DataItemVersion
+/// <summary>
+/// Describes why written items with a <see cref="DataItem.TrackingId"/> were lost before they were dequeued.
+/// </summary>
+public enum TrackedItemLossReason
 {
-    Invalid = 0,
-    V1 = 1,
-    V2 = 2,
-    V3 = 3,
-    V4 = 4,
+    /// <summary>
+    /// The reader skipped the item because its record could not be read.
+    /// </summary>
+    Unreadable = 0,
+
+    /// <summary>
+    /// The file holding the item was deleted to stay within the file limit or to free disk space.
+    /// </summary>
+    Evicted = 1,
+
+    /// <summary>
+    /// The buffers were deleted.
+    /// </summary>
+    Cleared = 2,
 }

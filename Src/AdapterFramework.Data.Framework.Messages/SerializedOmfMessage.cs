@@ -30,6 +30,7 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     public const int MessageActionEnumSize = 1;
     public const int OmfVersionEnumSize = 1;
     public const int PartitionKeyEnumSize = 1;
+    public const int SerializedMessageIdSize = 16;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SerializedOmfMessage"/> class.
@@ -76,6 +77,7 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     /// <inheritdoc/>
     public virtual int GetMessageSizeInBytes()
     {
-        return MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + OmfVersionEnumSize + PartitionKeyEnumSize;
+        return MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + OmfVersionEnumSize + PartitionKeyEnumSize
+            + (SerializedMessageId.HasValue ? SerializedMessageIdSize : 0);
     }
 }

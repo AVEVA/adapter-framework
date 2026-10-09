@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+using System;
 using System.Diagnostics.CodeAnalysis;
 using AdapterFramework.Data.DataModel;
 
@@ -50,6 +51,11 @@ public interface ISerializedOmfMessage
     /// Gets the PartitionKey of the serialized OMF message.
     /// </summary>
     PartitionKey? PartitionKey { get; }
+
+    /// <summary>
+    /// Gets the ID that the awaitable coordinator tracks the body under, or <c>null</c> when the body carries no scoped item.
+    /// </summary>
+    Guid? SerializedMessageId => null;
 
     /// <summary>
     /// Get the size of the serialized OMF message in bytes. 

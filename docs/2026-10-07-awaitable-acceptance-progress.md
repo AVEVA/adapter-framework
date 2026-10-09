@@ -1,13 +1,14 @@
 # OMF 2.0 Awaitable Acceptance: Implementation Progress
 
 **Date:** 2026-10-07  
-**Updated:** 2026-10-08, Phase 1 stragglers and Phase 2  
+**Updated:** 2026-10-08, Phase 1 stragglers and Phase 2; 2026-10-09, MVP Phase 3  
 **Branch:** `features/acceptance-api`, based on 2261f3a  
 **Design documents (Research repo, `4981647-test-apps/docs`):**
 
 - `2026-09-25-adapter-framework-omf-awaitable-acceptance-confirmation-plan.md` (the plan)
 - `2026-10-01-adapter-framework-omf-acceptance-only-api.md` (the acceptance-only API this branch implements)
 - `2026-10-07-adapter-framework-omf-acceptance-departures.md` (where the implementation departs from the plan)
+- `2026-10-09-adapter-framework-omf-acceptance-mvp-plan.md` (proposed MVP: no confirmation or hot failover; V4 writer records)
 
 This note records what's done on the branch, how it works, and answers to questions raised during
 the review.
@@ -22,7 +23,7 @@ the review.
 | AW-2. Failover conversion drops the OMF version and partition key | Done |
 | Phase 1. Contracts and coordinator | Done, including host wiring |
 | Phase 2. Scope identity through grouping and serialization | Done. Scopes can be created on OMF 2.0 pipelines, but waits end in `TimedOut` until Phase 4 registers deliveries. |
-| Phase 3. Persistence | Not started |
+| Phase 3. Persistence | MVP Phase 3 done: `V4` writer records and the per-file serialized-ID index. Phase 4 reports the losses to the coordinator. |
 | Phase 4. Delivery and acceptance | Not started |
 | Phase 6. Hot failover | Not started |
 | Phase 7. Client-level monitoring (optional) | Not started |
@@ -197,10 +198,79 @@ dotnet test Tests\AdapterFramework.Data.Framework.EgressComponent.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.DataFlow.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.MessageProcessor.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.AdapterCommon.Tests
+dotnet test Tests\AdapterFramework.Data.Framework.PersistentQueue.Tests
+dotnet test Tests\AdapterFramework.Data.Framework.Buffering.Tests
 ```
 
-The DataFlow, EgressComponent, and AdapterCommon suites take minutes. Last run: Messages 40,
-DataFlow 170, EgressComponent 87, MessageProcessor 302, AdapterCommon 543, all passing.
+The DataFlow, EgressComponent, EndpointManager, and AdapterCommon suites take minutes. Last full run
+(2026-10-09, after Phase 3): every test project passes, including PersistentQueue 87, Buffering 76,
+Messages 40, DataFlow 170, EgressComponent 87, EndpointManager 206, AdapterCommon 543.
+
+### 2.11 Phase 3: V4 writer records
+
+- `ISerializedOmfMessage` gains `Guid? SerializedMessageId`, a default member that returns `null`, so
+  other implementers and test doubles are unchanged. `SerializedOmfMessage` already had it.
+- [SerializedOmfMessage.cs](../Src/AdapterFramework.Data.Framework.Messages/SerializedOmfMessage.cs):
+  `GetMessageSizeInBytes` adds 16 bytes when the ID is set.
+- [DataItemVersion.cs](../Src/AdapterFramework.Data.Framework.PersistentQueue/Queue/DataItemVersion.cs)
+  adds `V4`, and [Serializer.cs](../Src/AdapterFramework.Data.Framework.PersistentQueue/Queue/Serializer.cs)
+  gives it its own 8-byte record start marker.
+- [PersistentOmfMessageQueue.cs](../Src/AdapterFramework.Data.Framework.Buffering/PersistentOmfMessageQueue.cs)
+  writes `V4` only for bodies with an ID: the `V3` layout (type, item count, body, partition key,
+  action, OMF version) followed by the 16-byte ID. Unscoped bodies are still written as `V3`. It reads
+  `V1` to `V4`; only `V4` records load with an ID. Peeked and dequeued bodies keep their ID.
+- No `ProcessTimeTicks`, as decided for the MVP.
+
+**Rollback.** An older build doesn't recognize the `V4` start marker, so its file queue treats each
+`V4` record as corrupt: it logs an error, skips the record, and continues with the next `V1` to `V3`
+record. Scoped bodies on disk at rollback are lost; unscoped bodies are not. The MVP plan (§3.2) said
+the older build would read them as empty-body messages; that case can't be reached, because the file
+queue rejects the record first. The release-note mitigation is unchanged.
+
+### 2.12 Phase 3: per-file serialized-ID index
+
+The index lives in [FileQueue.cs](../Src/AdapterFramework.Data.Framework.PersistentQueue/Queue/FileQueue.cs),
+the only code that knows which file and position each record went to and when files are skipped or
+deleted.
+
+- `DataItem` gains `TrackingId`, set from the serialized ID. It is held in memory and never written.
+- Before writing an item with a tracking ID, the queue records its file number and record start
+  position, and removes the entry if the write fails. Recording first means the reader can never
+  reach a record whose entry is missing.
+- On dequeue, the queue works out the record's start from the reader position and the record size.
+  The matching entry is removed silently; entries before it in the same file were skipped as corrupt.
+- `IPersistentQueue.TrackedItemsLost` reports lost IDs with a reason:
+
+| Where the queue loses entries | Reason | `OmfReasonCode` |
+| --- | --- | --- |
+| Records skipped as corrupt during a dequeue, or left in a file the reader moves past normally | `Unreadable` | `CorruptRecord` |
+| The reader forced off a file to stay within the file limit, or to free disk space | `Evicted` | `BufferFull` |
+| Files deleted by `UpdateMaxQueueFiles` | `Evicted` | `BufferFull` |
+| `DeleteBuffers` | `Cleared` | `BuffersReset` |
+
+- [PersistentOmfMessageQueueBase.cs](../Src/AdapterFramework.Data.Framework.Buffering/PersistentOmfMessageQueueBase.cs)
+  maps the reason, logs a warning, and raises `SerializedBodiesDiscarded`. Nothing subscribes yet:
+  Phase 4 forwards it to the coordinator with the endpoint ID.
+- The index covers only the running process, because scopes don't survive a restart. Records from an
+  earlier run aren't indexed.
+- Both events are raised while the queue holds its locks, so handlers must not call back into the
+  queue. The coordinator doesn't.
+- `IPersistentQueue.TrackedItemsLost` is a default member with empty accessors, so other
+  implementers are unchanged.
+
+Not in Phase 3 (MVP Phase 4, step 4): a write that still fails after freeing disk space stays in the
+queue's pending list and is written by a later flush, so it isn't lost yet; and an item larger than a
+queue file throws on enqueue.
+
+### 2.13 Phase 3 tests
+
+| Test | Covers |
+| --- | --- |
+| [FileQueue_TrackingTests.cs](../Tests/AdapterFramework.Data.Framework.PersistentQueue.Tests/FileQueue_TrackingTests.cs) | Dequeued and peeked items aren't reported, across a file change; a corrupted record is reported `Unreadable` and the next one isn't; the file limit and `UpdateMaxQueueFiles` report `Evicted`; `DeleteBuffers` reports `Cleared` |
+| `Serializer_SerializeDeserializeDataItem_Success` in [Serializer_Tests.cs](../Tests/AdapterFramework.Data.Framework.PersistentQueue.Tests/Serializer_Tests.cs) | Adds `V3` and `V4` records |
+| [PersistentOmfMessageQueue_Tests.cs](../Tests/AdapterFramework.Data.Framework.Buffering.Tests/PersistentOmfMessageQueue_Tests.cs) | A scoped body is written as `V4` with the ID last and as the tracking ID; an unscoped body is still `V3`; both round-trip with every field, and only the scoped one has an ID; each loss reason maps to its reason code |
+
+Existing tests already cover reading `V1` to `V3` records.
 
 ---
 
@@ -513,7 +583,8 @@ Decided on 2026-10-08:
 | --- | --- | --- |
 | AW-2 failover records | One release; release notes say to drain or delete the failover buffer before rollback | Departures §2.4 |
 | Serialized ID in persisted records (Phase 3) | Only scoped bodies carry one; unscoped and legacy records load without one | Departures §2.8 |
-| V4 writer records (Phase 3) | One release; release notes say to drain or delete the endpoint buffers before rollback | Departures §2.10 |
+| V4 writer records (Phase 3) | One release; release notes say to drain or delete the endpoint buffers before rollback. Confirmed for the MVP on 2026-10-09, instead of an in-memory side table. | Departures §2.10 |
+| V4 contents (Phase 3) | Decided 2026-10-09: written only for bodies with a serialized ID, so unscoped bodies stay `V3`; no `ProcessTimeTicks` until hot failover | MVP plan §3.1 |
 
 Still open:
 
@@ -521,7 +592,6 @@ Still open:
 | --- | --- | --- |
 | Active-scope limit | Before release | Placeholder 1,000 |
 | Move AW-2 out of this work into a separate change | Any time | AW-2 fixes an existing bug (failover records drop the OMF version and partition key). Acceptance doesn't need it before Phase 6, because scopes are refused in hot failover and warm and cold failover don't use the failover buffer. Moving it removes the failover rollback concern from this work. Departures §2.4. |
-| Keep the serialized ID in memory instead of in V4 writer records | Start of Phase 3 | Writer records already carry the OMF version and partition key; V4 exists only for the serialized ID, which bodies need once they spill to disk after 5 seconds. Scopes don't survive a restart, so an in-memory side table keyed by record identity might be enough. If so, there's no format change and no rollback risk, and the one-release decision for V4 falls away. Departures §2.10. |
 | Replace the `Membership` helper with `Slice` everywhere in `SerializationBlock` | Any time | Readability only |
 | Guard the null logger in `SerializationBlock` | Optional | Predates this branch. With a null logger, the first oversized message throws inside the block. |
 
@@ -549,8 +619,9 @@ Not covered yet. None of these block Phase 3, which depends only on AW-2.
 
 ## 8. Next steps
 
-1. Phase 3: persistence. First check whether the serialized ID can live in an in-memory side table
-   instead of in V4 writer records (§6). Otherwise add V4 writer and failover records with an optional
-   serialized ID and the process time, shipped in one release, and the per-file serialized-ID index.
-2. Phase 4: make the endpoint manager and writers depend on the coordinator, register deliveries and
-   dispositions, which also fixes the shutdown order (§5.7), and add coordinator metrics.
+1. Phase 4: make the endpoint manager and writers depend on the coordinator, register deliveries and
+   dispositions, which also fixes the shutdown order (§5.7), and add coordinator metrics. This
+   includes forwarding `SerializedBodiesDiscarded` from each writer's persistent queue to the
+   coordinator with the writer's endpoint ID (§2.12), and the queue-level dispositions that Phase 3
+   leaves out.
+2. Close the Phase 2 test gaps in §7 before the MVP ships.

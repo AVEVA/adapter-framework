@@ -20,6 +20,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
@@ -287,5 +288,101 @@ public class PersistentOmfMessageQueue_Tests
         persistentOmfMessageQueue.Clear();
 
         Assert.True(deleteBuffersCalled);
+    }
+
+    /// <summary>
+    /// A body with a serialized message ID is written as a V4 record that appends the ID after the V3 trailer and carries it as the tracking ID.
+    /// </summary>
+    [Fact]
+    public void PersistentOmfMessageQueue_Enqueue_ScopedBody_WritesV4Record()
+    {
+        var id = Guid.NewGuid();
+        DataItem enqueued = null;
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20, 0x21 }, MessageAction.Create, 3, OmfVersion.Omf20, PartitionKey.Key7) { SerializedMessageId = id };
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback((DataItem item) => enqueued = item);
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.Enqueue(message);
+
+        Assert.Equal(DataItemVersion.V4, enqueued.Version);
+        Assert.Equal(id, enqueued.TrackingId);
+        Assert.Equal(message.MessageBody.Length + 8 + SerializedOmfMessage.SerializedMessageIdSize, message.GetMessageSizeInBytes());
+        Assert.Equal(message.GetMessageSizeInBytes(), enqueued.Data.Length);
+        Assert.Equal(PartitionKey.Key7, (PartitionKey)enqueued.Data[^19]);
+        Assert.Equal(MessageAction.Create, (MessageAction)enqueued.Data[^18]);
+        Assert.Equal(OmfVersion.Omf20, (OmfVersion)enqueued.Data[^17]);
+        Assert.Equal(id, new Guid(enqueued.Data.AsSpan(enqueued.Data.Length - 16)));
+    }
+
+    /// <summary>
+    /// A body without a serialized message ID is still written as a V3 record with no tracking ID.
+    /// </summary>
+    [Fact]
+    public void PersistentOmfMessageQueue_Enqueue_UnscopedBody_WritesV3Record()
+    {
+        DataItem enqueued = null;
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20);
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback((DataItem item) => enqueued = item);
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.Enqueue(message);
+
+        Assert.Equal(DataItemVersion.V3, enqueued.Version);
+        Assert.Null(enqueued.TrackingId);
+    }
+
+    /// <summary>
+    /// Bodies written and read back keep their fields, scoped bodies keep their serialized message ID, and unscoped bodies load without one.
+    /// </summary>
+    /// <param name="scoped">Whether the body carries a serialized message ID.</param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PersistentOmfMessageQueue_RoundTrip_KeepsSerializedMessageId(bool scoped)
+    {
+        Guid? id = scoped ? Guid.NewGuid() : null;
+        DataItem enqueued = null;
+        var message = new SerializedOmfMessage(MessageType.Schema, new byte[] { 0x20, 0x21, 0x22 }, MessageAction.Update, 5, OmfVersion.Omf20, PartitionKey.Key3) { SerializedMessageId = id };
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback((DataItem item) => enqueued = item);
+        mockPersistentQueue.Setup(q => q.Dequeue()).Returns(() => new DataItem(enqueued.Version, enqueued.Data));
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.Enqueue(message);
+        Assert.True(queue.TryDequeue(out var dequeued));
+
+        Assert.Equal(id, dequeued.SerializedMessageId);
+        Assert.Equal(message.MessageType, dequeued.MessageType);
+        Assert.Equal(message.MessageBody, dequeued.MessageBody);
+        Assert.Equal(message.ItemCount, dequeued.ItemCount);
+        Assert.Equal(message.MessageAction, dequeued.MessageAction);
+        Assert.Equal(message.OmfVersion, dequeued.OmfVersion);
+        Assert.Equal(message.PartitionKey, dequeued.PartitionKey);
+    }
+
+    /// <summary>
+    /// Tracked items the persistent queue loses are re-raised with the matching OMF reason code.
+    /// </summary>
+    /// <param name="lossReason">The loss reason the persistent queue reports.</param>
+    /// <param name="expected">The reason code the OMF queue reports.</param>
+    [Theory]
+    [InlineData(TrackedItemLossReason.Evicted, OmfReasonCode.BufferFull)]
+    [InlineData(TrackedItemLossReason.Unreadable, OmfReasonCode.CorruptRecord)]
+    [InlineData(TrackedItemLossReason.Cleared, OmfReasonCode.BuffersReset)]
+    public void PersistentOmfMessageQueue_TrackedItemsLost_RaisesSerializedBodiesDiscarded(TrackedItemLossReason lossReason, OmfReasonCode expected)
+    {
+        var ids = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        SerializedBodiesDiscardedEventArgs raised = null;
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.SerializedBodiesDiscarded += (_, e) => raised = e;
+        mockPersistentQueue.Raise(q => q.TrackedItemsLost += null, new TrackedItemsLostEventArgs(ids, lossReason));
+
+        Assert.NotNull(raised);
+        Assert.Equal(expected, raised.Reason);
+        Assert.Equal(ids, raised.SerializedMessageIds);
     }
 }
