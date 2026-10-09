@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+using System;
 using System.Collections.Concurrent;
 using System.Text;
 using AdapterFramework.Data.DataModel;
@@ -66,6 +67,11 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
 
     /// <inheritdoc/>
     public PartitionKey? PartitionKey { get; }
+
+    /// <summary>
+    /// Gets or sets the ID that the awaitable coordinator tracks the body under, or <c>null</c> when the body carries no scoped item.
+    /// </summary>
+    public Guid? SerializedMessageId { get; set; }
 
     /// <inheritdoc/>
     public virtual int GetMessageSizeInBytes()

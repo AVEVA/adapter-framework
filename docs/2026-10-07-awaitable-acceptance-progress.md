@@ -1,7 +1,7 @@
 # OMF 2.0 Awaitable Acceptance: Implementation Progress
 
 **Date:** 2026-10-07  
-**Updated:** 2026-10-08, Phase 1 stragglers  
+**Updated:** 2026-10-08, Phase 1 stragglers and Phase 2  
 **Branch:** `features/acceptance-api`, based on 2261f3a  
 **Design documents (Research repo, `4981647-test-apps/docs`):**
 
@@ -20,8 +20,8 @@ the review.
 | --- | --- |
 | AW-1. `SerializationBlock` single-producer violation | Done |
 | AW-2. Failover conversion drops the OMF version and partition key | Done |
-| Phase 1. Contracts and coordinator | Done, including host wiring. No processor creates scopes until Phase 2. |
-| Phase 2. Scope identity through grouping and serialization | Not started |
+| Phase 1. Contracts and coordinator | Done, including host wiring |
+| Phase 2. Scope identity through grouping and serialization | Done. Scopes can be created on OMF 2.0 pipelines, but waits end in `TimedOut` until Phase 4 registers deliveries. |
 | Phase 3. Persistence | Not started |
 | Phase 4. Delivery and acceptance | Not started |
 | Phase 6. Hot failover | Not started |
@@ -59,8 +59,10 @@ resent with the wrong header.
 - Tests cover an OMF 2.0 round trip through the disk record, a legacy `V2` record, and a hot-mode
   message buffered on the secondary and sent after promotion.
 
-**Rollback risk:** older builds ignore the record version and would misread `V3` failover records. The
-plan's two-release rollout (read first, write later) isn't applied here; see the departures document.
+**Rollback risk:** older builds ignore the record version and misread `V3` failover records: the body
+gains two junk bytes, the process time is garbage, and the action is wrong. Decided 2026-10-08: ship in
+one release, and the release notes say to drain or delete the failover buffer before rolling back. See
+departures §2.4.
 
 ### 2.3 Phase 1: public contracts
 
@@ -111,17 +113,94 @@ by hand, because `dotnet sln add` adds x64 and x86 configurations to every proje
 - Tests check the singleton registration, that OMF 2.0 allows scopes and OMF 1.2 doesn't, and that
   hot mode blocks scopes until the mode changes to warm.
 
-### 2.6 Running the tests
+### 2.6 Phase 2, step 1: scope identity through the processor chain
+
+- `IScopedMessageProcessor` (Abstractions) mirrors the 14 `IMessageProcessor` writes, each with a
+  required trailing `ScopeToken`, plus `TryCreateScope`.
+- [DataMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.EgressComponent/DataMessageProcessor.cs)
+  implements it. Each unscoped write is a one-line wrapper that passes `null`. A scoped write tags the
+  envelope with `Message.Scope`, records the admitted item count, and posts to the OMF 2.0 grouping
+  block; a refused post records `Admission/PostRejected`. It also installs the seal handler that posts
+  seal barriers.
+- [InstrumentedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/InstrumentedMessageProcessor.cs)
+  implements it and forwards the token.
+- [AdapterMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/AdapterMessageProcessor.cs)
+  has a `protected internal virtual` core method per write. Data filters run in the core methods, so a
+  held-back value is emitted with the scope of the write that releases it.
+  [HistoryRecoveryAdapterMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/HistoryRecovery/HistoryRecoveryAdapterMessageProcessor.cs)
+  overrides the dynamic-value core methods, so it still counts scoped writes.
+- [ScopedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/ScopedMessageProcessor.cs)
+  wraps a processor without scope support; its `TryCreateScope` throws `NotSupportedException`.
+- The scope classes [AwaitableMessageScope.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/AwaitableMessageScope.cs)
+  and [AwaitableAdapterMessageScope.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/AwaitableAdapterMessageScope.cs)
+  wrap each write in `EnterWrite`/`ExitWrite`, so `Seal` waits for writes in flight and later writes throw.
+
+### 2.7 Phase 2, step 2: sidecars and barriers in the grouping blocks
+
+**Terms.** An *entry* is one position in one of a grouped message's lists: a type, container,
+relationship, entity, event, or stream. A *value* is one value inside a stream. The code avoids
+"element", which also means an AF element in the PI System.
+
+- [InstanceScopeSidecar.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/InstanceScopeSidecar.cs)
+  and [SchemaScopeSidecar.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/SchemaScopeSidecar.cs)
+  are attached to `InstanceMessage` and `SchemaMessage` as `Sidecar`, and are null when no item is
+  scoped. They have the plan's lists: stream values as `ScopeRange(scopeIndex, start, count)` runs, and
+  one scope index per other entry (-1 for unscoped). Their base,
+  [ScopeSidecar.cs](../Src/AdapterFramework.Data.Framework.Messages/Awaitable/ScopeSidecar.cs), counts the
+  scoped items of any window with `AddEntries` and `AddValues`.
+- [ScopeSidecarBuilder.cs](../Src/AdapterFramework.Data.Framework.DataFlow/ScopeSidecarBuilder.cs) is
+  created by a grouping block on the first scoped item and dropped after each flush, so unscoped traffic
+  pays a null check. Adjacent runs from the same scope merge. Embedded relationships take the
+  envelope's scope.
+- [InstanceGroupingBlock.cs](../Src/AdapterFramework.Data.Framework.DataFlow/InstanceGroupingBlock.cs) and
+  [SchemaGroupingBlock.cs](../Src/AdapterFramework.Data.Framework.DataFlow/SchemaGroupingBlock.cs) handle
+  `ScopeSealBarrier`. If the block buffers nothing for the scope, it forwards a
+  `ScopeMaterializationBarrier` at once. Otherwise it waits for the next flush (immediately with
+  `FlushOnSeal`) and posts the barrier right after the grouped messages.
+- `SchemaGroupingBlock.FlushDue` now counts relationships, so a relationship-only buffer flushes on the
+  timer.
+
+### 2.8 Phase 2, step 3: serialization
+
+- [SerializationBlock.cs](../Src/AdapterFramework.Data.Framework.DataFlow/SerializationBlock.cs) takes the
+  coordinator as an optional last constructor parameter. Every split path carries a `Slice`: the sidecar,
+  the list, and the absolute position of the array being split (or, for one stream's values, the
+  stream and the absolute value position). Recursion adds the segment offset, so ranges are never
+  rebased.
+- Just before the flush action, a body with scoped items gets a `SerializedMessageId` and is registered
+  with its per-scope counts.
+- A single item or value too large to send records `Serialization/ItemTooLarge`. A single oversized
+  type, container, relationship, entity, or event used to recurse until the stack overflowed; it now
+  logs an error and is dropped.
+- `ScopeMaterializationBarrier`s are counted per scope; when the expected count arrives, serialization
+  calls `CloseMaterialization`, which runs the count check.
+
+### 2.9 Phase 2 tests
+
+| Test | Covers |
+| --- | --- |
+| [ScopeSidecar_Tests.cs](../Tests/AdapterFramework.Data.Framework.Messages.Tests/Awaitable/ScopeSidecar_Tests.cs) | Range clipping, whole-stream counts, unscoped entries |
+| [ScopeTracking_Tests.cs](../Tests/AdapterFramework.Data.Framework.DataFlow.Tests/ScopeTracking_Tests.cs) | Sidecars from both grouping blocks; barriers with and without `FlushOnSeal`, for an unbuffered scope, and after a partition-key-only flush; a stream split across bodies; oversized value and entity; barrier counting |
+| [AwaitableAdapterMessageScope_Tests.cs](../Tests/AdapterFramework.Data.Framework.MessageProcessor.Tests/AwaitableAdapterMessageScope_Tests.cs) | Unsupported chain throws; scoped writes reach the scoped overloads; writes after `Seal` throw |
+| `DataMessageProcessor_ScopedWritesMixedWithUnscoped_EveryAdmittedItemIsAccepted` in [DataMessageProcessor_Tests.cs](../Tests/AdapterFramework.Data.Framework.EgressComponent.Tests/DataMessageProcessor_Tests.cs) | End to end through a real OMF 2.0 pipeline. A test double accepts each registered body, so `Accepted` proves every admitted item was registered. |
+
+The end-to-end test needs a non-null logger: with a null logger, the first oversized grouped message
+throws inside `SerializationBlock` (an existing `_logger.LogTrace` call), and the scope times out.
+
+### 2.10 Running the tests
 
 ```powershell
 dotnet test Tests\AdapterFramework.Data.Framework.Messages.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.Abstractions.Tests --filter "FullyQualifiedName~Awaitable"
 dotnet test Tests\AdapterFramework.Data.Framework.Failover.Tests
 dotnet test Tests\AdapterFramework.Data.Framework.EgressComponent.Tests
-dotnet test Tests\AdapterFramework.Data.Framework.DataFlow.Tests --filter "FullyQualifiedName~SerializationBlock_Tests"
+dotnet test Tests\AdapterFramework.Data.Framework.DataFlow.Tests
+dotnet test Tests\AdapterFramework.Data.Framework.MessageProcessor.Tests
+dotnet test Tests\AdapterFramework.Data.Framework.AdapterCommon.Tests
 ```
 
-The DataFlow and EgressComponent suites take several minutes.
+The DataFlow, EgressComponent, and AdapterCommon suites take minutes. Last run: Messages 40,
+DataFlow 170, EgressComponent 87, MessageProcessor 302, AdapterCommon 543, all passing.
 
 ---
 
@@ -221,25 +300,26 @@ After each report that could change a scope, the coordinator applies these rules
 
 ---
 
-## 4. How a scope's data will flow
+## 4. How a scope's data flows
 
-The pipeline steps below come from the plan. Only the coordinator exists so far.
+Steps 1–4 are implemented (Phase 2); step 5 is Phase 4. The departures document records where they
+differ from the plan.
 
 1. **Admission (Phase 2).** A scope starts with no count. Each write through the scope runs the
    normal processor chain, including data filters. Just before `DataMessageProcessor` posts an
    envelope to a grouping block, it calls `RecordAdmitted` with that envelope's item count. Counts
-   are items: values for streaming data, and one per element for types, streams, relationships,
-   entities, and events. Filtered values are never counted, and a scope with nothing admitted when
+   are items: values for streaming data, and one per type, stream, relationship, entity, and event.
+   Filtered values are never counted, and a scope with nothing admitted when
    it's sealed completes as `Filtered`.
 2. **Grouping (Phase 2, step 2).** Grouping blocks attach a *sidecar* to each grouped message. It's
    never serialized. Streaming values get run-length ranges `(scopeIndex, start, count)` per stream;
-   discrete items get one scope index per element; unscoped data gets nothing.
+   every other entry gets one scope index; unscoped data gets nothing.
 3. **Serialization (Phase 2).** Serialization slices the sidecars through every split. Just before
    each body is sent on, it calls `RegisterBody` with the body's per-scope counts. Dropped items,
    such as one too large to send, are reported with `RecordItemsDiscarded`.
-4. **Materialization (Phase 2).** Sealing posts a seal barrier to each grouping block the scope wrote
-   to. Once a block has emitted the grouped message with the scope's last items, it sends a
-   materialization barrier after it. When barriers from every touched block reach serialization, it
+4. **Materialization (Phase 2).** Sealing posts a seal barrier to both OMF 2.0 grouping blocks. Once
+   a block has emitted the grouped message with the scope's last items, it sends a
+   materialization barrier after it. When barriers from both blocks reach serialization, it
    calls `CloseMaterialization`, which runs the count check. Without this step the coordinator
    can't tell the last body from one still in a grouping block, so `Accepted` is never reached.
 5. **Dispatch and delivery (Phase 4).** The endpoint manager calls `RegisterDeliveries` with its
@@ -273,7 +353,8 @@ They are implemented and tested, and recorded in the departures document:
 | Failures complete the outcome early, before materialization | Implemented and tested. Departs from plan §7.9. |
 | `AnyCompleteEndpoint` with non-overlapping endpoint sets gives `Discarded` (`NoEndpoints`) | Implemented and tested |
 | A mix of local and peer coverage gives `PeerCovered` | Implemented and tested in both endpoint modes. It can't happen in practice before Phase 6. |
-| Active-scope limit of 1,000 | Placeholder; still an open decision |
+| Active-scope limit of 1,000 | Placeholder; still an open decision (§6) |
+| AW-2 failover records in one release instead of two | Decided 2026-10-08, with a release note (§2.2) |
 
 ### 5.4 When do non-overlapping endpoint sets occur?
 
@@ -312,9 +393,9 @@ refused, and disposing both scopes releases every body.
 
 ### 5.6 Which phase adds the grouping block sidecars?
 
-Phase 2, step 2, together with per-scope pending counts, seal and materialization barriers, and
-`FlushOnSeal`. Step 1 passes the scope token through the processor chain, and step 3 slices the
-sidecars through serialization and registers bodies.
+Phase 2, step 2, together with seal and materialization barriers and `FlushOnSeal`. Step 1 passes the
+scope token through the processor chain, and step 3 slices the sidecars through serialization and
+registers bodies. All three are done (§2.6–§2.8).
 
 ### 5.7 What was left of Phase 1, and how was it closed?
 
@@ -368,12 +449,108 @@ criterion includes warm and cold. Caveats:
 - Delivery across a role change is at-least-once. Writes should use identifiers derived from the
   source data, so duplicates overwrite instead of piling up.
 
+### 5.10 What does materialization mean?
+
+A scope is materialized when every item it admitted is either in a registered body or recorded as
+discarded. It's per scope, and says nothing about sending: `Accepted` needs materialization closed and
+every required delivery accepted. Without it, the coordinator can't tell the scope's last body from
+items still buffered in a grouping block.
+
+### 5.11 How can a grouping block post a materialization barrier without knowing the bodies?
+
+It relies on queue order, not on knowledge of bodies. There are two moments:
+
+1. **The grouping block posts the barrier** once it holds nothing more of the scope. The seal barrier
+   arrived after every write of the scope (`Seal` waits for writes in flight, and the block's queue is
+   first in, first out), so after the next flush every item has been handed on. The block posts the
+   barrier through the same `_flush` action as its grouped messages, so it's queued in serialization
+   behind them. No body exists yet at this point.
+2. **Serialization closes materialization** when it dequeues the barrier. It handles one message at a
+   time, and splitting and every `RegisterBody` call happen inside that handling, so every body cut
+   from the earlier grouped messages is registered by then.
+
+Serialization receives from two producers, the schema and instance blocks. Each keeps its own order,
+but their messages interleave, so serialization waits for a barrier from both before calling
+`CloseMaterialization`.
+
+### 5.12 Does a known drop wait for the count check?
+
+No. Recording a drop (for example `ItemTooLarge`) or a failed delivery evaluates the scope at once.
+A dropped item can't be accepted by any endpoint, so the scope completes as `Discarded` (or
+`Rejected`) immediately and waiters are released (departures §2.1). The count check still runs when
+the barriers arrive, but the first outcome is final. Only `Accepted` and `PeerCovered` wait for
+materialization.
+
+### 5.13 What are membership and `Slice` in `SerializationBlock`?
+
+*Membership* is one body's per-scope item count, a `Dictionary<ScopeToken, int>` that `Flush` passes
+to `RegisterBody`. It's computed from the sidecar, which uses positions in the original grouped message.
+
+- When a whole list goes into one body, the static `Membership` helper counts the list from position 0.
+  Calls nest when one body holds several lists; `DiscreteMembership` covers events, entities, and
+  relationships.
+- When a list is split, the chunking methods recurse on copies that start at index 0. `Slice` travels
+  with each copy and remembers the original position of its first entry (`Offset`), and, for one
+  stream's values, which stream (`Stream`). `At(offset)` adds the segment offset when recursing,
+  `ValuesOfFirstStream()` switches from counting streams to counting one stream's values, and
+  `Membership(start, count)` counts at original positions. `Discard` uses the same counting to report
+  `ItemTooLarge` against the right scope.
+
+### 5.14 Why are there two sidecar types?
+
+`InstanceScopeSidecar` and `SchemaScopeSidecar` keep the plan's named lists, so a sidecar can't hold a
+list its message doesn't have. Their abstract base `ScopeSidecar` holds the scope table and the
+counting methods, so serialization treats both the same way. An earlier single type indexed its lists
+by enum, which was harder to follow.
+
 ---
 
-## 6. Next steps
+## 6. Decisions
 
-1. Phase 2: `IScopedMessageProcessor` and core write methods through the processor chain, the scope
-   classes that implement the write methods, sidecars and barriers in the grouping blocks, and
-   sidecar slicing in serialization.
-2. Phase 4: make the endpoint manager and writers depend on the coordinator, which also fixes the
-   shutdown order (§5.7), and add coordinator metrics.
+Decided on 2026-10-08:
+
+| Decision | Choice | Record |
+| --- | --- | --- |
+| AW-2 failover records | One release; release notes say to drain or delete the failover buffer before rollback | Departures §2.4 |
+| Serialized ID in persisted records (Phase 3) | Only scoped bodies carry one; unscoped and legacy records load without one | Departures §2.8 |
+| V4 writer records (Phase 3) | One release; release notes say to drain or delete the endpoint buffers before rollback | Departures §2.10 |
+
+Still open:
+
+| Decision | Needed by | Notes |
+| --- | --- | --- |
+| Active-scope limit | Before release | Placeholder 1,000 |
+| Move AW-2 out of this work into a separate change | Any time | AW-2 fixes an existing bug (failover records drop the OMF version and partition key). Acceptance doesn't need it before Phase 6, because scopes are refused in hot failover and warm and cold failover don't use the failover buffer. Moving it removes the failover rollback concern from this work. Departures §2.4. |
+| Keep the serialized ID in memory instead of in V4 writer records | Start of Phase 3 | Writer records already carry the OMF version and partition key; V4 exists only for the serialized ID, which bodies need once they spill to disk after 5 seconds. Scopes don't survive a restart, so an in-memory side table keyed by record identity might be enough. If so, there's no format change and no rollback risk, and the one-release decision for V4 falls away. Departures §2.10. |
+| Replace the `Membership` helper with `Slice` everywhere in `SerializationBlock` | Any time | Readability only |
+| Guard the null logger in `SerializationBlock` | Optional | Predates this branch. With a null logger, the first oversized message throws inside the block. |
+
+---
+
+## 7. Phase 2 tests compared with plan §15
+
+Not covered yet. None of these block Phase 3, which depends only on AW-2.
+
+- **§15.2:**
+  - scoped writes through every write method and filter path carry the token at the
+    `DataMessageProcessor` level, and `ResendTypesAndStreams` carries none;
+  - a deadband write that emits two envelopes counts both;
+  - a fully filtered scope through the processor chain completes as `Filtered`, which is covered only
+    at the coordinator;
+  - history recovery counts scoped writes.
+- **§15.3:**
+  - sidecar slicing through the schema chunking path and the multi-stream `FlushInChunks` path is
+    exercised only by the end-to-end test;
+  - an injected unreported drop caught by the count check is covered only at the coordinator;
+  - no test asserts that scope metadata never reaches OMF JSON or headers. This holds by construction,
+    because the sidecar isn't part of the serialized wrappers.
+
+---
+
+## 8. Next steps
+
+1. Phase 3: persistence. First check whether the serialized ID can live in an in-memory side table
+   instead of in V4 writer records (§6). Otherwise add V4 writer and failover records with an optional
+   serialized ID and the process time, shipped in one release, and the per-file serialized-ID index.
+2. Phase 4: make the endpoint manager and writers depend on the coordinator, register deliveries and
+   dispositions, which also fixes the shutdown order (§5.7), and add coordinator metrics.

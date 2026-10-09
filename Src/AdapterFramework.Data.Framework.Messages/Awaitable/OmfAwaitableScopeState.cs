@@ -48,6 +48,15 @@ public sealed class OmfAwaitableScopeState : ScopeToken, IAwaitableScope
     public OmfAwaitableScopeOptions Options { get; }
 
     /// <summary>
+    /// Gets the scope state behind a token that an <see cref="OmfAwaitableCoordinator"/> issued.
+    /// </summary>
+    /// <param name="scope">The scope token.</param>
+    /// <returns>The scope state.</returns>
+    /// <exception cref="ArgumentException"><paramref name="scope"/> wasn't issued by a coordinator.</exception>
+    public static OmfAwaitableScopeState FromToken(ScopeToken scope) =>
+        scope as OmfAwaitableScopeState ?? throw new ArgumentException("The scope token wasn't issued by an awaitable coordinator.", nameof(scope));
+
+    /// <summary>
     /// Marks the start of a write through the scope.
     /// </summary>
     /// <exception cref="ObjectDisposedException">The scope is disposed.</exception>

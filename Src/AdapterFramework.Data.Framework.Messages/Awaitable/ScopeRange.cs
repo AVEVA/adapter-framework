@@ -12,17 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
-using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
-
-namespace AdapterFramework.Data.Framework.Messages;
+namespace AdapterFramework.Data.Framework.Messages.Awaitable;
 
 /// <summary>
-/// An abstract class representation of a message object.
+/// A run of consecutive values in one stream of a grouped message that belong to one scope.
 /// </summary>
-public abstract class Message
-{
-    /// <summary>
-    /// Gets or sets the awaitable scope whose write created this message, or null for unscoped writes. It's never serialized.
-    /// </summary>
-    public ScopeToken Scope { get; set; }
-}
+/// <param name="ScopeIndex">The index of the scope in <see cref="ScopeSidecar.Scopes"/>.</param>
+/// <param name="Start">The position of the first value in the stream's value list.</param>
+/// <param name="Count">The number of values.</param>
+public readonly record struct ScopeRange(int ScopeIndex, int Start, int Count);

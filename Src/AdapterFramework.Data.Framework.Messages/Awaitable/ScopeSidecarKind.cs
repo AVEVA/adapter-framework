@@ -12,17 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
-using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
-
-namespace AdapterFramework.Data.Framework.Messages;
+namespace AdapterFramework.Data.Framework.Messages.Awaitable;
 
 /// <summary>
-/// An abstract class representation of a message object.
+/// The lists of a grouped message that a <see cref="ScopeSidecar"/> describes.
 /// </summary>
-public abstract class Message
+public enum ScopeSidecarKind
 {
-    /// <summary>
-    /// Gets or sets the awaitable scope whose write created this message, or null for unscoped writes. It's never serialized.
-    /// </summary>
-    public ScopeToken Scope { get; set; }
+    Types,
+    Containers,
+    Relationships,
+    Entities,
+    Events,
+    StreamingData,
 }

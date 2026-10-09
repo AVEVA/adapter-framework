@@ -48,6 +48,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     private readonly TaskCompletionSource _shutdown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private OmfVersion? _omfVersion;
     private FailoverMode _failoverMode;
+    private Action<OmfAwaitableScopeState> _sealHandler;
     private bool _disposed;
 
     /// <summary>
@@ -113,6 +114,18 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         lock (_lock)
         {
             _failoverMode = failoverMode;
+        }
+    }
+
+    /// <summary>
+    /// Sets the action that starts materialization when a scope with admitted items is sealed, for example by posting seal barriers.
+    /// </summary>
+    /// <param name="sealHandler">The action. It runs outside the coordinator lock.</param>
+    public void SetSealHandler(Action<OmfAwaitableScopeState> sealHandler)
+    {
+        lock (_lock)
+        {
+            _sealHandler = sealHandler;
         }
     }
 
@@ -431,16 +444,22 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     internal void MarkSealed(OmfAwaitableScopeState scope)
     {
         List<OmfAwaitableScopeState> completed = null;
+        Action<OmfAwaitableScopeState> sealHandler = null;
         lock (_lock)
         {
             if (_scopes.TryGetValue(scope, out var tracking))
             {
                 tracking.Sealed = true;
                 Evaluate(tracking, null, null, ref completed);
+                if (tracking.Outcome is null && !tracking.Materialized && tracking.Admitted > 0)
+                {
+                    sealHandler = _sealHandler;
+                }
             }
         }
 
         SignalCompleted(completed);
+        sealHandler?.Invoke(scope);
     }
 
     internal void Release(OmfAwaitableScopeState scope)
