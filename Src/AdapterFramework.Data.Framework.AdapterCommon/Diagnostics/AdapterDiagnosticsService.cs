@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private const int MovingAveragePeriod = 60;
     private const int SendStreamCountPeriod = 60;
     private const int SendAssetCountPeriod = 60;
-    private const int SendEventWriteCountPeriod = 60;
+    private const int SendEventCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
     private const int SendErrorRatePeriod = 60;
 
@@ -52,7 +52,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly AdapterDiagnosticsOmfMessageCreator _diagnosticsOmfMessageCreator;
     private readonly string _componentId;
     private readonly string _componentType;
-    private readonly OmfVersion _omfVersion;
+    private readonly bool _publishOmf20Diagnostics;
 
     private Timer _errorRateTimer;
     private Timer _messageProcessorStatisticsTimer;
@@ -63,16 +63,16 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _timerTickIoRateCounter;
     private int _timerTickStreamCounter;
     private int _timerTickAssetCounter;
-    private int _timerTickEventWriteCounter;
+    private int _timerTickEventCounter;
     private int _sentStreamCount = -1;
     private int _sentTypeCount = -1;
     private int _sentAssetCount = -1;
-    private long _sentEventWriteCount = -1;
+    private long _sentEventCount = -1;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateErrorRate;
     private bool _failedToUpdateMessageProcessorStatistics;
     private bool _failedToUpdateAssetCount;
-    private bool _failedToUpdateEventWriteCount;
+    private bool _failedToUpdateEventCount;
     private bool _disposed;
 
     #endregion
@@ -117,7 +117,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
         _diagnosticsOmfMessageCreator = new AdapterDiagnosticsOmfMessageCreator(componentId, diagnosticsMessageProcessor.StreamIdPrefix, elementNode, omfVersion);
 
-        _omfVersion = omfVersion;
+        _publishOmf20Diagnostics = omfVersion >= OmfVersion.Omf20;
 
         _diagnosticsMessageProcessor = diagnosticsMessageProcessor;
         _instrumentedMessageProcessor = instrumentedMessageProcessor;
@@ -190,12 +190,20 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         CreateDiagnosticsTypesStreams();
         SendStreamCountEvent(_sentStreamCount, _sentTypeCount);
 
-        // AssetCount and EventWriteCount diagnostics only exist for OMF 2.0.
-        if (_omfVersion == OmfVersion.Omf20)
+        // AssetCount and EventCount diagnostics only exist for OMF 2.0, and are skipped once creating the diagnostics types has failed.
+        if (!_publishOmf20Diagnostics || _failedToCreateDiagnosticsTypes)
         {
-            SendAssetCountEvent(_sentAssetCount >= 0 ? _sentAssetCount : _instrumentedMessageProcessor.GetAssetCount());
-            var lastSentEventWriteCount = Interlocked.Read(ref _sentEventWriteCount);
-            SendEventWriteCountEvent(lastSentEventWriteCount >= 0 ? lastSentEventWriteCount : _instrumentedMessageProcessor.GetEventWriteCount());
+            return;
+        }
+
+        if (!_failedToUpdateAssetCount)
+        {
+            ResendAssetCount();
+        }
+
+        if (!_failedToUpdateEventCount)
+        {
+            ResendEventCount();
         }
     }
 
@@ -300,8 +308,8 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                     SendStreamCountEventWhenChanged();
                 }
 
-                // AssetCount and EventWriteCount diagnostics only exist for OMF 2.0.
-                if (_omfVersion != OmfVersion.Omf20)
+                // AssetCount and EventCount diagnostics only exist for OMF 2.0.
+                if (!_publishOmf20Diagnostics)
                 {
                     return;
                 }
@@ -311,9 +319,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                     SendAssetCountEventWhenChanged();
                 }
 
-                if (!_failedToUpdateEventWriteCount)
+                if (!_failedToUpdateEventCount)
                 {
-                    SendEventWriteCountEventWhenChanged();
+                    SendEventCountEventWhenChanged();
                 }
             }
             finally
@@ -400,7 +408,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
             var currentAssetCount = _instrumentedMessageProcessor.GetAssetCount();
 
-            if (currentAssetCount != _sentAssetCount)
+            if (currentAssetCount != Volatile.Read(ref _sentAssetCount))
             {
                 Interlocked.Exchange(ref _sentAssetCount, currentAssetCount);
 
@@ -411,23 +419,52 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         _timerTickAssetCounter--;
     }
 
-    private void SendEventWriteCountEventWhenChanged()
+    private void SendEventCountEventWhenChanged()
     {
-        if (_timerTickEventWriteCounter <= 0)
+        if (_timerTickEventCounter <= 0)
         {
-            _timerTickEventWriteCounter = SendEventWriteCountPeriod;
+            _timerTickEventCounter = SendEventCountPeriod;
 
-            var currentEventWriteCount = _instrumentedMessageProcessor.GetEventWriteCount();
+            var currentEventCount = _instrumentedMessageProcessor.GetEventCount();
 
-            if (currentEventWriteCount != Interlocked.Read(ref _sentEventWriteCount))
+            if (currentEventCount != Interlocked.Read(ref _sentEventCount))
             {
-                Interlocked.Exchange(ref _sentEventWriteCount, currentEventWriteCount);
+                Interlocked.Exchange(ref _sentEventCount, currentEventCount);
 
-                SendEventWriteCountEvent(currentEventWriteCount);
+                SendEventCountEvent(currentEventCount);
             }
         }
 
-        _timerTickEventWriteCounter--;
+        _timerTickEventCounter--;
+    }
+
+    // ResendTypesAndStreams() can run on any thread, so the last sent values are always read atomically.
+    private void ResendAssetCount()
+    {
+        var assetCount = Volatile.Read(ref _sentAssetCount);
+
+        if (assetCount < 0)
+        {
+            // Nothing has been sent yet, so publish the live count and record it so the next timer tick does not publish it again.
+            assetCount = _instrumentedMessageProcessor.GetAssetCount();
+            Interlocked.Exchange(ref _sentAssetCount, assetCount);
+        }
+
+        SendAssetCountEvent(assetCount);
+    }
+
+    private void ResendEventCount()
+    {
+        var eventCount = Interlocked.Read(ref _sentEventCount);
+
+        if (eventCount < 0)
+        {
+            // Nothing has been sent yet, so publish the live count and record it so the next timer tick does not publish it again.
+            eventCount = _instrumentedMessageProcessor.GetEventCount();
+            Interlocked.Exchange(ref _sentEventCount, eventCount);
+        }
+
+        SendEventCountEvent(eventCount);
     }
 
     private void SendAssetCountEvent(int assetCount)
@@ -450,23 +487,23 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
-    private void SendEventWriteCountEvent(long eventWriteCount)
+    private void SendEventCountEvent(long eventCount)
     {
-        var eventWriteCountEvent = new EventWriteCountEvent
+        var eventCountEvent = new EventCountEvent
         {
             Timestamp = DateTime.UtcNow,
-            EventWriteCount = eventWriteCount,
+            EventCount = eventCount,
         };
 
         try
         {
-            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEventWriteCountStreamId(), Classification.Dynamic, eventWriteCountEvent);
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEventCountStreamId(), Classification.Dynamic, eventCountEvent);
         }
         catch (Exception ex)
         {
-            _instrumentedLogger.LogError(ex, "Failed to process EventWriteCount diagnostics event. Stopping EventWriteCount diagnostics data collection.");
+            _instrumentedLogger.LogError(ex, "Failed to process EventCount diagnostics event. Stopping EventCount diagnostics data collection.");
 
-            _failedToUpdateEventWriteCount = true;
+            _failedToUpdateEventCount = true;
         }
     }
 

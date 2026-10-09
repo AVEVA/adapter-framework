@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -54,6 +54,11 @@ public class FakeDiagnosticsMessageProcessor : IDiagnosticsMessageProcessor
     /// </summary>
     public string FailingStreamIdSuffix { get; set; }
 
+    /// <summary>
+    /// When set, <see cref="WriteDiagnosticsTypes"/> throws, which simulates a failure to create the diagnostics types.
+    /// </summary>
+    public bool FailWritingTypes { get; set; }
+
     public IReadOnlyList<(string Id, object Instance)> GetWrittenValues()
     {
         lock (_omfDataSyncRoot)
@@ -91,6 +96,11 @@ public class FakeDiagnosticsMessageProcessor : IDiagnosticsMessageProcessor
 
     public void WriteDiagnosticsTypes(DataType[] dataTypes)
     {
+        if (FailWritingTypes)
+        {
+            throw new System.InvalidOperationException("Simulated failure writing the diagnostics types.");
+        }
+
         _omfTypes.AddRange(dataTypes);
     }
 }

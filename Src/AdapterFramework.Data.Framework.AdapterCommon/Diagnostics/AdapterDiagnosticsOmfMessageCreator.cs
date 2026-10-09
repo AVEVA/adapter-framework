@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,9 +28,11 @@ public class AdapterDiagnosticsOmfMessageCreator
 {
     #region Private Fields
 
+    private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
+
     private readonly LinkNode _assetNode;
     private readonly string _streamIdPrefix;
-    private readonly OmfVersion _omfVersion;
+    private readonly bool _publishOmf20Diagnostics;
 
     #endregion
 
@@ -51,7 +53,7 @@ public class AdapterDiagnosticsOmfMessageCreator
             : componentId;
 
         _assetNode = assetNode;
-        _omfVersion = omfVersion;
+        _publishOmf20Diagnostics = omfVersion >= OmfVersion.Omf20;
     }
 
     #endregion
@@ -78,7 +80,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetAssetCountStreamId() => $"{_streamIdPrefix}.{AssetCountStreamName}";
 
-    public string GetEventWriteCountStreamId() => $"{_streamIdPrefix}.{EventWriteCountStreamName}";
+    public string GetEventCountStreamId() => $"{_streamIdPrefix}.{EventCountStreamName}";
 
     public string GetErrorRateStreamId() => $"{_streamIdPrefix}.{ErrorRateStreamName}";
 
@@ -134,13 +136,14 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        var eventWriteCountDiagnosticsType = new DynamicDataType
+        var eventCountDiagnosticsType = new DynamicDataType
         {
-            Id = EventWriteCountTypeId,
+            Id = EventCountTypeId,
+            Description = EventCountDescription,
             Properties = new Dictionary<string, PropertyDefinition>
             {
-                [nameof(EventWriteCountEvent.Timestamp)] = timestampProperty,
-                [nameof(EventWriteCountEvent.EventWriteCount)] = longProperty,
+                [nameof(EventCountEvent.Timestamp)] = timestampProperty,
+                [nameof(EventCountEvent.EventCount)] = longProperty,
             },
         };
 
@@ -154,9 +157,9 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        // AssetCount and EventWriteCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
-        return _omfVersion == OmfVersion.Omf20
-            ? new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, eventWriteCountDiagnosticsType, dataRateDiagnosticsType }
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        return _publishOmf20Diagnostics
+            ? new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, eventCountDiagnosticsType, dataRateDiagnosticsType }
             : new DataType[] { streamCountDiagnosticsType, dataRateDiagnosticsType };
     }
 
@@ -208,16 +211,16 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
-        // AssetCount and EventWriteCount are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
-        if (_omfVersion == OmfVersion.Omf20)
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
+        if (_publishOmf20Diagnostics)
         {
             // Link adapter asset count to adapter component health asset
             targetLink = new DataStreamLinkNode(GetAssetCountStreamId());
             link = new Link(sourceLink, targetLink);
             links.Add((Tokens.Link, Classification.Static, link));
 
-            // Link adapter event write count to adapter component health asset
-            targetLink = new DataStreamLinkNode(GetEventWriteCountStreamId());
+            // Link adapter event count to adapter component health asset
+            targetLink = new DataStreamLinkNode(GetEventCountStreamId());
             link = new Link(sourceLink, targetLink);
             links.Add((Tokens.Link, Classification.Static, link));
         }
@@ -258,8 +261,8 @@ public class AdapterDiagnosticsOmfMessageCreator
             Name = IoRateStreamName,
         };
 
-        // AssetCount and EventWriteCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
-        if (_omfVersion != OmfVersion.Omf20)
+        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        if (!_publishOmf20Diagnostics)
         {
             return new[] { streamCountStream, ioRateStream };
         }
@@ -275,9 +278,10 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
             new DataStream
             {
-                Id = GetEventWriteCountStreamId(),
-                TypeId = EventWriteCountTypeId,
-                Name = EventWriteCountStreamName,
+                Id = GetEventCountStreamId(),
+                TypeId = EventCountTypeId,
+                Name = EventCountStreamName,
+                Description = EventCountDescription,
             },
             ioRateStream,
         };

@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,12 +24,12 @@ namespace AdapterFramework.Data.Framework.Abstractions.Tests.MessageProcessing;
 public class IInstrumentedMessageProcessor_Tests
 {
     [Fact]
-    public void DefaultAssetAndEventWriteCountMembers_PreserveLegacyImplementations_Test()
+    public void DefaultAssetAndEventCountMembers_PreserveLegacyImplementations_Test()
     {
         IInstrumentedMessageProcessor messageProcessor = new LegacyInstrumentedMessageProcessor();
 
         Assert.Equal(0, messageProcessor.GetAssetCount());
-        Assert.Equal(0, messageProcessor.GetEventWriteCount());
+        Assert.Equal(0, messageProcessor.GetEventCount());
     }
 
     private class LegacyInstrumentedMessageProcessor : IInstrumentedMessageProcessor

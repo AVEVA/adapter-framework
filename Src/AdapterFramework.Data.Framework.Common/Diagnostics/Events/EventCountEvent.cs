@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +16,13 @@ using System;
 
 namespace AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 
-public class EventWriteCountEvent
+public class EventCountEvent
 {
     public DateTime Timestamp { get; set; }
 
-    public long EventWriteCount { get; set; }
+    /// <summary>
+    /// Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset.
+    /// Deletes are not counted.
+    /// </summary>
+    public long EventCount { get; set; }
 }
