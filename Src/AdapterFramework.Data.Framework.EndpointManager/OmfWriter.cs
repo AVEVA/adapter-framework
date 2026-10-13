@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -65,11 +65,11 @@ public class OmfWriter : IOmfWriter
     private readonly ISerializer _serializer;
     private readonly ICompressor _compressor;
     private readonly IClient _client;
-    private readonly BackedUpOmfMessageQueue _typesAndStreamsQueue;
+    private readonly BackedUpOmfMessageQueue _metadataQueue;
     private readonly BackedUpOmfMessageQueue _dataQueue;
-    private readonly FileQueue _typesAndStreamsFileQueue;
+    private readonly FileQueue _metadataFileQueue;
     private readonly FileQueue _dataFileQueue;
-    private readonly IPersistentMessageQueue<ISerializedOmfMessage> _persistentTypesAndStreamsQueue;
+    private readonly IPersistentMessageQueue<ISerializedOmfMessage> _persistentMetadataQueue;
     private readonly IPersistentMessageQueue<ISerializedOmfMessage> _persistentDataQueue;
     private readonly Task _bufferConsumerTask;
     private readonly CancellationTokenSource _writerCts;
@@ -161,9 +161,9 @@ public class OmfWriter : IOmfWriter
                 maxBufferFiles = 1;
             }
 
-            _persistentTypesAndStreamsQueue = new PersistentOmfMessageQueue(
+            _persistentMetadataQueue = new PersistentOmfMessageQueue(
                 targetIdentifier,
-                _typesAndStreamsFileQueue = new FileQueue(bufferFilesPath, MetadataBufferFilePrefix, _configuration.Id, MaxBufferFileSizeMb, MaxMetadataFilesCount, logger),
+                _metadataFileQueue = new FileQueue(bufferFilesPath, MetadataBufferFilePrefix, _configuration.Id, MaxBufferFileSizeMb, MaxMetadataFilesCount, logger),
                 logger);
 
             _persistentDataQueue = new PersistentOmfMessageQueue(
@@ -172,7 +172,7 @@ public class OmfWriter : IOmfWriter
                 logger);
         }
 
-        _typesAndStreamsQueue = new BackedUpOmfMessageQueue(DefaultVolatileMemorySizeMb, DefaultMessageExpirationTime, _persistentTypesAndStreamsQueue, logger);
+        _metadataQueue = new BackedUpOmfMessageQueue(DefaultVolatileMemorySizeMb, DefaultMessageExpirationTime, _persistentMetadataQueue, logger);
         _dataQueue = new BackedUpOmfMessageQueue(GetDataQueueVolatileMemorySize(bufferingConfiguration, writerType), DefaultMessageExpirationTime, _persistentDataQueue, logger);
         _bufferConsumerTask = Task.Run(BufferedOmfMessageHandlerAsync);
     }
@@ -229,9 +229,9 @@ public class OmfWriter : IOmfWriter
     {
         ThrowHelper.ThrowIfArgumentNull(serializedMessage, nameof(serializedMessage));
 
-        if (IsTypeOrContainer(serializedMessage.MessageType))
+        if (IsMetadataMessage(serializedMessage.MessageType))
         {
-            _typesAndStreamsQueue.Enqueue(serializedMessage);
+            _metadataQueue.Enqueue(serializedMessage);
         }
         else
         {
@@ -295,15 +295,15 @@ public class OmfWriter : IOmfWriter
                 }
             }
 
-            _typesAndStreamsQueue.Dispose();
+            _metadataQueue.Dispose();
             _dataQueue.Dispose();
             _client.Dispose();
             _writerCts.Dispose();
 
-            _typesAndStreamsFileQueue?.Dispose();
+            _metadataFileQueue?.Dispose();
             _dataFileQueue?.Dispose();
             _persistentDataQueue?.Dispose();
-            _persistentTypesAndStreamsQueue?.Dispose();
+            _persistentMetadataQueue?.Dispose();
         }
 
         _disposed = true;
@@ -313,7 +313,8 @@ public class OmfWriter : IOmfWriter
 
     #region Private Methods
 
-    private static bool IsTypeOrContainer(MessageType messageType) => messageType == MessageType.Type || messageType == MessageType.Container;
+    private static bool IsMetadataMessage(MessageType messageType) =>
+        messageType == MessageType.Type || messageType == MessageType.Container || messageType == MessageType.Schema;
 
     private static int GetDataQueueVolatileMemorySize(IBufferingConfiguration bufferingConfiguration, OmfWriterType writerType)
     {
@@ -362,9 +363,9 @@ public class OmfWriter : IOmfWriter
         {
             while (!_writerCts.Token.IsCancellationRequested)
             {
-                if (_typesAndStreamsQueue.TryPeek(out var message))
+                if (_metadataQueue.TryPeek(out var message))
                 {
-                    await ProcessMessageAsync(message, _typesAndStreamsQueue);
+                    await ProcessMessageAsync(message, _metadataQueue);
                 }
                 else if (_dataQueue.TryPeek(out message))
                 {
@@ -436,7 +437,7 @@ public class OmfWriter : IOmfWriter
 
     private bool ShouldNotRetryFailed404Message(ISerializedOmfMessage serializedMessage)
     {
-        //// This checks whether we have sent Type or Container to the endpoint after 404 received for a data message.
+        //// This checks whether we have sent Type, Container or Schema to the endpoint after 404 received for a data message.
         //// When no type/container/schema message was sent before this there is no reason to retry the send operation.
         return !_shouldRetry404
                && _messageType != MessageType.Type

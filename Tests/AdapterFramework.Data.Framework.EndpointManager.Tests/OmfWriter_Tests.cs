@@ -192,10 +192,10 @@ public class OmfWriter_Tests : IDisposable
             callback => { });
 
         var backedUpDataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_dataQueue", omfWriter);
-        var backedUpTypesStreamsQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_typesAndStreamsQueue", omfWriter);
+        var backedUpMetadataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_metadataQueue", omfWriter);
 
         var maximumDataQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpDataQueue);
-        var maximumTypesStreamsQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpTypesStreamsQueue);
+        var maximumMetadataQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpMetadataQueue);
 
         if (writerType == OmfWriterType.Health || enablePersistentBuffering)
         {
@@ -208,7 +208,65 @@ public class OmfWriter_Tests : IDisposable
             Assert.Equal(configuredSize, maximumDataQueueSizeBytes);
         }
 
-        Assert.Equal(defaultSize, maximumTypesStreamsQueueSizeBytes);
+        Assert.Equal(defaultSize, maximumMetadataQueueSizeBytes);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Type, true)]
+    [InlineData(MessageType.Container, true)]
+    [InlineData(MessageType.Schema, true)]
+    [InlineData(MessageType.Data, false)]
+    [InlineData(MessageType.DynamicData, false)]
+    [InlineData(MessageType.StaticData, false)]
+    [InlineData(MessageType.Instance, false)]
+    public void OmfWriter_SendMessage_RoutesMessageToExpectedQueue(MessageType messageType, bool expectMetadataQueue)
+    {
+        var bufferPath = Path.Combine(Path.GetTempPath(), "OmfWriterRoutingTests", Guid.NewGuid().ToString());
+
+        try
+        {
+            // Nothing listens on this endpoint, so sends fail and the message stays buffered.
+            var omfWriter = new OmfWriter(
+                new EndpointConfigurationBase
+                {
+                    Id = EndpointId,
+                    Endpoint = "http://localhost:5466/api/omf/",
+                    UserName = UserName,
+                    Password = _dataProtector.Protect(Password),
+                },
+                _testLogger,
+                _serializer,
+                null,
+                _dataProtector,
+                new BufferingConfiguration { EnablePersistentBuffering = true, BufferLocation = bufferPath },
+                new ApplicationManifest(),
+                bufferPath,
+                string.Empty,
+                OmfWriterType.Data,
+                _ => { });
+
+            var message = new SerializedOmfMessage(messageType, Encoding.UTF8.GetBytes("routingTestMessage"), MessageAction.Default);
+            omfWriter.SendMessage(message);
+
+            var metadataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_metadataQueue", omfWriter);
+            var dataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_dataQueue", omfWriter);
+
+            Assert.Equal(expectMetadataQueue, metadataQueue.TryPeek(out var metadataMessage) && ReferenceEquals(message, metadataMessage));
+            Assert.Equal(!expectMetadataQueue, dataQueue.TryPeek(out var dataMessage) && ReferenceEquals(message, dataMessage));
+
+            // Disposing moves volatile messages into the persistent buffer files.
+            omfWriter.Dispose();
+
+            Assert.Equal(expectMetadataQueue, GetBufferedBytes(bufferPath, BufferingConstants.MetadataBufferFilePrefix) > 0);
+            Assert.Equal(!expectMetadataQueue, GetBufferedBytes(bufferPath, BufferingConstants.DataBufferFilePrefix) > 0);
+        }
+        finally
+        {
+            TestUtilities.CleanupDirectories(bufferPath);
+        }
+
+        static long GetBufferedBytes(string path, string prefix) =>
+            Directory.GetFiles(path, $"{prefix}_data*").Sum(file => new FileInfo(file).Length);
     }
 
     [Fact]
@@ -311,6 +369,7 @@ public class OmfWriter_Tests : IDisposable
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]
+    [InlineData(MessageType.Schema)]
     public async Task OmfWriter_SendMessage_NotFound_MetadataInQueue(MessageType messageType)
     {
         _testEndpoint.StopListening();
