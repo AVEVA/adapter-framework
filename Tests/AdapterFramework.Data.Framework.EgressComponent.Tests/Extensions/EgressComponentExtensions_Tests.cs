@@ -24,6 +24,7 @@ using AdapterFramework.Data.Framework.Abstractions.Security;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.EgressComponent.Extensions;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.EgressComponent.Tests.Extensions;
@@ -61,6 +62,7 @@ public class EgressComponentExtensions_Tests
         var serviceProvider = services.BuildServiceProvider();
 
         Assert.NotNull(serviceProvider.GetService<IEgressComponentIdService>());
+        Assert.Same(serviceProvider.GetService<OmfAwaitableCoordinator>(), serviceProvider.GetService<OmfAwaitableCoordinator>());
     }
 
     [Fact]

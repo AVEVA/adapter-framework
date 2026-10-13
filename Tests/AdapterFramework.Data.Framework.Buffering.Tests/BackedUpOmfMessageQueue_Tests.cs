@@ -20,6 +20,7 @@ using Moq;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
@@ -328,5 +329,30 @@ public class BackedUpOmfMessageQueue_Tests
 
         // make sure second dispose call doesn't throw
         backedUpMessageQueue.Dispose();
+    }
+
+    /// <summary>
+    /// With no persistent queue, a body with a serialized message ID that overflows the volatile queue is reported as discarded with <see cref="OmfReasonCode.BufferFull"/>; a body without one isn't reported.
+    /// </summary>
+    [Fact]
+    public void BackedUpOmfMessageQueue_SizeLimitReached_NoPersistentQueue_ReportsScopedBody()
+    {
+        var id = Guid.NewGuid();
+        SerializedBodiesEventArgs raised = null;
+        var raisedCount = 0;
+
+        using var backedUpMessageQueue = new BackedUpOmfMessageQueue(0, TimeSpan.FromSeconds(10), null, new TestLogger());
+        backedUpMessageQueue.SerializedBodiesDiscarded += (_, e) =>
+        {
+            raised = e;
+            raisedCount++;
+        };
+
+        backedUpMessageQueue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20));
+        backedUpMessageQueue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id });
+
+        Assert.Equal(1, raisedCount);
+        Assert.Equal(OmfReasonCode.BufferFull, raised.Reason);
+        Assert.Equal(new[] { id }, raised.SerializedMessageIds);
     }
 }

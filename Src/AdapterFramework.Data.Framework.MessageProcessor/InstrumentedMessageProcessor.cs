@@ -23,17 +23,19 @@ using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.General;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Metadata;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.MessageProcessor;
 
-public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
+public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScopedMessageProcessor, IAwaitableMessageProcessor
 {
     #region Private Fields
 
-    private readonly IMessageProcessor _messageProcessor;
+    private readonly IScopedMessageProcessor _messageProcessor;
     private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
@@ -54,7 +56,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
     public InstrumentedMessageProcessor(IMessageProcessor messageProcessor, ILogger logger, string componentId, string componentType)
     {
-        _messageProcessor = messageProcessor;
+        _messageProcessor = messageProcessor?.AsScoped();
         _logger = logger;
         _componentId = componentId;
 
@@ -88,17 +90,39 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     #region IMessageProcessor Implementation
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction)
+    public bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableMessageScope scope)
+    {
+        if (!TryCreateScope(options, out var token))
+        {
+            scope = null;
+            return false;
+        }
+
+        scope = new AwaitableMessageScope(this, token);
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool TryCreateScope(OmfAwaitableScopeOptions options, out ScopeToken scope) => _messageProcessor.TryCreateScope(options, out scope);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, MessageAction messageAction, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
 
         PrepareAndCacheDataType(dataType, messageAction);
 
-        _messageProcessor.WriteType(dataType, messageAction);
+        _messageProcessor.WriteType(dataType, messageAction, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
 
@@ -107,21 +131,27 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             PrepareAndCacheDataType(dataType, messageAction);
         }
 
-        _messageProcessor.WriteTypes(dataTypes, messageAction);
+        _messageProcessor.WriteTypes(dataTypes, messageAction, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction)
+    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, MessageAction messageAction, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
         PrepareAndCacheDataStream(dataStream, messageAction);
 
-        _messageProcessor.WriteStream(dataStream, messageAction);
+        _messageProcessor.WriteStream(dataStream, messageAction, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
 
@@ -132,92 +162,131 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             PrepareAndCacheDataStream(dataStream, messageAction);
         }
 
-        _messageProcessor.WriteStreams(dataStreams, messageAction);
+        _messageProcessor.WriteStreams(dataStreams, messageAction, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction) where T : class
+    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction) where T : class =>
+        WriteValue(id, classification, instance, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction);
+        _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction, scope);
 
         IncrementEventsCount();
     }
 
     /// <inheritdoc/>
-    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValue(id, instance, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey);
+        _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey, scope);
 
         IncrementEventsCount();
     }
 
     /// <inheritdoc/>
-    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction) where T : class
+    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction) where T : class =>
+        WriteValues(id, classification, instances, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction, ScopeToken scope) where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction);
+        _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction, scope);
 
         AddToEventsCount(instances.Count);
     }
 
     /// <inheritdoc/>
-    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValues(id, instances, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope) where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey);
+        _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey, scope);
 
         AddToEventsCount(instances.Count);
     }
 
     /// <inheritdoc/>
     public void WriteStaticValue<T>(string id, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
-        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction) where T : class
+        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction) where T : class =>
+        WriteStaticValue(id, extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteStaticValue<T>(string id, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
+        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction);
+        _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction, scope);
 
         IncrementEventsCount();
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValue(typeId, id, name, description, dataSource, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction,
+        ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
 
         IncrementEventsCount();
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValue(typeId, id, name, description, dataSource, instance, metadata, tags, propertyOverrides, messageAction, null);
+
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, MessageAction messageAction, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction);
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction, scope);
 
         IncrementEventsCount();
     }
 
     public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
         IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
-        IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteEvent(id, typeId, name, description, dataSource, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
+        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
+        IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction, ScopeToken scope) where T : class
     {
         _messageProcessor.WriteEvent(id.ToOmfIdentifier(), typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
-            extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+            extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
 
         IncrementEventsCount();
     }
 
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default)
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null);
+
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
 
         PrepareAndCacheRelationship(link, messageAction);
 
-        _messageProcessor.WriteSchemaRelationship(link, messageAction);
+        _messageProcessor.WriteSchemaRelationship(link, messageAction, scope);
     }
 
-    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
+    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteInstanceRelationship(link, messageAction, null);
+
+    public void WriteInstanceRelationship(Link link, MessageAction messageAction, ScopeToken scope)
     {
-        _messageProcessor.WriteInstanceRelationship(link, messageAction);
+        _messageProcessor.WriteInstanceRelationship(link, messageAction, scope);
     }
 
     #endregion
@@ -263,17 +332,17 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         foreach (var (dataType, messageAction, _) in _dataTypes.Values.OrderBy(x => x.Sequence))
         {
-            _messageProcessor.WriteType(dataType, messageAction);
+            _messageProcessor.WriteType(dataType, messageAction, null);
         }
 
         foreach (var (dataStream, messageAction, _) in _dataStreams.Values.OrderBy(x => x.Sequence))
         {
-            _messageProcessor.WriteStream(dataStream, messageAction);
+            _messageProcessor.WriteStream(dataStream, messageAction, null);
         }
 
         foreach (var (link, messageAction, _) in _relationships.Values.OrderBy(x => x.Sequence))
         {
-            _messageProcessor.WriteSchemaRelationship(link, messageAction);
+            _messageProcessor.WriteSchemaRelationship(link, messageAction, null);
         }
     }
 

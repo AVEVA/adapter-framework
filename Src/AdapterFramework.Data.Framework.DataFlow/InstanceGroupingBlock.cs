@@ -22,9 +22,11 @@ using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
 
@@ -59,6 +61,8 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     private List<EventMessage> _eventMessages;    
     private MessageAction _messageAction;
     private int _lastFlush;
+    private ScopeSidecarBuilder _sidecar;
+    private List<ScopeSealBarrier> _awaitingFlush;
 
     #endregion
 
@@ -155,6 +159,9 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             case StateMessage state:
                 ProcessState(state);
                 break;
+            case ScopeSealBarrier seal:
+                ProcessSeal(seal);
+                break;
         }
     }
 
@@ -206,9 +213,35 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
         Flush(_messageAction);
     }
 
+    private void ProcessSeal(ScopeSealBarrier seal)
+    {
+        if (_sidecar?.Contains(seal.Scope) != true)
+        {
+            _flush(new ScopeMaterializationBarrier(seal.Scope, seal.ExpectedBarrierCount));
+            return;
+        }
+
+        (_awaitingFlush ??= []).Add(seal);
+        if (seal.FlushOnSeal)
+        {
+            Flush(_messageAction);
+        }
+    }
+
+    private ScopeSidecarBuilder Track(ScopeToken scope)
+    {
+        if (scope is not null)
+        {
+            _sidecar ??= new ScopeSidecarBuilder();
+        }
+
+        return _sidecar;
+    }
+
     private void ProcessRelationship(RelationshipMessage relationship)
     {   
         _relationships ??= new List<Link>(DefaultListCapacity);
+        Track(relationship.Scope)?.AddEntry(ScopeSidecarKind.Relationships, _relationships.Count, relationship.Scope);
         _relationships.Add(relationship.Relationship);
         _totalInstanceCount++;
 
@@ -231,14 +264,17 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     private void ProcessData(EventMessage eventMessage)
     {
         _eventMessages ??= new List<EventMessage>(DefaultListCapacity);
+        var sidecar = Track(eventMessage.Scope);
 
         if (eventMessage.Relationships != null) 
         {
             _relationships ??= new List<Link>(DefaultListCapacity);
+            sidecar?.AddEntries(ScopeSidecarKind.Relationships, _relationships.Count, eventMessage.Relationships.Count, eventMessage.Scope);
             _relationships.AddRange(eventMessage.Relationships);
             eventMessage.Relationships = null;
         }
 
+        sidecar?.AddEntry(ScopeSidecarKind.Events, _eventMessages.Count, eventMessage.Scope);
         _eventMessages.Add(eventMessage);
 
         _totalInstanceCount++;
@@ -252,12 +288,15 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     private void ProcessStaticData(StaticDataMessage staticData)
     {
         _staticMessages ??= new List<StaticStreamData>(DefaultListCapacity);
+        var sidecar = Track(staticData.Scope);
         if (staticData.Relationships != null)
         {
             _relationships ??= new List<Link>(DefaultListCapacity);
+            sidecar?.AddEntries(ScopeSidecarKind.Relationships, _relationships.Count, staticData.Relationships.Count, staticData.Scope);
             _relationships.AddRange(staticData.Relationships);
         }
 
+        sidecar?.AddEntry(ScopeSidecarKind.Entities, _staticMessages.Count, staticData.Scope);
         _staticMessages.Add(new StaticStreamData
         {
             Id = staticData.Id,
@@ -319,6 +358,24 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
     private void Flush(MessageAction messageAction)
     {
+        FlushBuffered(messageAction);
+        _sidecar = null;
+
+        if (_awaitingFlush is null)
+        {
+            return;
+        }
+
+        foreach (var seal in _awaitingFlush)
+        {
+            _flush(new ScopeMaterializationBarrier(seal.Scope, seal.ExpectedBarrierCount));
+        }
+
+        _awaitingFlush = null;
+    }
+
+    private void FlushBuffered(MessageAction messageAction)
+    {
         if (_totalInstanceCount == 0)
         {
             return;
@@ -370,7 +427,10 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
                     relationshipCount: 0,
                     messageAction,
                     true,
-                    partitionKey);
+                    partitionKey)
+                {
+                    Sidecar = _sidecar?.BuildInstance(partitionKey, dictionary.Keys),
+                };
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
                 _flush(instanceMessageWithPartitionKey);
@@ -456,7 +516,10 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             eventsCount,
             linkCount,
             messageAction,
-            true);
+            true)
+        {
+            Sidecar = _sidecar?.BuildInstance(null, _dynamicMessages.Keys),
+        };
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _flush(instanceMessage);
@@ -477,6 +540,7 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
         {
             var dynamicValues = GetValuesCollectionFromDynamicMessagesWithPartitionKey(data.PartitionKey.Value, data.Id);
 
+            Track(data.Scope)?.AddValues(data.PartitionKey, data.Id, data.Scope, dynamicValues.Count, 1);
             dynamicValues.Add(data.Instance);            
             _totalInstanceCount++;
             return;
@@ -488,6 +552,7 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             values = new List<object>(DefaultListCapacity);
         }
 
+        Track(data.Scope)?.AddValues(null, data.Id, data.Scope, values.Count, 1);
         values.Add(data.Instance);
         _totalStreamingDataCount++;
         _totalInstanceCount++;
@@ -501,6 +566,7 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
             foreach (var dataValue in bulkedData.Instances)
             {
+                Track(bulkedData.Scope)?.AddValues(bulkedData.PartitionKey, bulkedData.Id, bulkedData.Scope, dynamicValues.Count, 1);
                 dynamicValues.Add(dataValue);                
                 _totalInstanceCount++;
 
@@ -518,6 +584,7 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
         foreach (var dataValue in bulkedData.Instances)
         {
+            Track(bulkedData.Scope)?.AddValues(null, bulkedData.Id, bulkedData.Scope, values.Count, 1);
             values.Add(dataValue);
             _totalStreamingDataCount++;
             _totalInstanceCount++;
@@ -537,11 +604,13 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
         if (bulkedData.PartitionKey != null)
         {
             var dynamicValues = GetValuesCollectionFromDynamicMessagesWithPartitionKey(bulkedData.PartitionKey.Value, bulkedData.Id);
+            Track(bulkedData.Scope)?.AddValues(bulkedData.PartitionKey, bulkedData.Id, bulkedData.Scope, dynamicValues.Count, bulkedData.Instances.Count);
             dynamicValues.AddRange(bulkedData.Instances);            
         }
         else
         {
             var instances = GetOrCreateValuesCollection(bulkedData.Id);
+            Track(bulkedData.Scope)?.AddValues(null, bulkedData.Id, bulkedData.Scope, instances.Count, bulkedData.Instances.Count);
             instances.AddRange(bulkedData.Instances);
             _totalStreamingDataCount += bulkedData.Instances.Count;
         }

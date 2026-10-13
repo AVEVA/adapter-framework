@@ -56,6 +56,10 @@ public class FileQueue : IPersistentQueue
     private readonly object _dequeueOperationLock;
     private readonly IEdgeEventProvider _eventProvider;
 
+    // Written items with a tracking ID, by file number, in write order.
+    private readonly object _trackingLock = new();
+    private readonly Dictionary<int, LinkedList<(long Position, Guid Id)>> _trackedItems = new();
+
     // Maximum bytes of a single queue file - the queue will store more bytes than this as it uses multiple files.
     private readonly long _maxFileSizeBytes;
    
@@ -108,6 +112,9 @@ public class FileQueue : IPersistentQueue
         _readStream.Position = _queueState.ReaderPosition;
     }
 
+    /// <inheritdoc/>
+    public event EventHandler<TrackedItemsLostEventArgs> TrackedItemsLost;
+
     public void UpdateMaxQueueFiles(int maxQueueFiles)
     {
         lock (_enqueueOperationLock)
@@ -147,6 +154,8 @@ public class FileQueue : IPersistentQueue
 
                 _readStream = _fileManager.CreateReaderStream(_queueState.ReaderFileNumber);
                 _readStream.Position = _queueState.ReaderPosition;
+
+                DropTrackedFiles(fileNumber => fileNumber < _queueState.ReaderFileNumber || fileNumber > _queueState.WriterFileNumber, TrackedItemLossReason.Evicted);
             }
         }
     }
@@ -166,12 +175,12 @@ public class FileQueue : IPersistentQueue
                         return null;
                     }
 
-                    MoveReaderToNewDataFile();
+                    MoveReaderToNewDataFile(TrackedItemLossReason.Unreadable);
                 }
 
                 try
                 {
-                    return _serializer.DeserializeDataItem(_readStream);
+                    return ResolveDequeuedItem(_serializer.DeserializeDataItem(_readStream));
                 }
                 catch (DataRecordException ex)
                 {
@@ -182,7 +191,7 @@ public class FileQueue : IPersistentQueue
                     if (_serializer.TryDeserializeNextValidDataItem(_readStream, out var deserialized))
                     {
                         _logger?.LogInformation("Next valid data item found.");
-                        return deserialized;
+                        return ResolveDequeuedItem(deserialized);
                     }
 
                     // If we didn't find anything in the current file, see if we should move on to the next file
@@ -198,7 +207,7 @@ public class FileQueue : IPersistentQueue
                         return null;
                     }
 
-                    MoveReaderToNewDataFile();
+                    MoveReaderToNewDataFile(TrackedItemLossReason.Unreadable);
                 }
             }
 
@@ -221,7 +230,7 @@ public class FileQueue : IPersistentQueue
                         return null;
                     }
 
-                    MoveReaderToNewDataFile();
+                    MoveReaderToNewDataFile(TrackedItemLossReason.Unreadable);
                 }
 
                 try
@@ -258,7 +267,7 @@ public class FileQueue : IPersistentQueue
                         return null;
                     }
 
-                    MoveReaderToNewDataFile();
+                    MoveReaderToNewDataFile(TrackedItemLossReason.Unreadable);
                 }
             }
 
@@ -302,26 +311,17 @@ public class FileQueue : IPersistentQueue
                     MoveWriterToNewDataFile();
                 }
 
+                // Track before writing so the reader never sees a record whose entry is missing.
+                TrackItem(item, _writeStream.Position);
+
                 try
                 {
-                    _serializer.SerializeDataItem(_writeStream, item);
+                    WriteItem(item);
                 }
-                catch (IOException ex) when (ExceptionChecker.IsOutOfDiskSpaceException(ex))
+                catch
                 {
-                    _logger?.LogError("Out of disk. Attempting to make room by deleting the oldest data file.");
-                    TryDeleteOldestQueueFile();
-
-                    try
-                    {
-                        _serializer.SerializeDataItem(_writeStream, item);
-                        _logger?.LogInformation("Successfully persisted item by removing oldest data file.");
-                    }
-                    catch (IOException) when (ExceptionChecker.IsOutOfDiskSpaceException(ex))
-                    {
-                        FlushWriteStreamAndUpdateWriterState();
-                        _enqueuedButNotFlushed.RemoveRange(0, _enqueuedButNotFlushed.IndexOf(item));
-                        throw;
-                    }
+                    UntrackItem(item);
+                    throw;
                 }
             }
 
@@ -349,6 +349,7 @@ public class FileQueue : IPersistentQueue
             {
                 _readStream.Dispose();
                 _fileManager.DeleteDirectory();
+                DropTrackedFiles(_ => true, TrackedItemLossReason.Cleared);
             }
         }
     }
@@ -405,7 +406,7 @@ public class FileQueue : IPersistentQueue
 
             if (_maxQueueFiles > 0 && filesInUse >= _maxQueueFiles)
             {
-                MoveReaderToNewDataFile();
+                MoveReaderToNewDataFile(TrackedItemLossReason.Evicted);
                 _fileManager.DeleteOldestFilePendingDeletion();
             }
         }
@@ -425,16 +426,22 @@ public class FileQueue : IPersistentQueue
         }
     }
 
-    private void MoveReaderToNewDataFile()
+    /// <summary>
+    /// Moves the reader to the next data file and reports tracked items it left unread in the previous file.
+    /// </summary>
+    /// <param name="lossReason">The reason reported for tracked items left in the previous file.</param>
+    private void MoveReaderToNewDataFile(TrackedItemLossReason lossReason)
     {
         lock (_dequeueOperationLock)
         {
+            var previousFileNumber = _queueState.ReaderFileNumber;
             _queueState.IncrementReaderFileNumber();
             _queueState.SetReaderPosition(0);
             _readStream.Dispose();
             _readStream = _fileManager.CreateReaderStream(_queueState.ReaderFileNumber);
             _fileManager.AddPendingDeletion(_queueState.ReaderFileNumber - 1);
             ReportBufferUsage(out _, out _);
+            DropTrackedFiles(fileNumber => fileNumber == previousFileNumber, lossReason);
         }
     }
 
@@ -478,7 +485,7 @@ public class FileQueue : IPersistentQueue
                 }
 
                 _logger?.LogInformation("Moving reader to new data file in order to delete oldest data file.");
-                MoveReaderToNewDataFile();
+                MoveReaderToNewDataFile(TrackedItemLossReason.Evicted);
                 _fileManager.DeleteFilesPendingDeletion();
             }
 
@@ -491,4 +498,167 @@ public class FileQueue : IPersistentQueue
     private void DeleteDrainedDataFiles() => _fileManager.DeleteFilesPendingDeletion();
 
     private bool ReaderAtEndOfFile() => _readStream.Position == _readStream.Length;
+
+    /// <summary>
+    /// Writes an item to the current writer file, deleting the oldest data file once if the disk is full.
+    /// </summary>
+    /// <param name="item">The item to write.</param>
+    private void WriteItem(DataItem item)
+    {
+        try
+        {
+            _serializer.SerializeDataItem(_writeStream, item);
+        }
+        catch (IOException ex) when (ExceptionChecker.IsOutOfDiskSpaceException(ex))
+        {
+            _logger?.LogError("Out of disk. Attempting to make room by deleting the oldest data file.");
+            TryDeleteOldestQueueFile();
+
+            try
+            {
+                _serializer.SerializeDataItem(_writeStream, item);
+                _logger?.LogInformation("Successfully persisted item by removing oldest data file.");
+            }
+            catch (IOException) when (ExceptionChecker.IsOutOfDiskSpaceException(ex))
+            {
+                FlushWriteStreamAndUpdateWriterState();
+                _enqueuedButNotFlushed.RemoveRange(0, _enqueuedButNotFlushed.IndexOf(item));
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Records the file and position of an item that carries a tracking ID.
+    /// </summary>
+    /// <param name="item">The item about to be written.</param>
+    /// <param name="position">The position of the item's record in the current writer file.</param>
+    private void TrackItem(DataItem item, long position)
+    {
+        if (item.TrackingId is not { } trackingId)
+        {
+            return;
+        }
+
+        lock (_trackingLock)
+        {
+            if (!_trackedItems.TryGetValue(_queueState.WriterFileNumber, out var items))
+            {
+                items = new LinkedList<(long Position, Guid Id)>();
+                _trackedItems[_queueState.WriterFileNumber] = items;
+            }
+
+            items.AddLast((position, trackingId));
+        }
+    }
+
+    /// <summary>
+    /// Removes the entry <see cref="TrackItem"/> recorded for an item whose write failed.
+    /// </summary>
+    /// <param name="item">The item that was not written.</param>
+    private void UntrackItem(DataItem item)
+    {
+        if (item.TrackingId is not { } trackingId)
+        {
+            return;
+        }
+
+        lock (_trackingLock)
+        {
+            if (_trackedItems.TryGetValue(_queueState.WriterFileNumber, out var items) && items.Last?.Value.Id == trackingId)
+            {
+                items.RemoveLast();
+                if (items.Count == 0)
+                {
+                    _trackedItems.Remove(_queueState.WriterFileNumber);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Removes the tracked entry of a dequeued item and reports tracked items the reader skipped before it.
+    /// </summary>
+    /// <param name="item">The dequeued item, or <c>null</c> when nothing was read.</param>
+    /// <returns>The <paramref name="item"/> unchanged.</returns>
+    private DataItem ResolveDequeuedItem(DataItem item)
+    {
+        if (item == null)
+        {
+            return null;
+        }
+
+        List<Guid> skipped = null;
+        lock (_trackingLock)
+        {
+            if (!_trackedItems.TryGetValue(_queueState.ReaderFileNumber, out var items))
+            {
+                return item;
+            }
+
+            // The reader stops at the end of the returned record, so its start follows from the record size.
+            var start = _readStream.Position - Serializer.DataItemSerializedOverhead - item.Data.Length;
+            while (items.First?.Value.Position < start)
+            {
+                (skipped ??= new List<Guid>()).Add(items.First.Value.Id);
+                items.RemoveFirst();
+            }
+
+            if (items.First?.Value.Position == start)
+            {
+                items.RemoveFirst();
+            }
+
+            if (items.Count == 0)
+            {
+                _trackedItems.Remove(_queueState.ReaderFileNumber);
+            }
+        }
+
+        RaiseTrackedItemsLost(skipped, TrackedItemLossReason.Unreadable);
+        return item;
+    }
+
+    /// <summary>
+    /// Removes the tracked entries of the matching files and reports them as lost.
+    /// </summary>
+    /// <param name="matches">Selects the file numbers to drop.</param>
+    /// <param name="reason">The reason reported for the dropped entries.</param>
+    private void DropTrackedFiles(Func<int, bool> matches, TrackedItemLossReason reason)
+    {
+        List<Guid> lost = null;
+        lock (_trackingLock)
+        {
+            foreach (var fileNumber in new List<int>(_trackedItems.Keys))
+            {
+                if (!matches(fileNumber))
+                {
+                    continue;
+                }
+
+                lost ??= new List<Guid>();
+                foreach (var (_, id) in _trackedItems[fileNumber])
+                {
+                    lost.Add(id);
+                }
+
+                _trackedItems.Remove(fileNumber);
+            }
+        }
+
+        RaiseTrackedItemsLost(lost, reason);
+    }
+
+    /// <summary>
+    /// Raises <see cref="TrackedItemsLost"/> when any IDs were lost.
+    /// </summary>
+    /// <param name="ids">The lost tracking IDs, or <c>null</c> when none were lost.</param>
+    /// <param name="reason">Why the items were lost.</param>
+    private void RaiseTrackedItemsLost(List<Guid> ids, TrackedItemLossReason reason)
+    {
+        if (ids is { Count: > 0 })
+        {
+            TrackedItemsLost?.Invoke(this, new TrackedItemsLostEventArgs(ids, reason));
+        }
+    }
 }

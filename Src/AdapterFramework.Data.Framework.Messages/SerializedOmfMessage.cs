@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+using System;
 using System.Collections.Concurrent;
 using System.Text;
 using AdapterFramework.Data.DataModel;
@@ -29,6 +30,7 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     public const int MessageActionEnumSize = 1;
     public const int OmfVersionEnumSize = 1;
     public const int PartitionKeyEnumSize = 1;
+    public const int SerializedMessageIdSize = 16;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SerializedOmfMessage"/> class.
@@ -67,9 +69,15 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     /// <inheritdoc/>
     public PartitionKey? PartitionKey { get; }
 
+    /// <summary>
+    /// Gets or sets the ID that the awaitable coordinator tracks the body under, or <c>null</c> when the body carries no scoped item.
+    /// </summary>
+    public Guid? SerializedMessageId { get; set; }
+
     /// <inheritdoc/>
     public virtual int GetMessageSizeInBytes()
     {
-        return MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + OmfVersionEnumSize + PartitionKeyEnumSize;
+        return MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + OmfVersionEnumSize + PartitionKeyEnumSize
+            + (SerializedMessageId.HasValue ? SerializedMessageIdSize : 0);
     }
 }

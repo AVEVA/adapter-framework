@@ -20,7 +20,9 @@ using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using Xunit;
+using static AdapterFramework.Data.Framework.Messages.SerializedOmfMessage;
 using MessageType = AdapterFramework.Data.DataModel.MessageType;
+using OmfVersion = AdapterFramework.Data.DataModel.OmfVersion;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests.Messages;
 
@@ -122,7 +124,7 @@ public class FailoverPersistentOmfMessageQueue_Tests
 
         var dataItem = failoverQueueWrapper.CreateDataItemExternal(serializedMessage);
 
-        Assert.Equal(DataItemVersion.V2, dataItem.Version);
+        Assert.Equal(DataItemVersion.V3, dataItem.Version);
         Assert.NotNull(dataItem.Data);
 
         var retreivedMessage = failoverQueueWrapper.CreateSerializedOmfMessageExternal(dataItem);
@@ -132,6 +134,64 @@ public class FailoverPersistentOmfMessageQueue_Tests
         Assert.Equal(messageAction, retreivedMessage.MessageAction);
         Assert.Equal(expectedProcessedTime.Ticks, retreivedMessage.ProcessTimeTicks);
         Assert.Equal(messageBody, retreivedMessage.MessageBody);
+        Assert.Equal(OmfVersion.Omf12, retreivedMessage.OmfVersion);
+        Assert.Null(retreivedMessage.PartitionKey);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Schema, MessageAction.Create, null)]
+    [InlineData(MessageType.Instance, MessageAction.Update, PartitionKey.Key1)]
+    [InlineData(MessageType.Instance, MessageAction.Delete, PartitionKey.Key16)]
+    public void FailoverPersistentOmfMessageQueue_Omf20_RoundTrip_PreservesVersionAndPartitionKey(MessageType messageType, MessageAction messageAction, PartitionKey? partitionKey)
+    {
+        var messageBody = new byte[] { 0x7b, 0x7d };
+        var processTimeTicks = DateTime.UtcNow.Ticks;
+        var serializedMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, 7, OmfVersion.Omf20, partitionKey)
+        {
+            ProcessTimeTicks = processTimeTicks,
+        };
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        using var failoverQueueWrapper = new FailoverMessageQueueWrapper(mockPersistentQueue.Object);
+
+        var dataItem = failoverQueueWrapper.CreateDataItemExternal(serializedMessage);
+        var retrievedMessage = failoverQueueWrapper.CreateSerializedOmfMessageExternal(dataItem);
+
+        Assert.Equal(DataItemVersion.V3, dataItem.Version);
+        Assert.Equal(serializedMessage.GetMessageSizeInBytes(), dataItem.Data.Length);
+        Assert.Equal(messageType, retrievedMessage.MessageType);
+        Assert.Equal(messageAction, retrievedMessage.MessageAction);
+        Assert.Equal(7, retrievedMessage.ItemCount);
+        Assert.Equal(messageBody, retrievedMessage.MessageBody);
+        Assert.Equal(processTimeTicks, retrievedMessage.ProcessTimeTicks);
+        Assert.Equal(OmfVersion.Omf20, retrievedMessage.OmfVersion);
+        Assert.Equal(partitionKey, retrievedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void FailoverPersistentOmfMessageQueue_LegacyV2Record_LoadsAsOmf12WithoutPartitionKey()
+    {
+        var messageBody = new byte[] { 0x01, 0x02, 0x03 };
+        var processTimeTicks = DateTime.UtcNow.Ticks;
+        var data = new byte[MessageTypeEnumSize + ValueCountSize + messageBody.Length + sizeof(long) + MessageActionEnumSize];
+        data[0] = (byte)MessageType.Container;
+        BitConverter.GetBytes(5).CopyTo(data, MessageTypeEnumSize);
+        messageBody.CopyTo(data, MessageTypeEnumSize + ValueCountSize);
+        BitConverter.GetBytes(processTimeTicks).CopyTo(data, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
+        data[^1] = (byte)MessageAction.Update;
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        using var failoverQueueWrapper = new FailoverMessageQueueWrapper(mockPersistentQueue.Object);
+
+        var retrievedMessage = failoverQueueWrapper.CreateSerializedOmfMessageExternal(new DataItem(DataItemVersion.V2, data));
+
+        Assert.Equal(MessageType.Container, retrievedMessage.MessageType);
+        Assert.Equal(MessageAction.Update, retrievedMessage.MessageAction);
+        Assert.Equal(5, retrievedMessage.ItemCount);
+        Assert.Equal(messageBody, retrievedMessage.MessageBody);
+        Assert.Equal(processTimeTicks, retrievedMessage.ProcessTimeTicks);
+        Assert.Equal(OmfVersion.Omf12, retrievedMessage.OmfVersion);
+        Assert.Null(retrievedMessage.PartitionKey);
     }
 }
 

@@ -13,6 +13,8 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Net;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 
 namespace AdapterFramework.Data.Framework.Abstractions.HttpCommunication;
 
@@ -105,6 +107,16 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
     /// Gets the delay required.
     /// </summary>
     public TimeSpan Delay { get; }
+
+    /// <summary>
+    /// Gets the HTTP status the endpoint returned, or null when no response was received.
+    /// </summary>
+    public HttpStatusCode? StatusCode { get; init; }
+
+    /// <summary>
+    /// Gets the values parsed from a 2xx response body, or null when the body has none.
+    /// </summary>
+    public OmfIngressReceipt Receipt { get; init; }
 
     public static bool operator ==(EndpointResponse left, EndpointResponse right)
     {

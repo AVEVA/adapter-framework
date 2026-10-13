@@ -20,18 +20,20 @@ using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFilters;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.MessageProcessor.DataFilters;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.MessageProcessor;
 
-public class AdapterMessageProcessor : IAdapterMessageProcessor
+public class AdapterMessageProcessor : IAwaitableAdapterMessageProcessor
 {
     #region Private Fields
 
     private const double PercentToDecimalConversion = 100.0;
-    private readonly IMessageProcessor _messageProcessor;
+    private readonly IScopedMessageProcessor _messageProcessor;
     private readonly ConcurrentDictionary<string, IDataFilter> _dataFilters;
     private readonly OmfVersion _omfVersion;
 
@@ -43,7 +45,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(messageProcessor, nameof(messageProcessor));
 
-        _messageProcessor = messageProcessor;
+        _messageProcessor = messageProcessor.AsScoped();
         _dataFilters = new ConcurrentDictionary<string, IDataFilter>(StringComparer.OrdinalIgnoreCase);
         _omfVersion = omfVersion;
     }
@@ -116,31 +118,88 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     #region IAdapterMessageProcessor Implementation
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction)
+    public bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableAdapterMessageScope scope)
     {
-        _messageProcessor.WriteType(dataType, messageAction);
+        if (!_messageProcessor.TryCreateScope(options, out var token))
+        {
+            scope = null;
+            return false;
+        }
+
+        scope = new AwaitableAdapterMessageScope(this, token);
+        return true;
     }
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
-    {
-        _messageProcessor.WriteTypes(dataTypes, messageAction);
-    }
+    public void WriteType(DataType dataType, MessageAction messageAction) => WriteTypeCore(dataType, messageAction, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction)
-    {
-        _messageProcessor.WriteStream(dataStream, messageAction);
-    }
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypesCore(dataTypes, messageAction, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
-    {
-        _messageProcessor.WriteStreams(dataStreams, messageAction);
-    }
+    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStreamCore(dataStream, messageAction, null);
 
     /// <inheritdoc/>
-    public virtual void WriteDynamicValue<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreamsCore(dataStreams, messageAction, null);
+
+    /// <inheritdoc/>
+    public virtual void WriteDynamicValue<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValueCore(dataSelectionItem, instance, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public virtual void WriteDynamicValues<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValuesCore(dataSelectionItem, instances, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata = null,
+        List<string> tags = null, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null,
+        MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValueCore(typeId, id, name, description, dataSource, instance, metadata, tags, propertyOverrides, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource,
+        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
+        T instance, IReadOnlyDictionary<string, object> metadata = null,
+        List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValueCore(typeId, id, name, description, dataSource, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteInstanceRelationshipCore(link, messageAction, null);
+
+    public void WriteTypeRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteTypeRelationshipCore(link, messageAction, null);
+
+    public void WriteEvent<T>(string typeId, string id, string name, string description, DateTime startTime, DateTime? endTime, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null,
+        MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteEventCore(typeId, id, name, description, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    #endregion
+
+    #region Core Write Methods
+
+    // Core methods take the scope, if any. Subclasses override these so scoped and unscoped writes behave the same.
+    protected internal virtual void WriteTypeCore(DataType dataType, MessageAction messageAction, ScopeToken scope)
+    {
+        _messageProcessor.WriteType(dataType, messageAction, scope);
+    }
+
+    protected internal virtual void WriteTypesCore(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope)
+    {
+        _messageProcessor.WriteTypes(dataTypes, messageAction, scope);
+    }
+
+    protected internal virtual void WriteStreamCore(DataStream dataStream, MessageAction messageAction, ScopeToken scope)
+    {
+        _messageProcessor.WriteStream(dataStream, messageAction, scope);
+    }
+
+    protected internal virtual void WriteStreamsCore(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope)
+    {
+        _messageProcessor.WriteStreams(dataStreams, messageAction, scope);
+    }
+
+    protected internal virtual void WriteDynamicValueCore<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(dataSelectionItem, nameof(dataSelectionItem));
         ThrowHelper.ThrowIfArgumentNull(instance, nameof(instance));
@@ -149,7 +208,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
         var dataFilter = LookupFilterById(dataSelectionItem.DataFilterId);
         if (dataFilter == null)
         {
-            _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, instance, messageAction, partitionKey);
+            _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, instance, messageAction, partitionKey, scope);
             dataSelectionItem.DataFilterCache = null;
         }
         else
@@ -163,17 +222,18 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
             {
                 if (sendPrevious)
                 {
-                    _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, typedCache.GetPreviousValue(), messageAction, partitionKey);
+                    _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, typedCache.GetPreviousValue(), messageAction, partitionKey, scope);
                     typedCache.SetPreviousValue(instance);
                 }
 
-                _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, instance, messageAction, partitionKey);
+                _messageProcessor.WriteDynamicValue(dataSelectionItem.StreamId, instance, messageAction, partitionKey, scope);
             }
         }
     }
 
-    /// <inheritdoc/>
-    public virtual void WriteDynamicValues<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    protected internal virtual void WriteDynamicValuesCore<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey,
+        ScopeToken scope)
+        where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(dataSelectionItem, nameof(dataSelectionItem));
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
@@ -182,7 +242,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
         var dataFilter = LookupFilterById(dataSelectionItem.DataFilterId);
         if (dataFilter == null)
         {
-            _messageProcessor.WriteDynamicValues(dataSelectionItem.StreamId, instances, messageAction, partitionKey);
+            _messageProcessor.WriteDynamicValues(dataSelectionItem.StreamId, instances, messageAction, partitionKey, scope);
             dataSelectionItem.DataFilterCache = null;
         }
         else
@@ -209,15 +269,14 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
 
             if (instancesToWrite.Count > 0)
             {
-                _messageProcessor.WriteDynamicValues(dataSelectionItem.StreamId, instancesToWrite, messageAction, partitionKey);
+                _messageProcessor.WriteDynamicValues(dataSelectionItem.StreamId, instancesToWrite, messageAction, partitionKey, scope);
             }
         }
     }
 
-    /// <inheritdoc/>
-    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata = null,
-        List<string> tags = null, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null,
-        MessageAction messageAction = MessageAction.Default) where T : class
+    protected internal virtual void WriteStaticValueCore<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata,
+        List<string> tags, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, MessageAction messageAction, ScopeToken scope)
+        where T : class
     {
         if (_omfVersion == OmfVersion.Omf12)
         {
@@ -229,15 +288,13 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
             throw new ArgumentException("typeId is required unless messageAction is Delete.", nameof(typeId));
         }
 
-        _messageProcessor.WriteStaticValue(typeId, id, name, description, dataSource, instance, metadata, tags, propertyOverrides, messageAction);
+        _messageProcessor.WriteStaticValue(typeId, id, name, description, dataSource, instance, metadata, tags, propertyOverrides, messageAction, scope);
     }
 
-    /// <inheritdoc/>
-    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource,
-        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, 
-        T instance, IReadOnlyDictionary<string, object> metadata = null,
-        List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
+    protected internal virtual void WriteStaticValueCore<T>(string typeId, string id, string name, string description, string dataSource,
+        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
+        T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction, ScopeToken scope)
+        where T : class
     {
         if (_omfVersion == OmfVersion.Omf12)
         {
@@ -249,39 +306,41 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
             throw new ArgumentException("typeId is required unless messageAction is Delete.", nameof(typeId));
         }
 
-        _messageProcessor.WriteStaticValue(typeId, id, name, description, dataSource, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        _messageProcessor.WriteStaticValue(typeId, id, name, description, dataSource, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
     }
 
-    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
+    protected internal virtual void WriteInstanceRelationshipCore(Link link, MessageAction messageAction, ScopeToken scope)
     {
         if (_omfVersion == OmfVersion.Omf12)
         {
             throw new NotSupportedException("Instance relationships are not supported in OMF 1.2.");
         }
 
-        _messageProcessor.WriteInstanceRelationship(link, messageAction);
+        _messageProcessor.WriteInstanceRelationship(link, messageAction, scope);
     }
 
-    public void WriteTypeRelationship(Link link, MessageAction messageAction = MessageAction.Default)
+    protected internal virtual void WriteTypeRelationshipCore(Link link, MessageAction messageAction, ScopeToken scope)
     {
         if (_omfVersion == OmfVersion.Omf12) 
         {
             throw new NotSupportedException("Type relationships are not supported in OMF 1.2.");
         }
 
-        _messageProcessor.WriteSchemaRelationship(link, messageAction);
+        _messageProcessor.WriteSchemaRelationship(link, messageAction, scope);
     }
 
-    public void WriteEvent<T>(string typeId, string id, string name, string description, DateTime startTime, DateTime? endTime, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null,
-        MessageAction messageAction = MessageAction.Default) where T : class
+    protected internal virtual void WriteEventCore<T>(string typeId, string id, string name, string description, DateTime startTime, DateTime? endTime,
+        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
+        IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction, ScopeToken scope)
+        where T : class
     {
         if (_omfVersion == OmfVersion.Omf12) 
         {
             throw new NotSupportedException("Events are not supported in OMF 1.2.");
         }
 
-        _messageProcessor.WriteEvent(id, typeId, name, description, null, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        _messageProcessor.WriteEvent(id, typeId, name, description, null, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
     }
+
     #endregion
 }
