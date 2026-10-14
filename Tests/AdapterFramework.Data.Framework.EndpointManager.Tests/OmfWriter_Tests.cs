@@ -590,9 +590,19 @@ public class OmfWriter_Tests : IDisposable
         _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
 
         Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) > attemptsBeforeRecovery, TimeToWaitForBufferedRetry));
-        Thread.Sleep(SuccessfulSendExpectedWaitTime);
 
-        Assert.Equal(resourceCounts, _omfWriterBuffered.GetAndResetEgressedResourceCounters());
+        // Accumulate snapshots until the full tuple is seen: the three counters are reset independently, so one snapshot can be partial.
+        // Counting the delivery twice overshoots the expected tuple, so the wait times out.
+        var egressed = default(OmfResourceCounts);
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                var counts = _omfWriterBuffered.GetAndResetEgressedResourceCounters();
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                return egressed == resourceCounts;
+            },
+            TimeToWaitForBufferedRetry));
+
         Assert.True(_omfWriterBuffered.GetAndResetEgressedResourceCounters().IsEmpty);
     }
 

@@ -533,18 +533,25 @@ public class OmfEndpointManager_Tests : IDisposable
 
         Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(message) == 1, BufferedMessageWaitTime), "Message wasn't received.");
 
+        // Accumulate snapshots until the full tuple is seen: the three counters are reset independently, so one snapshot can be partial.
+        var egressed = new Dictionary<string, OmfResourceCounts> { { config.Id, default }, { config2.Id, default } };
         IReadOnlyDictionary<string, OmfResourceCounts> counters = null;
         Assert.True(SpinWait.SpinUntil(
             () =>
             {
                 counters = omfEndpointManager.GetAndResetEgressedResourceCounters();
-                return !counters[config.Id].IsEmpty;
+                foreach (var (endpointId, counts) in counters)
+                {
+                    var total = egressed[endpointId];
+                    egressed[endpointId] = new OmfResourceCounts(total.StreamValues + counts.StreamValues, total.Assets + counts.Assets, total.Events + counts.Events);
+                }
+
+                return egressed[config.Id] == resourceCounts;
             },
             MaximumWaitTime));
 
         Assert.Equal(configList.Length, counters.Count);
-        Assert.Equal(resourceCounts, counters[config.Id]);
-        Assert.True(counters[config2.Id].IsEmpty);
+        Assert.True(egressed[config2.Id].IsEmpty);
 
         counters = omfEndpointManager.GetAndResetEgressedResourceCounters();
         Assert.True(counters[config.Id].IsEmpty);

@@ -356,7 +356,7 @@ public class EgressDiagnosticsService_Tests
 
     [Theory]
     [InlineData(DiagnosticsConstants.IoRateStreamName, DiagnosticsConstants.StreamIoRateStreamName, "Failed to process IORate diagnostics stream")]
-    [InlineData(DiagnosticsConstants.StreamIoRateStreamName, DiagnosticsConstants.IoRateStreamName, "Failed to process OMF 2.0 resource IORate diagnostics streams")]
+    [InlineData(DiagnosticsConstants.StreamIoRateStreamName, DiagnosticsConstants.IoRateStreamName, "Failed to process OMF 2.0 resource IORate diagnostics stream")]
     public async Task Omf20_StreamWriteFailureOnTimer_IsCaughtAndOtherRatesContinue(string failingStreamName, string survivingStreamName, string expectedLogMessage)
     {
         const string EndpointId = "ep1";
@@ -399,12 +399,93 @@ public class EgressDiagnosticsService_Tests
         Assert.Equal(3, recorder.GetIoRate(ioRateStreamId));
     }
 
+    [Fact]
+    public async Task Omf20_ResourceIoRateValueWriteFailure_OnlyStopsThatStream()
+    {
+        var failingStreamId = $"{_id}.ep1.{DiagnosticsConstants.StreamIoRateStreamName}";
+        var recorder = new RecordingDiagnosticsMessageProcessor { FailValueWritesForStreamId = failingStreamId, FailValueWritesOnce = true };
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, CreateTwoEndpointManager().Object, _node,
+            new Mock<IEdgeComponentHealthService>().Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+
+        RunPublicationCycles(egressService, 3);
+
+        AssertOnlyStreamStopped(recorder, failingStreamId, expectedPublications: 3);
+        Assert.True(_testLogger.ContainsMessage($"event for stream {failingStreamId}"));
+    }
+
+    [Fact]
+    public async Task Omf20_ResourceIoRateStreamWriteFailure_OnlyStopsThatStream()
+    {
+        var failingStreamId = $"{_id}.ep1.{DiagnosticsConstants.StreamIoRateStreamName}";
+        var recorder = new RecordingDiagnosticsMessageProcessor { FailStreamWritesForStreamId = failingStreamId };
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, CreateTwoEndpointManager().Object, _node,
+            new Mock<IEdgeComponentHealthService>().Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+
+        RunPublicationCycles(egressService, 3);
+
+        AssertOnlyStreamStopped(recorder, failingStreamId, expectedPublications: 3);
+        Assert.Equal(7, recorder.GetStreams().Count);
+        Assert.DoesNotContain(recorder.GetStreams(), s => s.Id == failingStreamId);
+        Assert.True(_testLogger.ContainsMessage($"diagnostics stream {failingStreamId}"));
+    }
+
+    private static Mock<IOmfDataEndpointManager> CreateTwoEndpointManager()
+    {
+        var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedValuesCounters()).Returns(new Dictionary<string, long> { { "ep1", 6 }, { "ep2", 6 } });
+        mockEndpointManager.Setup(x => x.GetAndResetEgressedResourceCounters()).Returns(new Dictionary<string, OmfResourceCounts>
+        {
+            { "ep1", new OmfResourceCounts(3, 2, 1) },
+            { "ep2", new OmfResourceCounts(3, 2, 1) },
+        });
+        return mockEndpointManager;
+    }
+
+    // Steps the collection loop directly instead of starting the timer. Rates publish on the first tick and then every 60 ticks.
+    private static void RunPublicationCycles(EgressDiagnosticsService egressService, int cycles)
+    {
+        for (var tick = 0; tick < 1 + ((cycles - 1) * 60); tick++)
+        {
+            egressService.CollectStatistics();
+        }
+    }
+
+    private void AssertOnlyStreamStopped(RecordingDiagnosticsMessageProcessor recorder, string stoppedStreamId, int expectedPublications)
+    {
+        var expected = new Dictionary<string, double>();
+        foreach (var endpointId in new[] { "ep1", "ep2" })
+        {
+            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.IoRateStreamName}"] = 6;
+            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.StreamIoRateStreamName}"] = 3;
+            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.AssetIoRateStreamName}"] = 2;
+            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.EventIoRateStreamName}"] = 1;
+        }
+
+        foreach (var (streamId, rate) in expected)
+        {
+            if (streamId == stoppedStreamId)
+            {
+                Assert.Equal(0, recorder.GetIoRatePublishCount(streamId));
+                continue;
+            }
+
+            Assert.Equal(expectedPublications, recorder.GetIoRatePublishCount(streamId));
+            Assert.Equal(rate, recorder.GetIoRate(streamId));
+        }
+    }
+
     private sealed class RecordingDiagnosticsMessageProcessor : IDiagnosticsMessageProcessor
     {
         private readonly object _lock = new();
         private readonly List<DataStream> _streams = new();
         private readonly List<string> _linkTargets = new();
         private readonly Dictionary<string, double> _ioRates = new();
+        private readonly Dictionary<string, int> _ioRatePublishCounts = new();
+        private int _valueWriteFailures;
 
         public MetadataInfo StreamMetadataLevel { get; set; }
 
@@ -413,6 +494,8 @@ public class EgressDiagnosticsService_Tests
         public string StreamIdPrefix => null;
 
         public string FailValueWritesForStreamId { get; init; }
+
+        public bool FailValueWritesOnce { get; init; }
 
         public string FailStreamWritesForStreamId { get; init; }
 
@@ -435,7 +518,7 @@ public class EgressDiagnosticsService_Tests
 
         public void WriteDiagnosticsValue<T>(string id, Classification classification, T instance)
         {
-            if (id == FailValueWritesForStreamId)
+            if (id == FailValueWritesForStreamId && (!FailValueWritesOnce || Interlocked.Increment(ref _valueWriteFailures) == 1))
             {
                 throw new InvalidOperationException("Simulated diagnostics write failure.");
             }
@@ -449,8 +532,17 @@ public class EgressDiagnosticsService_Tests
                         break;
                     case IoRateEvent ioRateEvent:
                         _ioRates[id] = ioRateEvent.IORate;
+                        _ioRatePublishCounts[id] = _ioRatePublishCounts.GetValueOrDefault(id) + 1;
                         break;
                 }
+            }
+        }
+
+        public int GetIoRatePublishCount(string streamId)
+        {
+            lock (_lock)
+            {
+                return _ioRatePublishCounts.GetValueOrDefault(streamId);
             }
         }
 
@@ -493,6 +585,7 @@ public class EgressDiagnosticsService_Tests
                 _streams.Clear();
                 _linkTargets.Clear();
                 _ioRates.Clear();
+                _ioRatePublishCounts.Clear();
             }
         }
     }

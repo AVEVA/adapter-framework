@@ -60,7 +60,6 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _timerTickValueRateCounter;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateIoRate;
-    private bool _failedToUpdateResourceIoRates;
     private bool _disposed;
 
     #endregion
@@ -233,7 +232,12 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
-    private void CollectMessageProcessorStatistics(object state)
+    private void CollectMessageProcessorStatistics(object state) => CollectStatistics();
+
+    /// <summary>
+    /// Runs one collection tick. Called every second by the timer; tests call it directly to step through publication cycles.
+    /// </summary>
+    internal void CollectStatistics()
     {
         if (Interlocked.CompareExchange(ref _updateMessageProcessorStatisticsSync, 1, 0) == 0)
         {
@@ -295,7 +299,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     ResendAllTypesAndStreams();
                 }
 
-                if (_failedToCreateDiagnosticsTypes || (_failedToUpdateIoRate && !CanSendResourceIoRates()))
+                if (_failedToCreateDiagnosticsTypes || (_failedToUpdateIoRate && !_resourceIoRatesEnabled))
                 {
                     return;
                 }
@@ -309,8 +313,6 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
-    private bool CanSendResourceIoRates() => _resourceIoRatesEnabled && !_failedToUpdateResourceIoRates;
-
     private void SendDataRateEvent()
     {
         if (_timerTickValueRateCounter <= 0)
@@ -322,7 +324,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                 SendIoRateEvents();
             }
 
-            if (CanSendResourceIoRates())
+            if (_resourceIoRatesEnabled)
             {
                 SendResourceIoRateEvents();
             }
@@ -359,23 +361,28 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         foreach (var resourceIoRates in _egressIdToResourceIoRates.Values)
         {
-            foreach (var (streamId, movingAverage) in resourceIoRates.GetRates())
+            foreach (var rate in resourceIoRates.Rates)
             {
+                if (rate.Failed)
+                {
+                    continue;
+                }
+
                 var ioRateEvent = new IoRateEvent
                 {
                     Timestamp = DateTime.UtcNow,
-                    IORate = movingAverage.ComputeAverage(),
+                    IORate = rate.MovingAverage.ComputeAverage(),
                 };
 
                 try
                 {
-                    _diagnosticsMessageProcessor.WriteDiagnosticsValue(streamId, Classification.Dynamic, ioRateEvent);
+                    _diagnosticsMessageProcessor.WriteDiagnosticsValue(rate.Stream.Id, Classification.Dynamic, ioRateEvent);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics event. Stopping resource IORate diagnostics data collection.");
+                    _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics event for stream {StreamId}. Stopping data collection for that stream.", rate.Stream.Id);
 
-                    _failedToUpdateResourceIoRates = true;
+                    rate.Failed = true;
                 }
             }
         }
@@ -423,23 +430,28 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private void CreateResourceIoRateStreamsAndLinks(ResourceIoRates resourceIoRates)
     {
-        try
+        // Each stream is written on its own so a failure only stops that stream.
+        foreach (var rate in resourceIoRates.Rates)
         {
-            var streams = resourceIoRates.Streams;
-            _diagnosticsMessageProcessor.WriteDiagnosticsStreams(streams);
-
-            foreach (var stream in streams)
+            if (rate.Failed)
             {
-                var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(stream.Id);
+                continue;
+            }
+
+            try
+            {
+                _diagnosticsMessageProcessor.WriteDiagnosticsStreams(new[] { rate.Stream, });
+
+                var (id, classification, link) = _egressDiagnosticsOmfMessageCreator.CreateLink(rate.Stream.Id);
                 _diagnosticsMessageProcessor.WriteDiagnosticsValue(id, classification, link);
             }
-        }
-        catch (Exception ex)
-        {
-            // Can run on the timer thread, where an unhandled exception would terminate the process.
-            _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics streams. Stopping resource IORate diagnostics data collection.");
+            catch (Exception ex)
+            {
+                // Can run on the timer thread, where an unhandled exception would terminate the process.
+                _logger.LogError(ex, "Failed to process OMF 2.0 resource IORate diagnostics stream {StreamId}. Stopping data collection for that stream.", rate.Stream.Id);
 
-            _failedToUpdateResourceIoRates = true;
+                rate.Failed = true;
+            }
         }
     }
 
@@ -461,10 +473,10 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
             _streamIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, StreamIoRateStreamName));
             _assetIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, AssetIoRateStreamName));
             _eventIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, EventIoRateStreamName));
-            Streams = [_streamIoRate.Stream, _assetIoRate.Stream, _eventIoRate.Stream];
+            Rates = [_streamIoRate, _assetIoRate, _eventIoRate];
         }
 
-        public DataStream[] Streams { get; }
+        public IReadOnlyList<ResourceIoRate> Rates { get; }
 
         public void AddSamples(OmfResourceCounts resourceCounts)
         {
@@ -475,23 +487,32 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
 
         public void ClearSamples()
         {
-            _streamIoRate.MovingAverage.ClearSamples();
-            _assetIoRate.MovingAverage.ClearSamples();
-            _eventIoRate.MovingAverage.ClearSamples();
+            foreach (var rate in Rates)
+            {
+                rate.MovingAverage.ClearSamples();
+            }
         }
+    }
 
-        public IEnumerable<(string StreamId, MovingAverage MovingAverage)> GetRates()
+    /// <summary>
+    /// One resource IO rate stream for one endpoint.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Failed"/> is local to this stream: once a stream or value write fails, only this stream stops publishing,
+    /// matching how the legacy IORate stream stops after a failure. Removing and re-adding the endpoint starts it again.
+    /// </remarks>
+    private sealed class ResourceIoRate(DataStream stream)
+    {
+        private volatile bool _failed;
+
+        public DataStream Stream { get; } = stream;
+
+        public MovingAverage MovingAverage { get; } = new(MovingAveragePeriod);
+
+        public bool Failed
         {
-            yield return (_streamIoRate.Stream.Id, _streamIoRate.MovingAverage);
-            yield return (_assetIoRate.Stream.Id, _assetIoRate.MovingAverage);
-            yield return (_eventIoRate.Stream.Id, _eventIoRate.MovingAverage);
-        }
-
-        private sealed class ResourceIoRate(DataStream stream)
-        {
-            public DataStream Stream { get; } = stream;
-
-            public MovingAverage MovingAverage { get; } = new(MovingAveragePeriod);
+            get => _failed;
+            set => _failed = value;
         }
     }
 

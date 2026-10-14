@@ -26,7 +26,7 @@ namespace AdapterFramework.Data.Framework.Buffering;
 
 public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializedOmfMessage>
 {
-    // V4 appends the streaming value, asset and event counts (Int64 each) after the V3 trailer.
+    // V4 appends the stream value, asset and event counts (Int64 each) after the V3 trailer.
     private const int ResourceCountsSize = 3 * sizeof(long);
     private const int V3TrailerSize = 3;
 
@@ -113,7 +113,8 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
                 break;
 
             case DataItemVersion.V3:
-                
+                // V3 records have no resource counts, so messages buffered before the upgrade still count toward IORate
+                // when delivered, but not toward StreamIORate, AssetIORate or EventIORate.
                 if (data.Length < bodyOffset + V3TrailerSize)
                     return new SerializedOmfMessage(messageType, Array.Empty<byte>(), messageAction);
 

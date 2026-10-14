@@ -18,7 +18,7 @@ namespace AdapterFramework.Data.Framework.Abstractions.Messages;
 /// Number of OMF 2.0 resource instances, by resource kind, contained in (or successfully delivered from) OMF instance messages.
 /// </summary>
 /// <remarks>
-/// Only streaming values, assets and events are counted. Relationships, types, stream definitions and other schema objects are not.
+/// Only stream values, assets and events are counted. Relationships, types, stream definitions and other schema objects are not.
 /// </remarks>
 /// <param name="StreamValues">Number of individual stream values. Feeds the <c>StreamIORate</c> stream.</param>
 /// <param name="Assets">Number of asset instances.</param>
