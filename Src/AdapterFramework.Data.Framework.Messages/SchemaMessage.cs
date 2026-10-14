@@ -40,6 +40,7 @@ public class SchemaMessage : Message, IDisposable
     /// <param name="relationshipCount">The number of valid elements in <paramref name="relationships"/>.</param>
     /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that describes the intent for these schema objects.</param>
     /// <param name="rentedFromPool">True if the arrays were rented from an <see cref="ArrayPool{T}"/> and should be returned on dispose; otherwise false.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the schema to the OMFIngress Service.</param>
     /// <remarks>
     /// The counts allow callers to reuse larger pooled arrays while only sending the active subset.
     /// When <paramref name="rentedFromPool"/> is true, the arrays will be returned to their respective pools on <see cref="Dispose"/>.
@@ -52,7 +53,8 @@ public class SchemaMessage : Message, IDisposable
         int containerCount,
         int relationshipCount,
         MessageAction messageAction,
-        bool rentedFromPool = false)
+        bool rentedFromPool = false,
+        PartitionKey? partitionKey = null)
     {
         Types = types;
         Containers = containers;
@@ -62,6 +64,7 @@ public class SchemaMessage : Message, IDisposable
         RelationshipCount = relationshipCount;
         MessageAction = messageAction;
         _rentedFromPool = rentedFromPool;
+        PartitionKey = partitionKey;
     }
 
     /// <summary>Gets the array of OMF Type definitions.</summary>
@@ -84,6 +87,9 @@ public class SchemaMessage : Message, IDisposable
 
     /// <summary>Gets the <see cref="Abstractions.Messages.MessageAction"/> describing the schema operation.</summary>
     public MessageAction MessageAction { get; }
+
+    /// <summary>Gets the PartitionKey that will be sent with the schema to the OMFIngress Service.</summary>
+    public PartitionKey? PartitionKey { get; }
 
     /// <summary>
     /// Releases resources used by the <see cref="SchemaMessage"/> and returns rented arrays to their pools when applicable.

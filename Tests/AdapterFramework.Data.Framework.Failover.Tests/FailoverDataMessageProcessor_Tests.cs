@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -26,6 +27,7 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Failover.Messages;
+using AdapterFramework.Data.Framework.Messages;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests;
@@ -151,6 +153,67 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(secondMessageToProcess.ItemCount, _sentMessages[1].ItemCount);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    /// <summary>
+    /// Verifies that promotion from secondary to primary preserves OMF 2.0 schema metadata,
+    /// both in memory and after a restart reads the persisted failover buffer.
+    /// </summary>
+    /// <param name="restart">Whether to restart the processor before promotion.</param>
+    /// <param name="partitionKey">The schema routing key, or null for default routing.</param>
+    [Theory]
+    [InlineData(false, PartitionKey.Key1)]
+    [InlineData(false, null)]
+    [InlineData(true, PartitionKey.Key4)]
+    [InlineData(true, null)]
+    public void ProcessOmfMessage_WhenHotSchemaIsReplayed_PreservesProtocolAndPartition(bool restart, PartitionKey? partitionKey)
+    {
+        var sentMessages = new ConcurrentQueue<ISerializedOmfMessage>();
+        var mockLogger = new Mock<ILogger>();
+        var configurationProvider = GetMockConfigurationProvider(nameof(ProcessOmfMessage_WhenHotSchemaIsReplayed_PreservesProtocolAndPartition));
+        var endpointManager = new Mock<IOmfDataEndpointManager>();
+        endpointManager.Setup(x => x.SendMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(sentMessages.Enqueue);
+
+        using var processor = new FailoverDataMessageProcessor(mockLogger.Object, configurationProvider.Object, endpointManager.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+
+        var message = new SerializedOmfMessage(MessageType.Schema, new byte[] { 1, 2, 3 }, MessageAction.Create,
+            3, OmfVersion.Omf20, partitionKey);
+        var beforeProcess = DateTime.UtcNow;
+        processor.ProcessOmfMessage(message);
+        Assert.Empty(sentMessages);
+
+        if (restart)
+        {
+            // Disposal moves the secondary's volatile messages to disk before closing the buffer.
+            processor.Dispose();
+        }
+
+        using var replayProcessor = restart
+            ? new FailoverDataMessageProcessor(mockLogger.Object, configurationProvider.Object, endpointManager.Object)
+            : null;
+        var activeProcessor = replayProcessor ?? processor;
+        if (restart)
+        {
+            activeProcessor.Initialize();
+            activeProcessor.UpdateMode(FailoverMode.Hot);
+        }
+
+        activeProcessor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => !sentMessages.IsEmpty, 5000));
+        // Stop the consumer before inspecting its final output.
+        activeProcessor.UpdateState(FailoverRole.Secondary, default);
+
+        var replayed = Assert.IsAssignableFrom<IFailoverSerializedOmfMessage>(Assert.Single(sentMessages));
+        Assert.Equal(message.MessageType, replayed.MessageType);
+        Assert.Equal(message.MessageBody, replayed.MessageBody);
+        Assert.Equal(message.MessageAction, replayed.MessageAction);
+        Assert.Equal(message.ItemCount, replayed.ItemCount);
+        Assert.Equal(OmfVersion.Omf20, replayed.OmfVersion);
+        Assert.Equal(partitionKey, replayed.PartitionKey);
+        Assert.InRange(replayed.ProcessTimeTicks, beforeProcess.Ticks, DateTime.UtcNow.Ticks);
     }
 
     [Fact]
