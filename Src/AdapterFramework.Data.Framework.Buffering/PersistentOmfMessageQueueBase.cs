@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -59,6 +59,13 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
 
     #endregion
 
+    #region Public Properties
+
+    /// <inheritdoc/>
+    public long ReaderEpoch => _persistentQueue.ReaderEpoch;
+
+    #endregion
+
     #region Public Methods
 
     /// <inheritdoc/>
@@ -95,6 +102,18 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         }
 
         return false;
+    }
+
+    /// <inheritdoc/>
+    public bool TryDequeueIfEpoch(long expectedEpoch)
+    {
+        if (_persistentQueue.DequeueIfEpoch(expectedEpoch) == null)
+        {
+            return false;
+        }
+
+        _persistentQueue.FlushDequeues();
+        return true;
     }
 
     /// <inheritdoc/>

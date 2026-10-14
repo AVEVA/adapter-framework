@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,7 +23,19 @@ namespace AdapterFramework.Data.Framework.Abstractions.Buffering;
 public interface IPersistentMessageQueue<TMessage> : IMessageQueue<TMessage>, IDisposable
 {
     /// <summary>
+    /// Gets a value that changes whenever retention discards unread messages from the head of the queue.
+    /// </summary>
+    long ReaderEpoch => 0;
+
+    /// <summary>
     /// Removes all persisted messages from the <see cref="IPersistentMessageQueue{TMessage}"/>.
     /// </summary>
     void Clear();
+
+    /// <summary>
+    /// Removes the head message only if <see cref="ReaderEpoch"/> still equals <paramref name="expectedEpoch"/>.
+    /// </summary>
+    /// <param name="expectedEpoch">The <see cref="ReaderEpoch"/> observed before the head message was read.</param>
+    /// <returns>true if the head message was removed; otherwise, false.</returns>
+    bool TryDequeueIfEpoch(long expectedEpoch) => ReaderEpoch == expectedEpoch && TryDequeue(out _);
 }

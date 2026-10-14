@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -1382,6 +1382,89 @@ public class FileQueue_IntegrationTests : IDisposable
 
     #endregion
 
+    #region Reader Epoch Tests
+
+    [Fact]
+    public void FileQueue_DequeueIfEpoch_EpochUnchanged_DequeuesHead()
+    {
+        var items = CreateMarkedItems(2, 16);
+        EnqueueAndFlush(items);
+
+        var epoch = _fileQueue.ReaderEpoch;
+
+        TestHelper.AssertEqual(items[0], _fileQueue.DequeueIfEpoch(epoch));
+        TestHelper.AssertEqual(items[1], _fileQueue.Peek());
+    }
+
+    [Fact]
+    public void FileQueue_FileLimitEvictsReaderFile_DequeueIfEpochLeavesNewHead()
+    {
+        var msgSize = 1024 * 1024 / 10;
+
+        _fileQueue.Dispose();
+        _fileQueue = GenerateFileQueue(DefaultPartition, 1, 1);
+
+        EnqueueAndFlush(CreateMarkedItems(3, msgSize));
+        var epoch = _fileQueue.ReaderEpoch;
+        var leasedHead = _fileQueue.Peek();
+
+        EnqueueAndFlush(CreateMarkedItems(15, msgSize, 3));
+
+        Assert.NotEqual(epoch, _fileQueue.ReaderEpoch);
+        var headAfterEviction = _fileQueue.Peek();
+        Assert.NotEqual(leasedHead.Data[0], headAfterEviction.Data[0]);
+
+        Assert.Null(_fileQueue.DequeueIfEpoch(epoch));
+        TestHelper.AssertEqual(headAfterEviction, _fileQueue.Peek());
+    }
+
+    [Fact]
+    public void FileQueue_ReaderDrainsAcrossFiles_ReaderEpochUnchanged()
+    {
+        _fileQueue.Dispose();
+        _fileQueue = GenerateFileQueue(DefaultPartition, 1);
+
+        EnqueueAndFlush(CreateMarkedItems(15, 1024 * 1024 / 10));
+        var epoch = _fileQueue.ReaderEpoch;
+
+        var dequeuedCount = 0;
+        while (_fileQueue.Dequeue() != null)
+        {
+            dequeuedCount++;
+        }
+
+        Assert.Equal(15, dequeuedCount);
+        Assert.Equal(epoch, _fileQueue.ReaderEpoch);
+    }
+
+    [Fact]
+    public void FileQueue_UpdateMaxQueueFiles_DeletesReaderFile_IncrementsReaderEpoch()
+    {
+        _fileQueue.Dispose();
+        _fileQueue = GenerateFileQueue(DefaultPartition, 1);
+
+        EnqueueAndFlush(CreateMarkedItems(30, 1024 * 1024 / 10));
+        var epoch = _fileQueue.ReaderEpoch;
+
+        _fileQueue.UpdateMaxQueueFiles(2);
+
+        Assert.NotEqual(epoch, _fileQueue.ReaderEpoch);
+        Assert.Null(_fileQueue.DequeueIfEpoch(epoch));
+    }
+
+    [Fact]
+    public void FileQueue_UpdateMaxQueueFiles_ReaderFileKept_ReaderEpochUnchanged()
+    {
+        EnqueueAndFlush(CreateMarkedItems(3, 16));
+        var epoch = _fileQueue.ReaderEpoch;
+
+        _fileQueue.UpdateMaxQueueFiles(5);
+
+        Assert.Equal(epoch, _fileQueue.ReaderEpoch);
+    }
+
+    #endregion
+
     #region Dispose pattern
 
     public void Dispose()
@@ -1457,6 +1540,13 @@ public class FileQueue_IntegrationTests : IDisposable
     {
         return "_data" + fileNumber;
     }
+
+    private static List<DataItem> CreateMarkedItems(int count, int size, int firstMarker = 0)
+    {
+        return Enumerable.Range(firstMarker, count)
+            .Select(marker => new DataItem(DataItemVersion.V1, Enumerable.Repeat((byte)marker, size).ToArray()))
+            .ToList();
+    }
     #endregion
 
     #region Private Methods"
@@ -1464,6 +1554,16 @@ public class FileQueue_IntegrationTests : IDisposable
     {
         _fileQueue?.Dispose();
         _fileQueue = null;
+    }
+
+    private void EnqueueAndFlush(IEnumerable<DataItem> items)
+    {
+        foreach (var item in items)
+        {
+            _fileQueue.Enqueue(item);
+        }
+
+        _fileQueue.FlushEnqueues();
     }
 
     private void RunEnqueueDequeueTest(int msgSize, int numMessages)

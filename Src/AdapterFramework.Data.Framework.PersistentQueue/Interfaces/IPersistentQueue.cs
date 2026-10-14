@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -35,6 +35,11 @@ namespace AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 public interface IPersistentQueue : IDisposable
 {
     /// <summary>
+    /// Gets a value that changes whenever retention or repair moves the reader past unread data.
+    /// </summary>
+    long ReaderEpoch => 0;
+
+    /// <summary>
     /// Updates the maximum number of files retained by the queue.
     /// </summary>
     /// <param name="maxQueueFiles">The maximum number of queue files to retain. A value of 0 means unlimited.</param>
@@ -50,6 +55,13 @@ public interface IPersistentQueue : IDisposable
     /// </summary>
     /// <returns>The data item at the beginning of the Queue.</returns>
     DataItem Dequeue();
+
+    /// <summary>
+    /// Retrieve data item from the queue only if <see cref="ReaderEpoch"/> still equals <paramref name="expectedEpoch"/>.
+    /// </summary>
+    /// <param name="expectedEpoch">The <see cref="ReaderEpoch"/> observed before the data item was peeked.</param>
+    /// <returns>The data item at the beginning of the Queue, or null if the queue is empty or the epoch changed.</returns>
+    DataItem DequeueIfEpoch(long expectedEpoch) => ReaderEpoch == expectedEpoch ? Dequeue() : null;
 
     /// <summary>
     /// Returns the data item at the beginning of the Queue without removing it.
