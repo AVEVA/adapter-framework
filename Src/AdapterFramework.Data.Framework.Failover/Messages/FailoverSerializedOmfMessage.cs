@@ -30,13 +30,30 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that will be sent with the message.</param>
     /// <param name="valueCount">The number of values contained inside the <see paramref="body"/>.</param>
     public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount = 0) 
-        : base(type, body, messageAction, valueCount)
+        : this(type, body, messageAction, valueCount, OmfVersion.Omf12)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a failover message that preserves the source protocol version and partition key.
+    /// </summary>
+    /// <param name="type">OMF message type.</param>
+    /// <param name="body">Serialized message body.</param>
+    /// <param name="messageAction">The requested schema or data action.</param>
+    /// <param name="valueCount">The number of values in the body.</param>
+    /// <param name="omfVersion">The protocol version used to send the message.</param>
+    /// <param name="partitionKey">The routing key, or null for the default partition.</param>
+    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount,
+        OmfVersion omfVersion, PartitionKey? partitionKey = null)
+        : base(type, body, messageAction, valueCount, omfVersion, partitionKey)
     {
     }
 
     /// <inheritdoc/>
     public long ProcessTimeTicks { get; set; }
 
+    /// <inheritdoc/>
     public override int GetMessageSizeInBytes() =>
-        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength;
+        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength
+        + (OmfVersion != OmfVersion.Omf12 || PartitionKey.HasValue ? OmfVersionEnumSize + PartitionKeyEnumSize : 0);
 }

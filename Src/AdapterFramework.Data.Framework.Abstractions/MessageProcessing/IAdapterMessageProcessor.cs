@@ -20,6 +20,23 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 
 namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 
+/// <summary>
+/// Provides adapter-facing schema and data writes.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Schema partition keys control routing, not separate schema lifecycles. The framework's
+/// instrumentation cache keeps one latest object and action for each schema ID. Schema resend
+/// sends that latest state to every key previously used for the ID, including the default partition
+/// if an unkeyed write occurred. A delete written with one key therefore resends a delete to all
+/// those keys. The same rule applies to a schema relationship's cached identity.
+/// </para>
+/// <para>
+/// Keyed schema overloads don't keep independent resend state per key. Callers must write the same
+/// schema to each key used for dependent data and must not rely on a key-specific delete remaining
+/// limited to that key after a schema resend.
+/// </para>
+/// </remarks>
 public interface IAdapterMessageProcessor
 {
     /// <summary>

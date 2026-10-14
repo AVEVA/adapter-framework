@@ -22,6 +22,20 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 /// <summary>
 /// Represents a type used to process data types, streams and messages.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Schema partition keys control routing, not separate schema lifecycles. When this processor uses
+/// the framework's instrumentation cache, each schema ID has one latest object and action.
+/// Schema resend sends that latest state to every key previously used for the ID, including the
+/// default partition if an unkeyed write occurred. A delete written with one key therefore resends
+/// a delete to all those keys. The same rule applies to a schema relationship's cached identity.
+/// </para>
+/// <para>
+/// Keyed schema overloads don't keep independent resend state per key. Callers must write the same
+/// schema to each key used for dependent data and must not rely on a key-specific delete remaining
+/// limited to that key after a schema resend.
+/// </para>
+/// </remarks>
 public interface IMessageProcessor
 {
     /// <summary>
