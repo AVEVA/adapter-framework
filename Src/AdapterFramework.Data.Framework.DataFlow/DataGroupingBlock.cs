@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,15 +38,14 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
 
     private const int MinBatchCount = 1;
     private const int MinFlushTime = 15;
-    private const int DisposalDelay = 15 * 1000;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
 
     #endregion
 
     #region Private Fields
 
+    // All data output must leave through _flush: it routes every batch through the types and streams block.
     private readonly Action<Message> _flush;
-    private readonly Action<Message> _flushTypesStreams;
     private readonly Timer _flushTimer;
     private readonly int _maxFlushTime;
     private int _maxBatchCount;
@@ -62,27 +61,71 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
     #region Public Constructor
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="DataGroupingBlock"/> class.
+    /// Initializes a new instance of the <see cref="DataGroupingBlock"/> class that routes every batch through
+    /// <paramref name="definitions"/> so that types and streams are always flushed before the data that uses them.
     /// </summary>
     /// <param name="logger"><see cref="ILogger"/> instance.</param>
     /// <param name="capacity"> The max number of messages that may be buffered by the block. Use <see cref="DataflowBlockOptions"/> unbounded capacity.</param>
-    /// <param name="flush">The action to be performed when <paramref name="maxBatchCount"/> or <paramref name="maxFlushTime"/> has been reached.</param>
-    /// <param name="flushTypesStreams">The action to signal <see cref="TypesStreamsGroupingBlock"/> to flush before <paramref name="flush"/> actions is performed.</param>
+    /// <param name="flush">The terminal action for each batch, invoked by the definitions block's thread after it has flushed.</param>
+    /// <param name="definitions">The block that owns type and stream definitions, normally a <see cref="TypesStreamsGroupingBlock"/>.</param>
     /// <param name="maxBatchCount">The max number of messages to batch before flushing.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
+    /// <remarks>
+    /// Preferred over the <see cref="Action{T}"/> overload because the handoff cannot be wired incorrectly.
+    /// The terminal callback must accept ownership and return, or throw without retaining the payload; use
+    /// <see cref="BaseBlockExtensions.PostOrThrow"/> to check downstream admission.
+    /// If <paramref name="definitions"/> rejects a batch (for example because it faulted), this block faults and stops all data
+    /// (fail-stop: data is never forwarded without its definitions). Dispose this producer before definitions and downstream blocks.
+    /// Ordering applies to definitions written to the definitions block before the data that uses them is posted to this block (same thread, or otherwise synchronized).
+    /// </remarks>
     public DataGroupingBlock(
         ILogger logger,
         int capacity,
         Action<Message> flush,
-        Action<Message> flushTypesStreams,
+        DefinitionsBlock definitions,
+        int maxBatchCount,
+        int maxFlushTime,
+        CancellationToken token)
+        : this(logger, capacity, flush, BaseBlockExtensions.PostTo(definitions), maxBatchCount, maxFlushTime, token)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="DataGroupingBlock"/> class.
+    /// </summary>
+    /// <param name="logger"><see cref="ILogger"/> instance.</param>
+    /// <param name="capacity"> The max number of messages that may be buffered by the block. Use <see cref="DataflowBlockOptions"/> unbounded capacity.</param>
+    /// <param name="flush">The terminal action for each batch, invoked by the types and streams block's thread after it has flushed.</param>
+    /// <param name="postDefinitions">The action that hands a <see cref="FlushThenForwardMessage"/> to <see cref="TypesStreamsGroupingBlock"/>.</param>
+    /// <param name="maxBatchCount">The max number of messages to batch before flushing.</param>
+    /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
+    /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
+    /// <remarks>
+    /// Behaviour change: before the ordered flush this callback received a force-flush <see cref="CommandMessage"/> signal.
+    /// It now receives an in-process <see cref="FlushThenForwardMessage"/> that carries the batch and must be posted to the
+    /// definitions block (for example <c>message => typesStreams.PostOrThrow(message)</c>), or throw without retaining it.
+    /// A callback that ignores, rejects or misroutes the envelope is detected and fails the flush with an
+    /// <see cref="InvalidOperationException"/>, which faults this block. Prefer the <see cref="DefinitionsBlock"/> overload.
+    /// The terminal callback runs on the definitions worker and must accept ownership and return, or throw without
+    /// retaining the payload. Use <see cref="BaseBlockExtensions.PostOrThrow"/> to check downstream admission.
+    /// If the definitions block rejects the envelope (for example because it faulted), the flush throws inside this
+    /// block's worker, which faults this block and stops all data (fail-stop: data is never forwarded without its definitions).
+    /// Dispose this producer before definitions and downstream blocks.
+    /// Ordering applies to definitions written to the definitions block before the data that uses them is posted to this block (same thread, or otherwise synchronized).
+    /// </remarks>
+    public DataGroupingBlock(
+        ILogger logger,
+        int capacity,
+        Action<Message> flush,
+        Action<Message> postDefinitions,
         int maxBatchCount,
         int maxFlushTime,
         CancellationToken token)
         : base(logger, capacity, false, false, token)
     {
         ThrowHelper.ThrowIfArgumentNull(flush, nameof(flush));
-        ThrowHelper.ThrowIfArgumentNull(flushTypesStreams, nameof(flushTypesStreams));
+        ThrowHelper.ThrowIfArgumentNull(postDefinitions, nameof(postDefinitions));
 
         if (maxBatchCount < MinBatchCount)
         {
@@ -96,8 +139,7 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
             throw new ArgumentOutOfRangeException(nameof(maxFlushTime), string.Format(CultureInfo.InvariantCulture, OutOfRangeExceptionTemplate, MinFlushTime));
         }
 
-        _flush = flush;
-        _flushTypesStreams = flushTypesStreams;
+        _flush = message => BaseBlockExtensions.PostForOrderedFlush(message, postDefinitions, flush);
         _maxFlushTime = maxFlushTime;
 
         _staticAndDynamicMessages = Factory();
@@ -133,6 +175,9 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
             case StateMessage state:
                 ProcessState(state);
                 break;
+            case FlushThenForwardMessage envelope:
+                envelope.ReleaseMisrouted(Logger);
+                break;
         }
     }
 
@@ -150,14 +195,9 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        MessageHandler.Complete();
-        SpinWait.SpinUntil(() => MessageHandler.Completion.IsCompleted, DisposalDelay);
-
-        Flush();
-
         _flushTimer.Dispose();
+
+        DrainAndFlush(Flush);
 
         base.Dispose(true);
     }
@@ -256,8 +296,6 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
         {
             return;
         }
-
-        _flushTypesStreams(new CommandMessage(true));
 
         var pendingDynamic = _staticAndDynamicMessages;
         var pendingStatic = _staticMessages;

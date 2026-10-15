@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,13 +31,12 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// Provides a dataFlow block that will group every <see cref="DataType"/> or <see cref="DataStream"/> item received to one bulked <see cref="OmfMessage{T}"/>.
 /// </summary>
 [DebuggerDisplay("Buffered Messages = {MessageHandler.InputCount}")]
-public sealed class TypesStreamsGroupingBlock : BaseBlock<Message>
+public sealed class TypesStreamsGroupingBlock : DefinitionsBlock
 {
     #region Private Constants
 
     private const int MinimumBatchCount = 1;
     private const int MinimumFlushTime = 15;
-    private const int DisposalDelay = 15 * 1000;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
 
     #endregion
@@ -70,6 +69,11 @@ public sealed class TypesStreamsGroupingBlock : BaseBlock<Message>
     /// <param name="maxTypesBatchCount">Maximum number of <see cref="DataType"/> that can be batched.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">Cancellation token.</param>
+    /// <remarks>
+    /// In addition to type and stream messages, this block accepts <see cref="FlushThenForwardMessage"/> envelopes: it flushes its
+    /// buffered items and then forwards the envelope's payload from its own thread. It owns each accepted envelope and
+    /// releases the payload if the envelope is rejected, faulted or canceled before being forwarded.
+    /// </remarks>
     public TypesStreamsGroupingBlock(ILogger logger,
         int capacity,
         Action<Message> flush,
@@ -127,6 +131,10 @@ public sealed class TypesStreamsGroupingBlock : BaseBlock<Message>
                 SetMessageActionAndFlushOnChange(dataTypes);
                 ProcessOmfMessage(dataTypes);
                 break;
+            case FlushThenForwardMessage forward:
+                Flush();
+                forward.ForwardSafely(Logger);
+                break;
             case StateMessage state:
                 ProcessState(state);
                 break;
@@ -147,14 +155,9 @@ public sealed class TypesStreamsGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        MessageHandler.Complete();
-        SpinWait.SpinUntil(() => MessageHandler.Completion.IsCompleted, DisposalDelay);
-
-        Flush();
-
         _flushTimer.Dispose();
+
+        DrainAndFlush(Flush);
 
         base.Dispose(true);
     }

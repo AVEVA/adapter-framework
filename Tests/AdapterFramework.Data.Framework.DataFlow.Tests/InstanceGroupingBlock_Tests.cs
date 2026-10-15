@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,8 +40,6 @@ public class InstanceGroupingBlock_Tests
     private bool _flushTypesStreamsCalled;
     private int _flushCalledCounter;
     private MessageAction _flushMessageAction;
-    private DateTime _flushTypesStreamsCalledTimestamp;
-    private DateTime _flushCalledTimestamp;
     private InstanceMessage _lastFlushedInstanceMessage;
 
     public InstanceGroupingBlock_Tests()
@@ -89,10 +87,20 @@ public class InstanceGroupingBlock_Tests
             mockLogger.Object,
             100,
             DummyFlushAction,
-            null,
+            (Action<Message>)null,
             1000,
             10000,
             CancellationToken.None));
+
+        var definitionsNull = Assert.Throws<ArgumentNullException>(() => new InstanceGroupingBlock(
+            mockLogger.Object,
+            100,
+            DummyFlushAction,
+            (DefinitionsBlock)null,
+            1000,
+            10000,
+            CancellationToken.None));
+        Assert.Equal("definitions", definitionsNull.ParamName);
     }
 
     #endregion
@@ -159,7 +167,6 @@ public class InstanceGroupingBlock_Tests
         Assert.Equal(0, totalInstanceCount);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
     }
 
     [Fact]
@@ -191,7 +198,6 @@ public class InstanceGroupingBlock_Tests
         Assert.Equal(0, totalInstanceCount);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
     }
 
     [Fact]
@@ -954,7 +960,6 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
 
         totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
         Assert.Equal(0, totalInstanceCount);
@@ -1090,7 +1095,6 @@ public class InstanceGroupingBlock_Tests
 
     private void DummyFlushAction(Message m)
     {
-        _flushCalledTimestamp = DateTime.UtcNow;
         _flushCalled = true;
         _flushCalledCounter++;
 
@@ -1103,8 +1107,12 @@ public class InstanceGroupingBlock_Tests
 
     private void DummyFlushTypesStreamsAction(Message m)
     {
-        _flushTypesStreamsCalledTimestamp = DateTime.UtcNow;
         _flushTypesStreamsCalled = true;
+
+        if (m is FlushThenForwardMessage forward)
+        {
+            forward.Deliver();
+        }
     }
 
     #endregion

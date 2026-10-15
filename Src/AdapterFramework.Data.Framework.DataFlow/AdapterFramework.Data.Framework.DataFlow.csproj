@@ -27,4 +27,11 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Messages\AdapterFramework.Data.Framework.Messages.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.DataFlow.Tests" />
+    <!-- The processors that own dataflow pipelines share DataflowDisposal and DataflowEventIds. -->
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.EgressComponent" />
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.MessageProcessor" />
+  </ItemGroup>
+
 </Project>
