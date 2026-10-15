@@ -47,7 +47,21 @@ public static class BaseBlockExtensions
 
         if (!block.Post(message))
         {
-            throw new InvalidOperationException("The dataflow block no longer accepts messages.");
+            Exception releaseFailure = null;
+            if (message is FlushThenForwardMessage envelope)
+            {
+                // Blocks that do not own definitions do not release rejected envelopes; disposal is idempotent.
+                try
+                {
+                    envelope.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    releaseFailure = exception;
+                }
+            }
+
+            throw new InvalidOperationException("The dataflow block no longer accepts messages.", releaseFailure);
         }
     }
 

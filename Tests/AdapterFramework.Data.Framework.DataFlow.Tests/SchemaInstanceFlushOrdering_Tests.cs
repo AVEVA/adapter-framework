@@ -245,6 +245,64 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.Equal(1, payload.DisposeCount);
     }
 
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void RejectedAdmission_ByClosedNonDefinitionsBlock_ReleasesPayloadAndThrows()
+    {
+        using var recorder = new Recorder();
+        var logger = CreateLogger();
+        using var wrongBlock = new OmfDataMessageBlock(logger.Object, DataflowBlockOptions.Unbounded, recorder.Add, CancellationToken.None);
+        wrongBlock.Dispose();
+        var payload = new DisposableMessage();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            wrongBlock.PostOrThrow(new FlushThenForwardMessage(payload, recorder.Add)));
+
+        Assert.Empty(recorder.Snapshot());
+        Assert.Equal(1, payload.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void DefinitionFailure_WhenPayloadDisposalThrows_ReleasesRemainingPendingPayloads(bool schema)
+    {
+        var logger = CreateLogger();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var payloads = new[] { new DisposableMessage(throwOnDispose: true), new DisposableMessage(throwOnDispose: true) };
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, message =>
+        {
+            (message as IDisposable)?.Dispose();
+            entered.Set();
+            Assert.True(release.Wait(WaitTimeout), "Timed out releasing the definitions worker.");
+            throw new InvalidOperationException("Injected definition failure.");
+        });
+
+        try
+        {
+            Assert.True(definitions.Post(CreateStreamMessage("S1")));
+            Assert.True(definitions.Post(new CommandMessage(true)));
+            Assert.True(entered.Wait(WaitTimeout));
+            foreach (var payload in payloads)
+            {
+                Assert.True(definitions.Post(new FlushThenForwardMessage(payload, _ =>
+                    throw new InvalidOperationException("A discarded batch must not be forwarded."))));
+            }
+
+            release.Set();
+            Assert.True(SpinWait.SpinUntil(() => payloads.All(payload => payload.DisposeCount == 1), WaitTimeout),
+                "A pending payload was not released after an earlier disposal failed.");
+            Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, DataflowEventIds.ReleaseForwardFailed) == payloads.Length, WaitTimeout));
+            Assert.Null(Record.Exception(definitions.Dispose));
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -804,11 +862,24 @@ public class SchemaInstanceFlushOrdering_Tests
     }
     private sealed class DisposableMessage : Message, IDisposable
     {
+        private readonly bool _throwOnDispose;
         private int _disposeCount;
+
+        public DisposableMessage(bool throwOnDispose = false)
+        {
+            _throwOnDispose = throwOnDispose;
+        }
 
         public int DisposeCount => Volatile.Read(ref _disposeCount);
 
-        public void Dispose() => Interlocked.Increment(ref _disposeCount);
+        public void Dispose()
+        {
+            Interlocked.Increment(ref _disposeCount);
+            if (_throwOnDispose)
+            {
+                throw new InvalidOperationException("Injected disposal failure.");
+            }
+        }
     }
 
     private sealed class DrainTestBlock : BaseBlock<Message>

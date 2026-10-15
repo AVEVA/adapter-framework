@@ -31,4 +31,5 @@ internal static class DataflowEventIds
     public const int MisroutedEnvelope = 9;
     public const int WorkerFaulted = 10;
     public const int BlockDisposeFailed = 11;
+    public const int ReleaseForwardFailed = 12;
 }

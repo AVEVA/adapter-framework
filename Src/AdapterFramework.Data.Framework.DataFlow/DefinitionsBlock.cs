@@ -32,6 +32,9 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
     private static readonly Action<ILogger, Exception> LogDiscardedForward =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.DiscardedForward, nameof(LogDiscardedForward)),
             "The dataflow block stopped before forwarding an accepted batch; releasing its payload.");
+    private static readonly Action<ILogger, Exception> LogReleaseForwardFailed =
+        LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.ReleaseForwardFailed, nameof(LogReleaseForwardFailed)),
+            "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
 
     // Envelopes are tracked by identity, independent of any Equals override on Message.
     private readonly ConcurrentDictionary<FlushThenForwardMessage, byte> _pendingForwards = new(ReferenceEqualityComparer.Instance);
@@ -107,8 +110,16 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
         {
             if (_pendingForwards.TryRemove(forward, out _))
             {
-                forward.Dispose();
-                LogDiscarded();
+                Log(LogDiscardedForward, null, "The dataflow block stopped before forwarding an accepted batch; releasing its payload.");
+                try
+                {
+                    forward.Dispose();
+                }
+                catch (Exception exception)
+                {
+                    // Report and continue so one failing payload does not leave the remaining batches unreleased.
+                    Log(LogReleaseForwardFailed, exception, "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
+                }
             }
         }
     }
@@ -152,22 +163,22 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
         }
     }
 
-    private void LogDiscarded()
+    private void Log(Action<ILogger, Exception> log, Exception exception, string fallback)
     {
         try
         {
             if (Logger != null)
             {
-                LogDiscardedForward(Logger, null);
+                log(Logger, exception);
             }
             else
             {
-                Trace.TraceError("The dataflow block stopped before forwarding an accepted batch; releasing its payload.");
+                Trace.TraceError("{0} {1}", fallback, exception);
             }
         }
-        catch (Exception exception)
+        catch (Exception loggingException)
         {
-            Trace.TraceError("Logging a discarded batch failed. {0}", exception);
+            Trace.TraceError("Logging a discarded batch failed. {0}", loggingException);
         }
     }
 }
