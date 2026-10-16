@@ -78,20 +78,27 @@ public sealed class FlushThenForwardMessage : Message, IDisposable
         }
 
         Volatile.Write(ref _delivered, 1);
-        var transferred = false;
         try
         {
             _forward(Payload);
-            transferred = true;
         }
-        finally
+        catch (Exception forwardFailure)
         {
             Interlocked.Exchange(ref _ownershipState, Handled);
-            if (!transferred)
+            try
             {
                 (Payload as IDisposable)?.Dispose();
             }
+            catch (Exception cleanupFailure)
+            {
+                // Preserve the forwarding failure as the primary cause and include the cleanup failure.
+                throw new AggregateException(forwardFailure, cleanupFailure);
+            }
+
+            throw;
         }
+
+        Interlocked.Exchange(ref _ownershipState, Handled);
     }
 
     /// <summary>

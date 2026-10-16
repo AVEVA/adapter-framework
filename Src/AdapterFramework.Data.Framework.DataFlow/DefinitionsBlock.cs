@@ -159,7 +159,15 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
     {
         if (_pendingForwards.TryRemove(forward, out _))
         {
-            forward.Dispose();
+            try
+            {
+                forward.Dispose();
+            }
+            catch (Exception exception)
+            {
+                // Report rather than throw so a cleanup failure cannot mask a definitions failure being propagated.
+                Log(LogReleaseForwardFailed, exception, "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
+            }
         }
     }
 

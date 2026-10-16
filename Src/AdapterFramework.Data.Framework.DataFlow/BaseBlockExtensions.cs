@@ -91,11 +91,20 @@ public static class BaseBlockExtensions
                 throw new InvalidOperationException("Handing a batch to the definitions block failed: the postDefinitions callback must post the FlushThenForwardMessage to a definitions block that accepts it, or deliver it. The batch was released and not forwarded.");
             }
         }
-        catch
+        catch (Exception handoffFailure)
         {
             // Not logged here: the exception faults the producer's worker (logged once when the fault happens)
             // or fails the final flush in Dispose (logged once there).
-            envelope.Dispose();
+            try
+            {
+                envelope.Dispose();
+            }
+            catch (Exception cleanupFailure)
+            {
+                // Preserve the handoff failure as the primary cause and include the cleanup failure.
+                throw new AggregateException(handoffFailure, cleanupFailure);
+            }
+
             throw;
         }
     }

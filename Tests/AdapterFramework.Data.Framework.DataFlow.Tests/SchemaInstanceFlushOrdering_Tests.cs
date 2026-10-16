@@ -304,6 +304,66 @@ public class SchemaInstanceFlushOrdering_Tests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void DefinitionFlushFailure_WhenPayloadDisposalThrows_ReportsFlushFailure(bool schema)
+    {
+        var logger = CreateLogger();
+        var payload = new DisposableMessage(throwOnDispose: true);
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, message =>
+        {
+            (message as IDisposable)?.Dispose();
+            throw new InvalidOperationException("Injected definition failure.");
+        });
+
+        Assert.True(definitions.Post(CreateStreamMessage("S1")));
+        Assert.True(definitions.Post(new FlushThenForwardMessage(payload, _ =>
+            throw new InvalidOperationException("A discarded batch must not be forwarded."))));
+
+        Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout));
+        var faulted = logger.Invocations.ToArray().Single(invocation =>
+            invocation.Method.Name == nameof(ILogger.Log) && ((EventId)invocation.Arguments[1]).Id == WorkerFaultedEventId);
+        Assert.Equal("Injected definition failure.", ((Exception)faulted.Arguments[3]).Message);
+        Assert.Equal(1, payload.DisposeCount);
+        Assert.Equal(1, CountLogs(logger, DataflowEventIds.ReleaseForwardFailed));
+        Assert.Null(Record.Exception(definitions.Dispose));
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void HandoffFailure_WhenPayloadDisposalThrows_PreservesBothFailures()
+    {
+        var payload = new DisposableMessage(throwOnDispose: true);
+        var handoffFailure = new InvalidOperationException("Injected handoff failure.");
+
+        var exception = Assert.Throws<AggregateException>(() =>
+            BaseBlockExtensions.PostForOrderedFlush(payload, _ => throw handoffFailure, _ => { }));
+
+        Assert.Equal(2, exception.InnerExceptions.Count);
+        Assert.Same(handoffFailure, exception.InnerExceptions[0]);
+        Assert.Equal("Injected disposal failure.", exception.InnerExceptions[1].Message);
+        Assert.Equal(1, payload.DisposeCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void ForwardFailure_WhenPayloadDisposalThrows_PreservesBothFailures()
+    {
+        var payload = new DisposableMessage(throwOnDispose: true);
+        var forwardFailure = new InvalidOperationException("Injected forward failure.");
+        using var envelope = new FlushThenForwardMessage(payload, _ => throw forwardFailure);
+
+        var exception = Assert.Throws<AggregateException>(envelope.Deliver);
+
+        Assert.Equal(2, exception.InnerExceptions.Count);
+        Assert.Same(forwardFailure, exception.InnerExceptions[0]);
+        Assert.Equal("Injected disposal failure.", exception.InnerExceptions[1].Message);
+        Assert.Equal(1, payload.DisposeCount);
+        Assert.Throws<InvalidOperationException>(envelope.Deliver);
+    }
+
+    [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
     [InlineData(true, true)]
