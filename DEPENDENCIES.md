@@ -18,7 +18,7 @@ Information on which specific dependencies are required are presented to you whi
 | Microsoft.AspNetCore.DataProtection.Abstractions 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | |
 | Microsoft.AspNetCore.DataProtection.Extensions 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | |
 | Microsoft.AspNetCore.Hosting.WindowsServices 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | |
-| Microsoft.Build.Tasks.Git 10.0.103<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
+| Microsoft.Build.Tasks.Git 10.0.402<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
 | Microsoft CodeCoverage 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | |
 | Microsoft.Extensions.Configuration 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.Extensions.Configuration](http://www.nuget.org/packages/Microsoft.Extensions.Configuration) |
 | Microsoft.Extensions.Configuration.Abstractions 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.Extensions.Configuration.Abstractions](http://www.nuget.org/packages/Microsoft.Extensions.Configuration.Abstractions) |
@@ -51,8 +51,8 @@ Information on which specific dependencies are required are presented to you whi
 | Microsoft.Extensions.Primitives 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://www.nuget.org/packages/Microsoft.Extensions.Primitives](https://www.nuget.org/packages/Microsoft.Extensions.Primitives) |
 | Microsoft.NETCore.Platforms 1.1.0<br>© Microsoft Corporation. All rights reserved. | Microsoft .NET Library License | |
 | Microsoft.NET.Test.Sdk 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.NET.Test.Sdk](http://www.nuget.org/packages/Microsoft.NET.Test.Sdk) |
-| Microsoft.SourceLink.Common 10.0.103<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
-| Microsoft.SourceLink.GitHub 10.0.103<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
+| Microsoft.SourceLink.Common 10.0.402<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
+| Microsoft.SourceLink.GitHub 10.0.402<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://github.com/dotnet/sourcelink](https://github.com/dotnet/sourcelink) |
 | Microsoft.TestPlatform 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | |
 | Microsoft.TestPlatform.ObjectModel 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.TestPlatform.ObjectModel](http://www.nuget.org/packages/Microsoft.TestPlatform.ObjectModel) |
 | Microsoft.TestPlatform.TestHost 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.TestPlatform.TestHost](http://www.nuget.org/packages/Microsoft.TestPlatform.TestHost) |

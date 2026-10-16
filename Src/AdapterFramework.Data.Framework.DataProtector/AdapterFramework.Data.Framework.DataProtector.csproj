@@ -23,6 +23,9 @@ SPDX-License-Identifier: Apache-2.0
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.Extensions" Version="10.0.10" />
+    <!-- Override vulnerable transitive 10.0.10 versions pulled in by Microsoft.AspNetCore.DataProtection.Extensions -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
   </ItemGroup>
 
   <ItemGroup>
