@@ -17,19 +17,24 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// <summary>
 /// Event IDs of the log messages written by the dataflow blocks and their owners. Keep every ID unique.
 /// </summary>
+/// <remarks>
+/// The dataflow blocks log through the owning component's logger, so their IDs use a dedicated range (5000-5099)
+/// to avoid colliding with IDs used elsewhere in that component.
+/// </remarks>
 internal static class DataflowEventIds
 {
+    // Released before the dedicated range existed; kept so existing log filters still match.
     public const int BatchSizeChanged = 1;
-    public const int DrainTimeout = 2;
-    public const int DrainFaulted = 3;
-    public const int DrainCanceled = 4;
-    public const int FinalFlushFailed = 5;
-    public const int DiscardedForward = 6;
-    public const int ForwardFailed = 7;
 
-    // 8 is intentionally unassigned.
-    public const int MisroutedEnvelope = 9;
-    public const int WorkerFaulted = 10;
-    public const int BlockDisposeFailed = 11;
-    public const int ReleaseForwardFailed = 12;
+    public const int DrainTimeout = 5001;
+    public const int DrainFaulted = 5002;
+    public const int DrainCanceled = 5003;
+    public const int FinalFlushFailed = 5004;
+    public const int DiscardedForward = 5005;
+    public const int ForwardFailed = 5006;
+    public const int MisroutedEnvelope = 5007;
+    public const int WorkerFaulted = 5008;
+    public const int BlockDisposeFailed = 5009;
+    public const int ReleaseForwardFailed = 5010;
+    public const int MessagesRejected = 5011;
 }

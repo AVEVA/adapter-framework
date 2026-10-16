@@ -140,7 +140,7 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
                 break;
             case FlushThenForwardMessage forward:
                 Flush();
-                forward.ForwardSafely(Logger);
+                Forward(forward);
                 break;
         }
     }

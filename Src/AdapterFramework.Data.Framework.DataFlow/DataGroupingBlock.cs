@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
     private const int MinBatchCount = 1;
     private const int MinFlushTime = 15;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
+    private const string ObsoleteCallbackOverload = "The callback now receives a FlushThenForwardMessage that must be posted to a definitions block, otherwise this block faults. Use the constructor that takes a DefinitionsBlock.";
 
     #endregion
 
@@ -72,12 +73,7 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
     /// <remarks>
-    /// Preferred over the <see cref="Action{T}"/> overload because the handoff cannot be wired incorrectly.
-    /// The terminal callback must accept ownership and return, or throw without retaining the payload; use
-    /// <see cref="BaseBlockExtensions.PostOrThrow"/> to check downstream admission.
-    /// If <paramref name="definitions"/> rejects a batch (for example because it faulted), this block faults and stops all data
-    /// (fail-stop: data is never forwarded without its definitions). Dispose this producer before definitions and downstream blocks.
-    /// Ordering applies to definitions written to the definitions block before the data that uses them is posted to this block (same thread, or otherwise synchronized).
+    /// See <see cref="DefinitionsBlock"/> for the ordering, ownership and fail-stop rules. Dispose this block before <paramref name="definitions"/>.
     /// </remarks>
     public DataGroupingBlock(
         ILogger logger,
@@ -87,7 +83,7 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
         int maxBatchCount,
         int maxFlushTime,
         CancellationToken token)
-        : this(logger, capacity, flush, BaseBlockExtensions.PostTo(definitions), maxBatchCount, maxFlushTime, token)
+        : this(BaseBlockExtensions.PostTo(definitions), logger, capacity, flush, maxBatchCount, maxFlushTime, token)
     {
     }
 
@@ -97,28 +93,38 @@ public sealed class DataGroupingBlock : BaseBlock<Message>
     /// <param name="logger"><see cref="ILogger"/> instance.</param>
     /// <param name="capacity"> The max number of messages that may be buffered by the block. Use <see cref="DataflowBlockOptions"/> unbounded capacity.</param>
     /// <param name="flush">The terminal action for each batch, invoked by the types and streams block's thread after it has flushed.</param>
-    /// <param name="postDefinitions">The action that hands a <see cref="FlushThenForwardMessage"/> to <see cref="TypesStreamsGroupingBlock"/>.</param>
+    /// <param name="flushTypesStreams">The action that posts a <see cref="FlushThenForwardMessage"/> to a <see cref="TypesStreamsGroupingBlock"/>.</param>
     /// <param name="maxBatchCount">The max number of messages to batch before flushing.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
     /// <remarks>
-    /// Behaviour change: before the ordered flush this callback received a force-flush <see cref="CommandMessage"/> signal.
-    /// It now receives an in-process <see cref="FlushThenForwardMessage"/> that carries the batch and must be posted to the
-    /// definitions block (for example <c>message => typesStreams.PostOrThrow(message)</c>), or throw without retaining it.
-    /// A callback that ignores, rejects or misroutes the envelope is detected and fails the flush with an
-    /// <see cref="InvalidOperationException"/>, which faults this block. Prefer the <see cref="DefinitionsBlock"/> overload.
-    /// The terminal callback runs on the definitions worker and must accept ownership and return, or throw without
-    /// retaining the payload. Use <see cref="BaseBlockExtensions.PostOrThrow"/> to check downstream admission.
-    /// If the definitions block rejects the envelope (for example because it faulted), the flush throws inside this
-    /// block's worker, which faults this block and stops all data (fail-stop: data is never forwarded without its definitions).
-    /// Dispose this producer before definitions and downstream blocks.
-    /// Ordering applies to definitions written to the definitions block before the data that uses them is posted to this block (same thread, or otherwise synchronized).
+    /// Breaking behaviour change: this callback used to receive a force-flush <see cref="CommandMessage"/> that it could ignore.
+    /// It now receives a <see cref="FlushThenForwardMessage"/> carrying the batch, which must be posted to the definitions block
+    /// (for example <c>message => typesStreams.PostOrThrow(message)</c>). A callback that ignores, rejects or misroutes it
+    /// faults this block on the first flush and stops all data. See <see cref="DefinitionsBlock"/> for the full rules.
     /// </remarks>
+    [Obsolete(ObsoleteCallbackOverload)]
     public DataGroupingBlock(
         ILogger logger,
         int capacity,
         Action<Message> flush,
+        Action<Message> flushTypesStreams,
+        int maxBatchCount,
+        int maxFlushTime,
+        CancellationToken token)
+        : this(flushTypesStreams ?? throw new ArgumentNullException(nameof(flushTypesStreams)), logger, capacity, flush, maxBatchCount, maxFlushTime, token)
+    {
+    }
+
+    #endregion
+
+    #region Private Constructor
+
+    private DataGroupingBlock(
         Action<Message> postDefinitions,
+        ILogger logger,
+        int capacity,
+        Action<Message> flush,
         int maxBatchCount,
         int maxFlushTime,
         CancellationToken token)

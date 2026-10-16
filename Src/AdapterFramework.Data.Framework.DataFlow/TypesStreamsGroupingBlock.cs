@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -133,7 +133,7 @@ public sealed class TypesStreamsGroupingBlock : DefinitionsBlock
                 break;
             case FlushThenForwardMessage forward:
                 Flush();
-                forward.ForwardSafely(Logger);
+                Forward(forward);
                 break;
             case StateMessage state:
                 ProcessState(state);

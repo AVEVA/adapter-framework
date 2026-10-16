@@ -15,7 +15,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using AdapterFramework.Data.Framework.Messages;
@@ -27,6 +26,25 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// Base class for blocks that own type/stream or schema definitions and can therefore accept a
 /// <see cref="FlushThenForwardMessage"/>. It owns the lifetime of every accepted envelope.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Ordering: a producer (<see cref="DataGroupingBlock"/> or <see cref="InstanceGroupingBlock"/>) hands each batch to this block
+/// in a <see cref="FlushThenForwardMessage"/>. This block flushes the definitions it has buffered and then forwards the batch
+/// from its own worker, so data is never sent before its definitions. Ordering applies to definitions written to this block
+/// before the data that uses them is posted to the producer (same thread, or otherwise synchronized).
+/// </para>
+/// <para>
+/// Ownership: posting an envelope transfers its lifetime to this block, including cleanup on admission rejection, worker
+/// failure or cancellation. The producer's terminal callback runs on this block's worker and must accept ownership and return,
+/// or throw without retaining the payload; use <see cref="BaseBlockExtensions.PostOrThrow"/> to check downstream admission.
+/// A failed forward is not retried; the payload is released and the failure is logged (at most once a minute while it persists).
+/// </para>
+/// <para>
+/// Fail-stop: if this block rejects a batch (for example because it faulted), the producer faults too and stops all data,
+/// because data must never be forwarded without its definitions. Rejected messages are reported by <see cref="BaseBlock{T}.Post"/>.
+/// The pipeline must be recreated to recover. Dispose producers before this block and the blocks downstream of it.
+/// </para>
+/// </remarks>
 public abstract class DefinitionsBlock : BaseBlock<Message>
 {
     private static readonly Action<ILogger, Exception> LogDiscardedForward =
@@ -35,9 +53,13 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
     private static readonly Action<ILogger, Exception> LogReleaseForwardFailed =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.ReleaseForwardFailed, nameof(LogReleaseForwardFailed)),
             "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
+    private static readonly Action<ILogger, long, Exception> LogForwardFailed =
+        LoggerMessage.Define<long>(LogLevel.Error, new EventId(DataflowEventIds.ForwardFailed, nameof(LogForwardFailed)),
+            "Batch forwarding failed {FailedCount} time(s) since the last report; the untransferred payloads were released and will not be retried.");
 
     // Envelopes are tracked by identity, independent of any Equals override on Message.
     private readonly ConcurrentDictionary<FlushThenForwardMessage, byte> _pendingForwards = new(ReferenceEqualityComparer.Instance);
+    private readonly RateLimitedCounter _forwardFailures = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DefinitionsBlock"/> class.
@@ -100,6 +122,29 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
         if (message is FlushThenForwardMessage forward)
         {
             ReleaseForward(forward);
+        }
+    }
+
+    /// <summary>
+    /// Delivers the payload of <paramref name="forward"/>. Call from the worker after the buffered definitions have been flushed.
+    /// </summary>
+    /// <param name="forward">The envelope to deliver.</param>
+    /// <remarks>
+    /// Only the payload callback is isolated; a definitions flush that throws before this call still faults the block.
+    /// </remarks>
+    private protected void Forward(FlushThenForwardMessage forward)
+    {
+        try
+        {
+            forward.Deliver();
+        }
+        catch (Exception exception)
+        {
+            // Downstream may be permanently stopped, so report at most once a minute instead of once per batch.
+            if (_forwardFailures.Increment(out var failedCount))
+            {
+                DataflowLog.Write(Logger, LogForwardFailed, failedCount, exception, "Batch forwarding failed; the untransferred payload was released and will not be retried.");
+            }
         }
     }
 
@@ -171,22 +216,6 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
         }
     }
 
-    private void Log(Action<ILogger, Exception> log, Exception exception, string fallback)
-    {
-        try
-        {
-            if (Logger != null)
-            {
-                log(Logger, exception);
-            }
-            else
-            {
-                Trace.TraceError("{0} {1}", fallback, exception);
-            }
-        }
-        catch (Exception loggingException)
-        {
-            Trace.TraceError("Logging a discarded batch failed. {0}", loggingException);
-        }
-    }
+    private void Log(Action<ILogger, Exception> log, Exception exception, string fallback) =>
+        DataflowLog.Write(Logger, log, exception, fallback);
 }

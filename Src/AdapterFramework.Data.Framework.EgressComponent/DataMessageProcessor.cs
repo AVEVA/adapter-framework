@@ -368,6 +368,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         return failoverDataMessageProcessor.ProcessOmfMessage;
     }
 
+    // Kept in this type so CA2213 can see each field being disposed.
     private void Safely(Action dispose)
     {
         try

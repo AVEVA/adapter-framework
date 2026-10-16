@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -45,12 +45,17 @@ public abstract class BaseBlock<T> : IDisposable
     private static readonly Action<ILogger, Exception> LogFinalFlushFailed =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.FinalFlushFailed, nameof(LogFinalFlushFailed)),
             "The final flush during disposal failed; the batch was not delivered.");
+    private static readonly Action<ILogger, long, Exception> LogMessagesRejected =
+        LoggerMessage.Define<long>(LogLevel.Error, new EventId(DataflowEventIds.MessagesRejected, nameof(LogMessagesRejected)),
+            "The dataflow block has stopped and rejected {RejectedCount} message(s) since the last report; they were dropped. The pipeline must be recreated (for example by restarting the component) before data flows again.");
 
     private readonly Func<T, bool> _postFunc;
     private readonly CancellationToken _token;
     private readonly Task _drainCompletion;
+    private readonly RateLimitedCounter _rejections = new();
     private int _drainResult = NotDrained;
     private int _drainTimeoutMilliseconds = DisposalDelay;
+    private volatile bool _completionRequested;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BaseBlock{T}"/> class.
@@ -94,7 +99,7 @@ public abstract class BaseBlock<T> : IDisposable
                 // Report the fault when it happens, not only when the block is disposed.
                 if (completion.IsFaulted)
                 {
-                    SafeLog(LogWorkerFaulted, completion.Exception?.GetBaseException(), "The dataflow block faulted and no longer accepts messages.");
+                    DataflowLog.Write(Logger, LogWorkerFaulted, completion.Exception?.GetBaseException(), "The dataflow block faulted and no longer accepts messages.");
                 }
             },
             CancellationToken.None,
@@ -163,14 +168,19 @@ public abstract class BaseBlock<T> : IDisposable
     protected bool Disposed { get; set; }
 
     /// <inheritdoc cref="ActionBlock{TInput}.Post"/>
-    public virtual bool Post(T message) => _postFunc(message);
+    /// <remarks>
+    /// Returns <see langword="false"/> once the block has stopped. If it stopped unexpectedly (faulted or canceled rather than disposed),
+    /// rejected messages are counted and reported as an error, at most once a minute, so a stopped pipeline is not silent.
+    /// </remarks>
+    public virtual bool Post(T message) => PostCore(message);
 
     /// <summary>
     /// Posts Message to asynchronous action block
     /// </summary>
     /// <param name="message">message of type <typeparamref name="T"/>.</param>
     /// <returns>A <see cref="Task{TResult}"/> representing the result of the asynchronous operation.</returns>
-    public virtual Task<bool> PostAsync(T message) => MessageHandler.SendAsync(message, _token);
+    /// <remarks>Rejections are reported in the same way as for <see cref="Post"/>.</remarks>
+    public virtual Task<bool> PostAsync(T message) => SendCoreAsync(message);
 
     /// <inheritdoc cref="IDisposable.Dispose"/>
     public void Dispose()
@@ -214,19 +224,26 @@ public abstract class BaseBlock<T> : IDisposable
     /// </summary>
     /// <param name="message">The message to post.</param>
     /// <returns>True if the message was accepted.</returns>
-    private protected bool PostCore(T message) => _postFunc(message);
+    private protected bool PostCore(T message) => ReportIfRejected(_postFunc(message));
 
     /// <summary>
     /// Sends a message to the underlying block asynchronously without any ownership handling.
     /// </summary>
     /// <param name="message">The message to send.</param>
     /// <returns>True if the message was accepted.</returns>
-    private protected Task<bool> SendCoreAsync(T message) => MessageHandler.SendAsync(message, _token);
+    private protected async Task<bool> SendCoreAsync(T message) =>
+        ReportIfRejected(await MessageHandler.SendAsync(message, _token).ConfigureAwait(false));
 
     /// <summary>
     /// Dispose and guards against multiple dispose calls. Never throws because of a failed drain.
     /// </summary>
     /// <param name="disposing">true if called by user. False if called by finalizer.</param>
+    /// <remarks>
+    /// Behaviour change: earlier versions always ran the final flush on disposal. Blocks now flush only if the worker drains
+    /// within <see cref="DrainTimeoutMilliseconds"/> (15 s by default) and did not fault or get canceled; otherwise the
+    /// buffered data is dropped and the reason is logged, because flushing while the worker may still be running could
+    /// reorder batches or send data before its definitions.
+    /// </remarks>
     protected virtual void Dispose(bool disposing)
     {
         if (Disposed)
@@ -274,26 +291,27 @@ public abstract class BaseBlock<T> : IDisposable
             return (DrainResult)known;
         }
 
+        _completionRequested = true;
         MessageHandler.Complete();
 
         // The continuation never faults or cancels, so Wait only reports whether it finished in time.
         if (!_drainCompletion.Wait(millisecondsTimeout))
         {
-            SafeLog(LogDrainTimeout, millisecondsTimeout, "Dataflow drain timed out after {0} ms; the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainTimeout, millisecondsTimeout, null, "Dataflow drain timed out (ms); the final flush was skipped.");
             return SetDrainResult(DrainResult.TimedOut);
         }
 
         var completion = MessageHandler.Completion;
         if (completion.IsCanceled)
         {
-            SafeLog(LogDrainCanceled, null, "The dataflow block was canceled before it drained; the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainCanceled, null, "The dataflow block was canceled before it drained; the final flush was skipped.");
             return SetDrainResult(DrainResult.Canceled);
         }
 
         if (completion.IsFaulted)
         {
             // The exception itself was already logged when the worker faulted.
-            SafeLog(LogDrainFaulted, null, "The dataflow block faulted before it drained; the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainFaulted, null, "The dataflow block faulted before it drained; the final flush was skipped.");
             return SetDrainResult(DrainResult.Faulted);
         }
 
@@ -318,7 +336,7 @@ public abstract class BaseBlock<T> : IDisposable
         }
         catch (Exception exception)
         {
-            SafeLog(LogFinalFlushFailed, exception, "The final flush during disposal failed; the batch was not delivered.");
+            DataflowLog.Write(Logger, LogFinalFlushFailed, exception, "The final flush during disposal failed; the batch was not delivered.");
         }
     }
 
@@ -328,42 +346,15 @@ public abstract class BaseBlock<T> : IDisposable
         return result;
     }
 
-    private void SafeLog(Action<ILogger, Exception> log, Exception exception, string fallback)
+    private bool ReportIfRejected(bool accepted)
     {
-        try
+        // Rejections after disposal started are expected (for example late batch-size updates) and are not reported.
+        if (!accepted && !_completionRequested && _rejections.Increment(out var rejectedCount))
         {
-            if (Logger != null)
-            {
-                log(Logger, exception);
-            }
-            else
-            {
-                Trace.TraceError("{0} {1}", fallback, exception);
-            }
+            DataflowLog.Write(Logger, LogMessagesRejected, rejectedCount, null, "The dataflow block has stopped and rejected messages; they were dropped.");
         }
-        catch (Exception loggingException)
-        {
-            Trace.TraceError("Logging failed. {0} {1}", fallback, loggingException);
-        }
-    }
 
-    private void SafeLog(Action<ILogger, int, Exception> log, int value, string fallbackFormat)
-    {
-        try
-        {
-            if (Logger != null)
-            {
-                log(Logger, value, null);
-            }
-            else
-            {
-                Trace.TraceError(fallbackFormat, value);
-            }
-        }
-        catch (Exception loggingException)
-        {
-            Trace.TraceError("Logging failed. {0}", loggingException);
-        }
+        return accepted;
     }
 
     private void Process(T message)

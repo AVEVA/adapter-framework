@@ -13,7 +13,6 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using System.Diagnostics;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
 using Microsoft.Extensions.Logging;
@@ -25,9 +24,6 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// </summary>
 public static class BaseBlockExtensions
 {
-    private static readonly Action<ILogger, Exception> LogForwardFailed =
-        LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.ForwardFailed, nameof(LogForwardFailed)),
-            "Batch forwarding failed; the untransferred payload was released and will not be retried.");
     private static readonly Action<ILogger, Exception> LogMisroutedEnvelope =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.MisroutedEnvelope, nameof(LogMisroutedEnvelope)),
             "A flush-then-forward envelope was posted to a block that does not own definitions; its payload was released.");
@@ -65,19 +61,6 @@ public static class BaseBlockExtensions
         }
     }
 
-    internal static void ForwardSafely(this FlushThenForwardMessage message, ILogger logger)
-    {
-        try
-        {
-            message.Deliver();
-        }
-        catch (Exception exception)
-        {
-            // Only the payload callback is isolated; definition-flush failures still fault the block.
-            Log(logger, LogForwardFailed, exception, "Batch forwarding failed; the untransferred payload was released and will not be retried.");
-        }
-    }
-
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The definitions callback takes ownership on success; on failure the envelope is disposed here.")]
     internal static void PostForOrderedFlush(Message payload, Action<Message> postDefinitions, Action<Message> forward)
@@ -112,31 +95,12 @@ public static class BaseBlockExtensions
     internal static void ReleaseMisrouted(this FlushThenForwardMessage message, ILogger logger)
     {
         message.Dispose();
-        Log(logger, LogMisroutedEnvelope, null, "A flush-then-forward envelope was posted to a block that does not own definitions; its payload was released.");
+        DataflowLog.Write(logger, LogMisroutedEnvelope, null, "A flush-then-forward envelope was posted to a block that does not own definitions; its payload was released.");
     }
 
     internal static Action<Message> PostTo(DefinitionsBlock definitions)
     {
         ArgumentNullException.ThrowIfNull(definitions);
         return message => definitions.PostOrThrow(message);
-    }
-
-    private static void Log(ILogger logger, Action<ILogger, Exception> log, Exception exception, string fallback)
-    {
-        try
-        {
-            if (logger != null)
-            {
-                log(logger, exception);
-            }
-            else
-            {
-                Trace.TraceError("{0} {1}", fallback, exception);
-            }
-        }
-        catch (Exception loggingException)
-        {
-            Trace.TraceError("Logging failed. {0}", loggingException);
-        }
     }
 }

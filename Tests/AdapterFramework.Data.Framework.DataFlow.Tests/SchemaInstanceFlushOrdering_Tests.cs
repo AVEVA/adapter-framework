@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+#pragma warning disable CS0618 // Deliberately covers the obsolete Action<Message> constructor overload.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -35,6 +36,8 @@ public class SchemaInstanceFlushOrdering_Tests
     private const int MisroutedEnvelopeEventId = DataflowEventIds.MisroutedEnvelope;
     private const int WorkerFaultedEventId = DataflowEventIds.WorkerFaulted;
     private const int BlockDisposeFailedEventId = DataflowEventIds.BlockDisposeFailed;
+    private const int ForwardFailedEventId = DataflowEventIds.ForwardFailed;
+    private const int MessagesRejectedEventId = DataflowEventIds.MessagesRejected;
     private const string HandoffFailureMessage = "Handing a batch to the definitions block failed";
     private const string OwnershipTransferJustification = "Ownership of the envelope and its payload transfers to the block under test; the test asserts that it is released exactly once.";
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(10);
@@ -815,6 +818,87 @@ public class SchemaInstanceFlushOrdering_Tests
         var ids = typeof(DataflowEventIds).GetFields().Select(field => (int)field.GetRawConstantValue()).ToList();
 
         Assert.Equal(ids.Count, ids.Distinct().Count());
+    }
+
+    [Fact]
+    public void DataflowEventIds_UseDedicatedRangeExceptPreExistingBatchSizeChanged()
+    {
+        var outOfRange = typeof(DataflowEventIds).GetFields()
+            .Where(field => field.Name != nameof(DataflowEventIds.BatchSizeChanged))
+            .Select(field => (int)field.GetRawConstantValue())
+            .Where(id => id is < 5000 or > 5099);
+
+        Assert.Empty(outOfRange);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PostAfterUnexpectedStop_ReportsRejectedMessagesOncePerInterval(bool schema)
+    {
+        var logger = CreateLogger();
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, _ => throw new InvalidOperationException("Injected definitions failure."));
+        Assert.True(definitions.Post(CreateStreamMessage("S1")));
+        Assert.True(definitions.Post(new CommandMessage(true)));
+        Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout));
+
+        Assert.True(SpinWait.SpinUntil(() => !definitions.Post(CreateStreamMessage("S2")), WaitTimeout));
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.False(definitions.Post(CreateStreamMessage("S3")));
+        }
+
+        Assert.Equal(1, CountLogs(logger, MessagesRejectedEventId));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PostAfterDisposal_IsNotReportedAsRejected(bool schema)
+    {
+        var logger = CreateLogger();
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, _ => { });
+        definitions.Dispose();
+
+        Assert.False(definitions.Post(CreateStreamMessage("S1")));
+        Assert.Equal(0, CountLogs(logger, MessagesRejectedEventId));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = OwnershipTransferJustification)]
+    public void RepeatedForwardFailures_AreReportedOncePerInterval(bool schema)
+    {
+        using var recorder = new Recorder();
+        var logger = CreateLogger();
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, recorder.Add);
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True(definitions.Post(new FlushThenForwardMessage(new CommandMessage(false), _ =>
+                throw new InvalidOperationException("Injected forwarding failure."))));
+        }
+
+        Assert.True(definitions.Post(new FlushThenForwardMessage(new CommandMessage(false), recorder.Add)));
+        recorder.WaitForCount(1);
+
+        Assert.Equal(1, CountLogs(logger, ForwardFailedEventId));
+    }
+
+    [Fact]
+    public void RateLimitedCounter_ReportsFirstOccurrenceThenAccumulatesUntilIntervalElapses()
+    {
+        var counter = new RateLimitedCounter(200);
+
+        Assert.True(counter.Increment(out var first));
+        Assert.Equal(1, first);
+        Assert.False(counter.Increment(out _));
+        Assert.False(counter.Increment(out _));
+
+        Thread.Sleep(250);
+        Assert.True(counter.Increment(out var accumulated));
+        Assert.Equal(3, accumulated);
     }
 
     private static void AssertHandoffFailureLoggedOnce(Mock<ILogger> logger, int expectedEventId)

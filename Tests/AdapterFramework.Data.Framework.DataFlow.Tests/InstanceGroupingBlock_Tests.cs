@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+#pragma warning disable CS0618 // Deliberately covers the obsolete Action<Message> constructor overload.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -162,9 +163,7 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
     }
@@ -193,9 +192,7 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
     }
@@ -226,9 +223,7 @@ public class InstanceGroupingBlock_Tests
         block.Post(new DataMessage(_dataMessage.Id, _dataMessage.Classification, _dataMessage.Instance, MessageAction.Update));
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled && _flushMessageAction == MessageAction.Delete, SpinWaitTimeout));
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(1, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 1);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
         Assert.Equal(MessageAction.Delete, _flushMessageAction);
@@ -301,9 +296,7 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalledCounter == 2, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(1, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 1);
         Assert.True(_flushCalled);
         Assert.Equal(2, _flushCalledCounter);
     }
@@ -506,11 +499,9 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled && _flushMessageAction == MessageAction.Create, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.Equal(MessageAction.Create, _flushMessageAction);
-        Assert.Equal(0, totalInstanceCount);
         Assert.Equal(2, _flushCalledCounter);
     }
 
@@ -961,8 +952,7 @@ public class InstanceGroupingBlock_Tests
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
 
-        totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
     }
 
     #endregion
@@ -1092,6 +1082,12 @@ public class InstanceGroupingBlock_Tests
     #endregion
 
     #region Helper Methods
+
+    // The flush callback runs before the worker finishes updating its counters, so wait for the expected value.
+    private static void AssertTotalInstanceCountEventually(InstanceGroupingBlock block, int expected) =>
+        Assert.True(
+            SpinWait.SpinUntil(() => (int)GetFieldValueFromObject(TotalInstanceCountFieldName, block) == expected, SpinWaitTimeout),
+            $"The total instance count did not reach {expected}.");
 
     private void DummyFlushAction(Message m)
     {

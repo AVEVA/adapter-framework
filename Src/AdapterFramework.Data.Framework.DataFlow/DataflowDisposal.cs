@@ -13,7 +13,6 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
@@ -21,7 +20,7 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// <summary>
 /// Disposes the blocks of a dataflow pipeline.
 /// </summary>
-internal static class DataflowDisposal
+public static class DataflowDisposal
 {
     private static readonly Action<ILogger, Exception> LogBlockDisposeFailed =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.BlockDisposeFailed, nameof(LogBlockDisposeFailed)),
@@ -34,24 +33,8 @@ internal static class DataflowDisposal
     /// <param name="logger">The logger; may be <see langword="null"/>.</param>
     /// <param name="exception">The disposal failure.</param>
     /// <remarks>
-    /// Owners invoke <c>Dispose()</c> on their own fields (so CA2213 can verify it) and call this from the <c>catch</c>.
+    /// Owners call <c>Dispose()</c> on their own fields inside their own <c>try</c> block, so that CA2213 can verify it, and call this from the <c>catch</c>.
     /// </remarks>
-    internal static void ReportDisposeFailure(ILogger logger, Exception exception)
-    {
-        try
-        {
-            if (logger != null)
-            {
-                LogBlockDisposeFailed(logger, exception);
-            }
-            else
-            {
-                Trace.TraceError("Disposing a dataflow block failed; continuing with the remaining blocks. {0}", exception);
-            }
-        }
-        catch (Exception loggingException)
-        {
-            Trace.TraceError("Disposing a dataflow block failed: {0}. Logging also failed: {1}", exception, loggingException);
-        }
-    }
+    public static void ReportDisposeFailure(ILogger logger, Exception exception) =>
+        DataflowLog.Write(logger, LogBlockDisposeFailed, exception, "Disposing a dataflow block failed; continuing with the remaining blocks.");
 }
