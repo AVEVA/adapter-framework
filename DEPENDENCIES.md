@@ -65,8 +65,8 @@ Information on which specific dependencies are required are presented to you whi
 | Serilog.Sinks.Console 6.1.1<br>Copyright © Serilog Contributors - Provided under the Apache License, Version 2.0. | Apache License 2.0 | |
 | Serilog.Sinks.File 7.0.0<br>Copyright © 2016 Serilog Contributors - Provided under the Apache License, Version 2.0. | Apache License 2.0 | [https://www.nuget.org/packages/Serilog.Sinks.File](https://www.nuget.org/packages/Serilog.Sinks.File) |
 | System.Diagnostics.EventLog 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://dot.net/](https://dot.net/) |
-| System.Security.Cryptography.Pkcs 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | |
-| System.Security.Cryptography.Xml 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://dot.net/](https://dot.net/) |
+| System.Security.Cryptography.Pkcs 10.0.13<br>© Microsoft Corporation. All rights reserved. | MIT License | |
+| System.Security.Cryptography.Xml 10.0.13<br>© Microsoft Corporation. All rights reserved. | MIT License | [https://dot.net/](https://dot.net/) |
 | System.ServiceProcess.ServiceController 10.0.10<br>© Microsoft Corporation. All rights reserved. | MIT License | |
 | xunit.analyzers 1.18.0<br>Copyright (C) .NET Foundation | Apache License 2.0 | [https://github.com/marcind/xunit.analyzers](https://github.com/marcind/xunit.analyzers) |
 | xUnit.net 2.9.3<br>Copyright (C) .NET Foundation | Apache License 2.0 | [https://github.com/xunit/xunit](https://github.com/xunit/xunit) |
