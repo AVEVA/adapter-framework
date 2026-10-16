@@ -14,6 +14,8 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Moq;
@@ -237,8 +239,12 @@ public class AdapterDiagnosticsService_Tests
         Assert.Equal(9, eventCountEvent.EventCount);
     }
 
-    [Fact]
-    public async Task StartAsync_UnchangedAssetAndEventCount_PublishedOnlyOnce_Test()
+    [Theory]
+    [InlineData(7, 9, 1, 1)]
+    [InlineData(8, 9, 2, 1)]
+    [InlineData(7, 10, 1, 2)]
+    public void CollectMessageProcessorStatistics_AssetAndEventCount_PublishedOnlyWhenChangedAtReportingBoundary_Test(
+        int nextAssetCount, long nextEventCount, int expectedAssetWrites, int expectedEventWrites)
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
@@ -247,15 +253,43 @@ public class AdapterDiagnosticsService_Tests
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
-        await adapterDiagnosticsService.StartAsync();
+        // Drive the real timer callback without starting background timers or waiting for wall-clock time.
+        var collectStatisticsMethod = typeof(AdapterDiagnosticsService).GetMethod("CollectMessageProcessorStatistics", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(collectStatisticsMethod);
+        var collectStatistics = collectStatisticsMethod.CreateDelegate<Action<object>>(adapterDiagnosticsService);
 
-        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 5, DiagnosticsMessagesRunoutDelayMSecs);
+        collectStatistics(null);
 
-        // Let several more statistics ticks elapse; the unchanged counts must not be published again.
-        await Task.Delay(DiagnosticsMessagesRunoutDelayMSecs);
+        var initialValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        Assert.Equal(7, Assert.IsType<AssetCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance).AssetCount);
+        Assert.Equal(9, Assert.IsType<EventCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance).EventCount);
 
-        Assert.Single(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
-        Assert.Single(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(nextAssetCount);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(nextEventCount);
+
+        for (var tick = 0; tick < 59; tick++)
+        {
+            collectStatistics(null);
+        }
+
+        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Once);
+        instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Once);
+        var beforeBoundaryValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
+
+        // The initial callback publishes immediately; callback 61 reaches the next 60-tick reporting boundary.
+        collectStatistics(null);
+
+        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Exactly(2));
+        instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Exactly(2));
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        var assetValues = writtenValues.Where(x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).ToArray();
+        var eventValues = writtenValues.Where(x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(expectedAssetWrites, assetValues.Length);
+        Assert.Equal(expectedEventWrites, eventValues.Length);
+        Assert.Equal(nextAssetCount, Assert.IsType<AssetCountEvent>(assetValues[^1].Instance).AssetCount);
+        Assert.Equal(nextEventCount, Assert.IsType<EventCountEvent>(eventValues[^1].Instance).EventCount);
     }
 
     [Fact]
