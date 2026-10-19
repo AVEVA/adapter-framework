@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -33,6 +34,125 @@ namespace AdapterFramework.Data.Framework.Buffering.Tests;
 public class PersistentOmfMessageQueue_Tests
 {
     private const string TestTargetIdentifier = "http://localhost:5590/omf";
+
+    /// <summary>
+    /// Verifies that timestamped records use the fixed V5 extension, including an empty GUID for unscoped bodies,
+    /// and retain all fields when read without the in-memory tracking ID.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 1L, false)]
+    [InlineData(true, long.MaxValue, false)]
+    [InlineData(false, long.MinValue, true)]
+    [InlineData(true, 123456789L, true)]
+    public void PersistentOmfMessageQueue_TimestampedBody_RoundTripPreservesV5Layout(bool scoped, long ticks, bool emptyBody)
+    {
+        Guid? id = scoped ? Guid.NewGuid() : null;
+        var body = emptyBody ? Array.Empty<byte>() : new byte[] { 0x11, 0x22, 0x33 };
+        var message = new SerializedOmfMessage(MessageType.Instance, body, MessageAction.Update, 0x01020304, OmfVersion.Omf20, PartitionKey.Key16)
+        {
+            SerializedMessageId = id,
+            ProcessTimeTicks = ticks,
+        };
+        DataItem enqueued = null;
+        var persistentQueue = new Mock<IPersistentQueue>();
+        persistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback((DataItem item) => enqueued = item);
+        persistentQueue.Setup(q => q.Peek()).Returns(() => new DataItem(enqueued.Version, enqueued.Data));
+        persistentQueue.Setup(q => q.Dequeue()).Returns(() => new DataItem(enqueued.Version, enqueued.Data));
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, persistentQueue.Object, null);
+
+        queue.Enqueue(message);
+
+        Assert.Equal(DataItemVersion.V5, enqueued.Version);
+        Assert.Equal(id, enqueued.TrackingId);
+        Assert.Equal(body.Length + 8 + 8 + 16, enqueued.Data.Length);
+        Assert.Equal(message.GetMessageSizeInBytes() + (scoped ? 0 : 16), enqueued.Data.Length);
+        Assert.Equal((byte)message.MessageType, enqueued.Data[0]);
+        Assert.Equal(new byte[] { 4, 3, 2, 1 }, enqueued.Data[1..5]);
+        Assert.Equal(body, enqueued.Data[5..(5 + body.Length)]);
+        Assert.Equal(new byte[] { (byte)PartitionKey.Key16, (byte)MessageAction.Update, (byte)OmfVersion.Omf20 }, enqueued.Data[(5 + body.Length)..(8 + body.Length)]);
+        Assert.Equal(ticks, BinaryPrimitives.ReadInt64LittleEndian(enqueued.Data.AsSpan(body.Length + 8)));
+        Assert.Equal(id ?? Guid.Empty, new Guid(enqueued.Data.AsSpan(enqueued.Data.Length - 16)));
+        Assert.True(queue.TryPeek(out var peeked));
+        Assert.True(queue.TryDequeue(out var dequeued));
+        foreach (var restored in new[] { peeked, dequeued })
+        {
+            Assert.Equal(id, restored.SerializedMessageId);
+            Assert.Equal(ticks, restored.ProcessTimeTicks);
+            Assert.Equal(message.MessageType, restored.MessageType);
+            Assert.Equal(message.ItemCount, restored.ItemCount);
+            Assert.Equal(body, restored.MessageBody);
+            Assert.Equal(message.PartitionKey, restored.PartitionKey);
+            Assert.Equal(message.MessageAction, restored.MessageAction);
+            Assert.Equal(message.OmfVersion, restored.OmfVersion);
+        }
+    }
+
+    /// <summary>
+    /// Verifies independently constructed legacy writer payloads retain their exact body and ID, with no timestamp inferred from V4 ID bytes.
+    /// </summary>
+    [Theory]
+    [InlineData(DataItemVersion.V1)]
+    [InlineData(DataItemVersion.V2)]
+    [InlineData(DataItemVersion.V3)]
+    [InlineData(DataItemVersion.V4)]
+    public void PersistentOmfMessageQueue_LegacyRecord_ReadsWithoutProcessTicks(DataItemVersion version)
+    {
+        var id = Guid.Parse("12345678-90ab-cdef-1234-567890abcdef");
+        var payload = new List<byte> { (byte)MessageType.Instance, 4, 3, 2, 1, 0x11, 0x22 };
+        if (version >= DataItemVersion.V3)
+        {
+            payload.Add((byte)PartitionKey.Key7);
+        }
+
+        if (version >= DataItemVersion.V2)
+        {
+            payload.Add((byte)MessageAction.Update);
+        }
+
+        if (version >= DataItemVersion.V3)
+        {
+            payload.Add((byte)OmfVersion.Omf20);
+        }
+
+        if (version == DataItemVersion.V4)
+        {
+            payload.AddRange(id.ToByteArray());
+        }
+
+        var persistentQueue = new Mock<IPersistentQueue>();
+        persistentQueue.Setup(q => q.Dequeue()).Returns(new DataItem(version, payload.ToArray()));
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, persistentQueue.Object, null);
+
+        Assert.True(queue.TryDequeue(out var restored));
+        Assert.Equal(new byte[] { 0x11, 0x22 }, restored.MessageBody);
+        Assert.Equal(0x01020304, restored.ItemCount);
+        Assert.Equal(MessageType.Instance, restored.MessageType);
+        Assert.Equal(0, restored.ProcessTimeTicks);
+        Assert.Equal(version == DataItemVersion.V4 ? id : (Guid?)null, restored.SerializedMessageId);
+        Assert.Equal(version >= DataItemVersion.V3 ? PartitionKey.Key7 : (PartitionKey?)null, restored.PartitionKey);
+        Assert.Equal(version >= DataItemVersion.V3 ? OmfVersion.Omf20 : OmfVersion.Omf12, restored.OmfVersion);
+        Assert.Equal(version >= DataItemVersion.V2 ? MessageAction.Update : MessageAction.Default, restored.MessageAction);
+    }
+
+    /// <summary>
+    /// Verifies V5 records missing any part of their fixed trailer are not interpreted as message bodies or IDs.
+    /// </summary>
+    [Theory]
+    [InlineData(5)]
+    [InlineData(8)]
+    [InlineData(16)]
+    [InlineData(31)]
+    public void PersistentOmfMessageQueue_TruncatedV5_ReturnsEmptyMessage(int length)
+    {
+        var persistentQueue = new Mock<IPersistentQueue>();
+        persistentQueue.Setup(q => q.Dequeue()).Returns(new DataItem(DataItemVersion.V5, new byte[length]));
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, persistentQueue.Object, null);
+
+        Assert.True(queue.TryDequeue(out var restored));
+        Assert.Empty(restored.MessageBody);
+        Assert.Null(restored.SerializedMessageId);
+        Assert.Equal(0, restored.ProcessTimeTicks);
+    }
 
     [Theory]
     [InlineData(null, null)]

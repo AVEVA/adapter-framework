@@ -75,9 +75,13 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     public Guid? SerializedMessageId { get; set; }
 
     /// <inheritdoc/>
+    public long ProcessTimeTicks { get; set; }
+
+    /// <inheritdoc/>
     public virtual int GetMessageSizeInBytes()
     {
         return MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + OmfVersionEnumSize + PartitionKeyEnumSize
-            + (SerializedMessageId.HasValue ? SerializedMessageIdSize : 0);
+            + (SerializedMessageId.HasValue ? SerializedMessageIdSize : 0)
+            + (ProcessTimeTicks != 0 ? sizeof(long) : 0);
     }
 }

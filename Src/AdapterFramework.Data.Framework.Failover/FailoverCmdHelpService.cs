@@ -34,6 +34,7 @@ public class FailoverCmdHelpService : CmdHelpServiceBase
 {nameof(ClientFailoverConfiguration.Description)}                      [Optional] Description of the failover group.
 {nameof(ClientFailoverConfiguration.FailoverTimeout)}                  [Required] Failover timeout value of the failover group.
 {nameof(ClientFailoverConfiguration.Mode)}                             [Required] The failover mode used for the adapter instance.
+{nameof(ClientFailoverConfiguration.EnableAcceptanceTrimWatermark)}    [Optional] Use the acceptance watermark for hot failover trimming instead of the legacy hand-off timestamp. Defaults to false. Both nodes must use the same value; hot failover awaitable scopes require true on both nodes.
 {nameof(ClientFailoverConfiguration.Endpoint)}                         [Required] URL of the failover endpoint.
 {nameof(ClientFailoverConfiguration.UserName)}                         [Optional group 1] User name used for BASIC authentication to failover endpoint.
 {nameof(ClientFailoverConfiguration.Password)}                         [Optional group 1] Password used for BASIC authentication to failover endpoint.

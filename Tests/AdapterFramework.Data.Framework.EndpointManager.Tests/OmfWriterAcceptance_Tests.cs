@@ -18,6 +18,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Moq;
 using AdapterFramework.Data.DataModel;
@@ -30,6 +31,7 @@ using AdapterFramework.Data.Framework.Buffering;
 using AdapterFramework.Data.Framework.Common;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
+using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using AdapterFramework.Data.Framework.Serialization;
 using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
@@ -160,6 +162,287 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         }
     }
 
+    /// <summary>Timestamped unscoped bodies advance only for exact 202, independent of the coordinator.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted, true)]
+    [InlineData(HttpStatusCode.OK, false)]
+    [InlineData(HttpStatusCode.NoContent, false)]
+    [InlineData(HttpStatusCode.BadRequest, false)]
+    public async Task GetAcceptanceWatermark_UnscopedBody_RequiresExact202(HttpStatusCode status, bool accepted)
+    {
+        _endpoint.SetHttpResponse(status);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        _writer.SendMessage(UnscopedBody(100));
+        await WaitForEgressAsync(1);
+        Assert.Equal(accepted ? 100 : 99, _writer.GetAcceptanceWatermark().Ticks);
+
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer.SendMessage(UnscopedBody(200));
+        await WaitForEgressAsync(1);
+        Assert.Equal(accepted ? 200 : 99, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Retryable responses hold the pending timestamp until a later exact 202 accepts it.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_RetryThen202_AdvancesOnlyAfterAcceptance()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        _writer.SendMessage(UnscopedBody(100));
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        Assert.Equal(99, _writer.GetAcceptanceWatermark().Ticks);
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        await WaitForEgressAsync(1);
+        Assert.Equal(100, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Ordinary non-hot writes block only while pending; switching to timestamped hot writes restores coverage after exact 202.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted, 200)]
+    [InlineData(HttpStatusCode.OK, 0)]
+    [InlineData(HttpStatusCode.BadRequest, 0)]
+    public async Task GetAcceptanceWatermark_UnknownThenKnownTimestamp_ResumesOnlyAfterExact202(HttpStatusCode status, long expected)
+    {
+        _endpoint.SetHttpResponse(status);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        _writer.SendMessage(UnscopedBody(0));
+        await WaitForEgressAsync(1);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer.SendMessage(UnscopedBody(200));
+        await WaitForEgressAsync(1);
+        Assert.Equal(expected, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Priority metadata and data both participate even when neither body carries a scoped ID.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_MetadataOvertakesData_DoesNotCoverPendingData()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        _writer.SendMessage(UnscopedBody(100, MessageType.Type));
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        _writer.SendMessage(UnscopedBody(200));
+        _writer.SendMessage(UnscopedBody(300, MessageType.Container));
+        Assert.Equal(99, _writer.GetAcceptanceWatermark().Ticks);
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        await WaitForEgressAsync(3);
+        Assert.Equal(300, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Volatile overflow of an unscoped body freezes and clears acceptance tracking.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_UnscopedVolatileLoss_FreezesBeforeLostBody()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false, maxBufferSizeMB: 1);
+        _writer.SendMessage(new SerializedOmfMessage(MessageType.Instance, new byte[2 * 1024 * 1024], MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = 100 });
+        _writer.SendMessage(UnscopedBody(200));
+        await WaitForEgressAsync(1);
+        Assert.Equal(99, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Both recovered queues, including legacy unknown records, catch up automatically without a second restart.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(100)]
+    public async Task GetAcceptanceWatermark_RestartWithDiskBacklog_ResumesAfterDrain(long ticks)
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        _writer.SendMessage(UnscopedBody(ticks));
+        _writer.SendMessage(UnscopedBody(200, MessageType.Type));
+        _writer.Dispose(); // Shutdown consolidates both volatile tiers to disk.
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer = CreateWriter(persistentBuffering: true);
+        await WaitForEgressAsync(2);
+        Assert.Equal(200, _writer.GetAcceptanceWatermark().Ticks);
+        _writer.SendMessage(UnscopedBody(300));
+        await WaitForEgressAsync(1);
+        Assert.Equal(300, _writer.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>New metadata and data cannot bypass recovery, even if recovered and new records share process times.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_RecoveryWithConcurrentAdmissions_WaitsForBothQueuesAndInFlightBody()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        _writer.SendMessage(UnscopedBody(100, MessageType.Type));
+        _writer.SendMessage(UnscopedBody(500));
+        _writer.Dispose();
+
+        var firstRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lastRequest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFirst = new ManualResetEventSlim();
+        using var releaseLast = new ManualResetEventSlim();
+        var requests = 0;
+        _endpoint.SetMessageReceivedAction(() =>
+        {
+            var request = Interlocked.Increment(ref requests);
+            if (request == 1)
+            {
+                firstRequest.TrySetResult();
+                releaseFirst.Wait(CompletionWait);
+            }
+            else if (request == 4)
+            {
+                lastRequest.TrySetResult();
+                releaseLast.Wait(CompletionWait);
+            }
+        });
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer = CreateWriter(persistentBuffering: true);
+        try
+        {
+            await firstRequest.Task.WaitAsync(CompletionWait);
+            _writer.SendMessage(UnscopedBody(300, MessageType.Container));
+            _writer.SendMessage(UnscopedBody(500));
+            Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+            releaseFirst.Set();
+            await lastRequest.Task.WaitAsync(CompletionWait);
+            Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+            releaseLast.Set();
+            await WaitForEgressAsync(4);
+            Assert.Equal(500, _writer.GetAcceptanceWatermark().Ticks);
+            _writer.SendMessage(UnscopedBody(600));
+            await WaitForEgressAsync(1);
+            Assert.Equal(600, _writer.GetAcceptanceWatermark().Ticks);
+        }
+        finally
+        {
+            releaseFirst.Set();
+            releaseLast.Set();
+        }
+    }
+
+    /// <summary>A terminal or non-202 response in recovered backlog permanently blocks coverage even after all queues drain.</summary>
+    [Theory]
+    [InlineData(HttpStatusCode.OK)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    public async Task GetAcceptanceWatermark_RecoveryRejectsBody_RemainsFrozen(HttpStatusCode status)
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        _writer.SendMessage(UnscopedBody(100));
+        _writer.Dispose();
+        _endpoint.SetHttpResponse(status);
+        _writer = CreateWriter(persistentBuffering: true);
+        await WaitForEgressAsync(1);
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer.SendMessage(UnscopedBody(200));
+        await WaitForEgressAsync(1);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Corrupt recovered data is a permanent loss even when all remaining metadata and data are accepted and both queues drain.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_RecoveryLosesData_RemainsFrozenAfterDrain()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        _writer.SendMessage(UnscopedBody(100, MessageType.Type));
+        _writer.SendMessage(UnscopedBody(200));
+        _writer.SendMessage(UnscopedBody(201));
+        _writer.Dispose();
+        var dataFile = Assert.Single(Directory.GetFiles(_bufferPath, "data_data0", SearchOption.AllDirectories));
+        using (var stream = File.Open(dataFile, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+        {
+            stream.Position = 12;
+            stream.WriteByte(0xff);
+        }
+
+        _writer = CreateWriter(persistentBuffering: true);
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        await WaitForEgressAsync(2);
+        _writer.SendMessage(UnscopedBody(300));
+        await WaitForEgressAsync(1);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Startup eviction in either disk queue freezes coverage before any surviving records can be accepted.</summary>
+    [Theory]
+    [InlineData("data", MessageType.Instance, 3, 1)]
+    [InlineData("metadata", MessageType.Type, 4, 3)]
+    public async Task GetAcceptanceWatermark_StartupEvictsFiles_RemainsZeroAfterDrain(string prefix, MessageType type, int records, int survivors)
+    {
+        // Use real writer records with small queue files, not oversized HTTP bodies or a mocked repair.
+        using (var files = new FileQueue(_bufferPath, prefix, maxFileSizeMb: 1, maxQueueFiles: records))
+        using (var messages = new PersistentOmfMessageQueue(_uri, files, new TestLogger()))
+        {
+            var body = new byte[600 * 1024];
+            Array.Fill(body, (byte)' ');
+            body[^2] = (byte)'{';
+            body[^1] = (byte)'}';
+            for (var i = 0; i < records; i++)
+            {
+                messages.Enqueue(new SerializedOmfMessage(type, body, MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = 100 + i });
+            }
+        }
+
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        await WaitForEgressAsync(survivors);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+        _writer.SendMessage(UnscopedBody(300));
+        await WaitForEgressAsync(1);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Removing an entire queue before startup cannot be hidden by repair resetting it to an empty queue.</summary>
+    [Theory]
+    [InlineData("data")]
+    [InlineData("metadata")]
+    public async Task GetAcceptanceWatermark_StartupMissingAllQueueFiles_RemainsZeroAfterDrain(string prefix)
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: true);
+        _writer.SendMessage(UnscopedBody(100, MessageType.Type));
+        _writer.SendMessage(UnscopedBody(200));
+        _writer.Dispose();
+        var file = Assert.Single(Directory.GetFiles(_bufferPath, $"{prefix}_data0", SearchOption.AllDirectories));
+        File.Delete(file);
+
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _writer = CreateWriter(persistentBuffering: true);
+        await WaitForEgressAsync(1);
+        _writer.SendMessage(UnscopedBody(300));
+        await WaitForEgressAsync(1);
+        Assert.Equal(DateTime.MinValue, _writer.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Creates a timestamped hot body without allocating a serialized tracking ID.</summary>
+    private static SerializedOmfMessage UnscopedBody(long ticks, MessageType type = MessageType.Instance) =>
+        new(type, new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = ticks };
+
+    /// <summary>Waits for the requested number of terminal dequeues, failing rather than silently timing out.</summary>
+    private async Task WaitForEgressAsync(long expected)
+    {
+        var deadline = DateTime.UtcNow + CompletionWait;
+        var count = 0L;
+        while (count < expected && DateTime.UtcNow < deadline)
+        {
+            count += _writer.GetAndResetEgressedValuesCounter();
+            if (count < expected)
+            {
+                await Task.Delay(25);
+            }
+        }
+
+        Assert.Equal(expected, count);
+    }
+
     /// <summary>
     /// Disposes the writer, the endpoint, and the coordinator, and deletes the buffer directory.
     /// </summary>
@@ -224,7 +507,7 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
     /// </summary>
     /// <param name="persistentBuffering">Whether bodies older than the volatile expiration move to disk.</param>
     /// <returns>The writer.</returns>
-    private OmfWriter CreateWriter(bool persistentBuffering)
+    private OmfWriter CreateWriter(bool persistentBuffering, int maxBufferSizeMB = 20)
     {
         var dataProtector = new Mock<IEdgeDataProtector>();
         dataProtector.Setup(protector => protector.Unprotect(It.IsAny<string>())).Returns("password");
@@ -235,7 +518,7 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
             new OmfJsonSerializer(),
             null,
             dataProtector.Object,
-            new BufferingConfiguration { EnablePersistentBuffering = persistentBuffering, BufferLocation = _bufferPath },
+            new BufferingConfiguration { EnablePersistentBuffering = persistentBuffering, BufferLocation = _bufferPath, MaxBufferSizeMB = maxBufferSizeMB },
             new ApplicationManifest(),
             _bufferPath,
             string.Empty,

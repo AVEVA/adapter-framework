@@ -53,6 +53,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     private readonly TaskCompletionSource _shutdown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private OmfVersion? _omfVersion;
     private FailoverMode _failoverMode;
+    private bool _enableAcceptanceTrimWatermark;
     private Action<OmfAwaitableScopeState> _sealHandler;
     private bool _disposed;
 
@@ -111,14 +112,47 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Sets the current failover mode. Scopes aren't supported in hot failover mode.
+    /// Sets the current failover mode with legacy trimming. Hot scopes require explicit opt-in.
     /// </summary>
     /// <param name="failoverMode">The current failover mode.</param>
     public void SetFailoverMode(FailoverMode failoverMode)
+        => SetFailoverMode(failoverMode, false);
+
+    /// <summary>
+    /// Sets the failover mode and acceptance-trimming policy atomically. Disabling hot acceptance
+    /// fails pending buffered bodies without cancelling their delivery or changing dispatched work.
+    /// </summary>
+    /// <param name="failoverMode">The current failover mode.</param>
+    /// <param name="enableAcceptanceTrimWatermark">Whether hot failover uses acceptance-based trimming.</param>
+    public void SetFailoverMode(FailoverMode failoverMode, bool enableAcceptanceTrimWatermark)
     {
+        List<OmfAwaitableScopeState> completed = null;
         lock (_lock)
         {
             _failoverMode = failoverMode;
+            _enableAcceptanceTrimWatermark = enableAcceptanceTrimWatermark;
+            if (failoverMode == FailoverMode.Hot && !enableAcceptanceTrimWatermark)
+            {
+                var reason = AcceptanceTrackingDisabledReason();
+                foreach (var body in _bodies.Values)
+                {
+                    DiscardFailoverBody(body, reason, ref completed);
+                }
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>Gets the current failover mode reported by the pipeline.</summary>
+    public FailoverMode CurrentFailoverMode
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _failoverMode;
+            }
         }
     }
 
@@ -140,7 +174,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <param name="options">The scope options.</param>
     /// <param name="scope">The created scope, or null when the limit is reached.</param>
     /// <returns><c>true</c> if the scope was created; otherwise <c>false</c>.</returns>
-    /// <exception cref="NotSupportedException">The pipeline isn't OMF 2.0, or hot failover is configured.</exception>
+    /// <exception cref="NotSupportedException">The pipeline isn't OMF 2.0, or hot failover has not opted into acceptance trimming.</exception>
     /// <exception cref="ObjectDisposedException">The coordinator is shut down.</exception>
     public bool TryCreateScope(OmfAwaitableScopeOptions options, out OmfAwaitableScopeState scope)
     {
@@ -158,9 +192,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 throw new NotSupportedException("Awaitable scopes require an OMF 2.0 data pipeline.");
             }
 
-            if (_failoverMode.HasFlag(FailoverMode.Hot))
+            if (_failoverMode == FailoverMode.Hot && !_enableAcceptanceTrimWatermark)
             {
-                throw new NotSupportedException("Awaitable scopes aren't supported when hot failover is configured.");
+                throw new NotSupportedException("Hot failover scopes require EnableAcceptanceTrimWatermark on both nodes.");
             }
 
             if (_scopes.Count >= MaxActiveScopes)
@@ -304,11 +338,19 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 return;
             }
 
+            // Disabling tracking ended this observation, not delivery. A retained legacy body
+            // must still be dispatchable on promotion without replacing its final loss snapshot.
+            if (body.DiscardReason?.Code == OmfReasonCode.AcceptanceTrackingDisabled)
+            {
+                return;
+            }
+
             if (body.Deliveries is not null)
             {
                 throw new InvalidOperationException("The body's deliveries are already registered.");
             }
 
+            body.FailoverDelivery = null;
             body.Deliveries = targets
                 .Select(target => new DeliveryTracking(target.EndpointId, target.TargetUri))
                 .ToList();
@@ -328,6 +370,115 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         }
 
         SignalCompleted(completed);
+    }
+
+    /// <summary>
+    /// Marks a body as buffered for hot failover, before enqueueing it. Promotion replaces this
+    /// placeholder with the actual endpoint snapshot; trimming completes it without inventing a receipt.
+    /// </summary>
+    /// <param name="serializedMessageId">The buffered body's ID.</param>
+    /// <param name="processTimeTicks">The local process time used by the trim comparison.</param>
+    public void RecordFailoverBuffered(Guid serializedMessageId, long processTimeTicks)
+    {
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            if (_bodies.TryGetValue(serializedMessageId, out var body) && body.Deliveries is null)
+            {
+                body.FailoverDelivery = new DeliveryTracking(null, null)
+                {
+                    Reason = new OmfOutcomeReason(OmfReasonCode.AwaitingPeerCoverage,
+                        string.Create(CultureInfo.InvariantCulture, $"Waiting for the peer acceptance watermark to cover process time {processTimeTicks}.")),
+                };
+                if (_failoverMode == FailoverMode.Hot && !_enableAcceptanceTrimWatermark)
+                {
+                    DiscardFailoverBody(body, AcceptanceTrackingDisabledReason(), ref completed);
+                }
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>Explains why legacy hot trimming cannot satisfy a scoped acceptance observation.</summary>
+    private static OmfOutcomeReason AcceptanceTrackingDisabledReason() =>
+        new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover acceptance trimming was not enabled or was disabled by a configuration change.");
+
+    /// <summary>Completes a buffered body when the peer's acceptance watermark trims it.</summary>
+    /// <param name="serializedMessageId">The trimmed body's ID.</param>
+    public void RecordPeerCoverage(Guid serializedMessageId)
+    {
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            if (!_bodies.TryGetValue(serializedMessageId, out var body)
+                || body.FailoverDelivery is not { State: OmfDeliveryState.Pending } delivery)
+            {
+                return;
+            }
+
+            CompleteDelivery(delivery, OmfDeliveryState.PeerCovered, null, null, null);
+            body.Deliveries = new List<DeliveryTracking> { delivery };
+            body.FailoverDelivery = null;
+            foreach (var tracking in body.Membership.Keys)
+            {
+                Evaluate(tracking, null, null, ref completed);
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>Discards a body lost from the failover buffer before endpoint dispatch.</summary>
+    /// <param name="serializedMessageId">The lost body's ID.</param>
+    /// <param name="reason">Why the buffer lost the body.</param>
+    public void RecordFailoverDiscarded(Guid serializedMessageId, OmfOutcomeReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            if (_bodies.TryGetValue(serializedMessageId, out var body))
+            {
+                DiscardFailoverBody(body, reason, ref completed);
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>Discards only bodies still in the failover buffer, leaving dispatched deliveries alone.</summary>
+    public void RecordFailoverBuffersDeleted()
+    {
+        var reason = new OmfOutcomeReason(OmfReasonCode.BufferDeleted, "The failover buffer was deleted.");
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            foreach (var body in _bodies.Values)
+            {
+                DiscardFailoverBody(body, reason, ref completed);
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>Records a final loss only while the body is waiting in the failover buffer.</summary>
+    private static void DiscardFailoverBody(BodyTracking body, OmfOutcomeReason reason, ref List<OmfAwaitableScopeState> completed)
+    {
+        if (body.FailoverDelivery is not { State: OmfDeliveryState.Pending } delivery)
+        {
+            return;
+        }
+
+        CompleteDelivery(delivery, OmfDeliveryState.Discarded, null, reason, null);
+        body.DiscardReason = reason;
+        body.Deliveries = new List<DeliveryTracking> { delivery };
+        body.FailoverDelivery = null;
+        foreach (var tracking in body.Membership.Keys)
+        {
+            Evaluate(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+        }
     }
 
     /// <summary>
@@ -500,7 +651,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             }
 
             var deliveries = tracking.Bodies
-                .SelectMany(body => (body.Deliveries ?? Enumerable.Empty<DeliveryTracking>()).Select(delivery => delivery.ToResult(body.Id)))
+                .SelectMany(body => (body.Deliveries ?? (body.FailoverDelivery is { } pending
+                    ? new[] { pending } : Enumerable.Empty<DeliveryTracking>())).Select(delivery => delivery.ToResult(body.Id)))
                 .ToList();
 
             return tracking.Outcome is { } outcome
@@ -681,7 +833,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         {
             if (body.Deliveries is null)
             {
-                return new OmfOutcomeReason(OmfReasonCode.Queued, "A body is waiting for dispatch.");
+                return body.FailoverDelivery?.Reason ?? new OmfOutcomeReason(OmfReasonCode.Queued, "A body is waiting for dispatch.");
             }
 
             if (body.IsPeerCovered)
@@ -758,6 +910,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         public Dictionary<ScopeTracking, int> Membership { get; } = new();
 
         public List<DeliveryTracking> Deliveries { get; set; }
+
+        public DeliveryTracking FailoverDelivery { get; set; }
 
         public OmfOutcomeReason DiscardReason { get; set; }
 

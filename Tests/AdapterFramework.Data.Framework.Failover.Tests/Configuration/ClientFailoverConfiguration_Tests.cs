@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Linq;
+using System.Text.Json;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Failover.Configuration;
@@ -107,6 +108,75 @@ public class ClientFailoverConfiguration_Tests
 
         Assert.Equal(FailoverMode.Hot, failoverConfiguration.Mode);
         Assert.Equal(TimeSpan.FromSeconds(60), failoverConfiguration.FailoverTimeout);
+        Assert.False(failoverConfiguration.EnableAcceptanceTrimWatermark);
+    }
+
+    /// <summary>
+    /// Verifies that existing JSON without the opt-in retains legacy hand-off timestamp trimming.
+    /// </summary>
+    [Fact]
+    public void Deserialize_WhenAcceptanceTrimWatermarkOmitted_DefaultsToFalse()
+    {
+        var configuration = JsonSerializer.Deserialize<ClientFailoverConfiguration>("{}");
+
+        Assert.False(configuration.EnableAcceptanceTrimWatermark);
+    }
+
+    /// <summary>
+    /// Verifies that an explicit watermark setting is writable and survives JSON serialization and deserialization.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EnableAcceptanceTrimWatermark_WhenExplicitlySet_RoundTrips(bool enabled)
+    {
+        var configuration = CreateDefaultConfiguration();
+        configuration.EnableAcceptanceTrimWatermark = enabled;
+
+        var json = JsonSerializer.Serialize(configuration);
+        var deserialized = JsonSerializer.Deserialize<ClientFailoverConfiguration>(json);
+
+        Assert.Equal(enabled, configuration.EnableAcceptanceTrimWatermark);
+        Assert.Equal(enabled, deserialized.EnableAcceptanceTrimWatermark);
+        Assert.Equal(configuration, deserialized);
+    }
+
+    /// <summary>
+    /// Verifies that equal watermark settings produce equal configurations and hashes, while a setting-only change is detected.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Equals_WhenAcceptanceTrimWatermarkChanges_DetectsChange(bool enabled)
+    {
+        var configuration = CreateDefaultConfiguration();
+        configuration.EnableAcceptanceTrimWatermark = enabled;
+        var other = CreateDefaultConfiguration();
+        other.EnableAcceptanceTrimWatermark = enabled;
+
+        Assert.True(configuration.Equals(other));
+        Assert.True(configuration.Equals((object)other));
+        Assert.Equal(configuration.GetHashCode(), other.GetHashCode());
+
+        other.EnableAcceptanceTrimWatermark = !enabled;
+
+        Assert.False(configuration.Equals(other));
+        Assert.False(configuration.Equals((object)other));
+        Assert.NotEqual(configuration.GetHashCode(), other.GetHashCode());
+    }
+
+    /// <summary>
+    /// Verifies that CLI help explains the legacy default and the matching opt-in required for hot failover scopes.
+    /// </summary>
+    [Fact]
+    public void GetClientFailoverHelpOutput_WhenRequested_DescribesAcceptanceTrimWatermark()
+    {
+        var output = new FailoverCmdHelpService().GetClientFailoverHelpOutput();
+
+        Assert.Contains(nameof(ClientFailoverConfiguration.EnableAcceptanceTrimWatermark), output);
+        Assert.Contains("Defaults to false", output);
+        Assert.Contains("Both nodes must use the same value", output);
+        Assert.Contains("hot failover awaitable scopes require true on both nodes", output);
     }
 
     private static ClientFailoverConfiguration CreateDefaultConfiguration()

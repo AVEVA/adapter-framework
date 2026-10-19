@@ -30,6 +30,122 @@ public sealed class FileQueue_TrackingTests : IDisposable
     private readonly List<TrackedItemsLostEventArgs> _lost = new();
     private FileQueue _fileQueue;
 
+    /// <summary>Fresh queues, intact backlog, and cleanly drained restarts do not report startup loss.</summary>
+    [Fact]
+    public void HadDataLossAtStartup_CleanQueueAndBacklog_RemainsFalse()
+    {
+        var queue = CreateQueue(maxQueueFiles: 3);
+        Assert.False(queue.HadPendingItemsAtStartup);
+        Assert.False(queue.HadDataLossAtStartup);
+        queue.Enqueue(Untracked(FileSizeBytes));
+        queue.Enqueue(Untracked(SmallItemBytes));
+        queue.FlushEnqueues();
+        queue.Dispose();
+
+        queue = CreateQueue(maxQueueFiles: 3);
+        Assert.True(queue.HadPendingItemsAtStartup);
+        Assert.False(queue.HadDataLossAtStartup);
+        Assert.NotNull(queue.Dequeue());
+        Assert.NotNull(queue.Dequeue());
+        Assert.Null(queue.Dequeue());
+        queue.FlushDequeues();
+        queue.Dispose();
+
+        queue = CreateQueue(maxQueueFiles: 3);
+        Assert.False(queue.HadPendingItemsAtStartup);
+        Assert.False(queue.HadDataLossAtStartup);
+        Assert.Null(queue.Dequeue());
+    }
+
+    /// <summary>Reducing the limit on restart reports evicted backlog before any loss handler can subscribe.</summary>
+    [Fact]
+    public void HadDataLossAtStartup_RestartWithSmallerFileLimit_RemainsTrueAfterDrain()
+    {
+        var queue = CreateQueue(maxQueueFiles: 3);
+        for (var i = 0; i < 3; i++)
+        {
+            queue.Enqueue(Untracked(FileSizeBytes));
+        }
+
+        queue.FlushEnqueues();
+        Assert.False(queue.HadDataLossAtStartup);
+        queue.Dispose();
+
+        queue = CreateQueue(maxQueueFiles: 1);
+        Assert.True(queue.HadPendingItemsAtStartup);
+        Assert.True(queue.HadDataLossAtStartup);
+        Assert.NotNull(queue.Dequeue());
+        Assert.Null(queue.Dequeue());
+        queue.FlushDequeues();
+        Assert.True(queue.HadDataLossAtStartup);
+    }
+
+    /// <summary>Missing reader, intermediate, writer, or all files are detected even when repair hides the gap.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(-1)]
+    public void HadDataLossAtStartup_MissingBacklogFiles_ReturnsTrue(int missingFile)
+    {
+        var queue = CreateQueue(maxQueueFiles: 3);
+        for (var i = 0; i < 3; i++)
+        {
+            queue.Enqueue(Untracked(FileSizeBytes));
+        }
+
+        queue.FlushEnqueues();
+        queue.Dispose();
+        for (var i = 0; i < 3; i++)
+        {
+            if (missingFile == -1 || missingFile == i)
+            {
+                File.Delete(Path.Combine(_directory, $"_data{i}"));
+            }
+        }
+
+        queue = CreateQueue(maxQueueFiles: 3);
+        Assert.True(queue.HadPendingItemsAtStartup);
+        Assert.True(queue.HadDataLossAtStartup);
+    }
+
+    /// <summary>A truncated file is detected from persisted positions even though repair leaves the file numbers unchanged.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HadDataLossAtStartup_TruncatedFile_ReturnsTrue(bool drained)
+    {
+        var queue = CreateQueue();
+        queue.Enqueue(Untracked(SmallItemBytes));
+        queue.FlushEnqueues();
+        if (drained)
+        {
+            Assert.NotNull(queue.Dequeue());
+            queue.FlushDequeues();
+        }
+
+        queue.Dispose();
+        using (var stream = File.Open(Path.Combine(_directory, "_data0"), FileMode.Open, FileAccess.Write))
+        {
+            stream.SetLength(0);
+        }
+
+        queue = CreateQueue();
+        Assert.True(queue.HadDataLossAtStartup);
+    }
+
+    /// <summary>Later runtime eviction does not retroactively change the immutable startup snapshot.</summary>
+    [Fact]
+    public void HadDataLossAtStartup_RuntimeEviction_RemainsFalse()
+    {
+        var queue = CreateQueue(maxQueueFiles: 3);
+        queue.Enqueue(Untracked(FileSizeBytes));
+        queue.Enqueue(Untracked(FileSizeBytes));
+        queue.FlushEnqueues();
+        queue.UpdateMaxQueueFiles(1);
+        Assert.False(queue.HadDataLossAtStartup);
+    }
+
     /// <summary>
     /// Tracked items that are dequeued, including across a file change and after a peek, are never reported as lost.
     /// </summary>

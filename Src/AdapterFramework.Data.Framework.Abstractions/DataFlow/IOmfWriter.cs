@@ -38,6 +38,13 @@ public interface IOmfWriter : IDisposable
     Uri TargetUri => null;
 
     /// <summary>
+    /// Gets the inclusive process-time boundary covered by exact 202 acceptance of every preceding body.
+    /// Unsupported writers return <see cref="DateTime.MinValue"/> and cannot authorize peer trimming.
+    /// </summary>
+    /// <returns>The conservative acceptance watermark.</returns>
+    DateTime GetAcceptanceWatermark() => DateTime.MinValue;
+
+    /// <summary>
     /// Gets the number of values successfully sent since the last call to this method. 
     /// </summary>
     /// <returns>The number of values successfully sent.</returns>

@@ -31,6 +31,9 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
     {
     }
 
+    /// <summary>
+    /// Creates a V3 record, a V4 ID-only record, or a V5 record with ticks and a fixed GUID field.
+    /// </summary>
     protected override DataItem CreateDataItem(ISerializedOmfMessage message)
     {
         if (message == null)
@@ -38,7 +41,11 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
             return new DataItem(DataItemVersion.V2, Array.Empty<byte>());
         }
 
-        var dataBuffer = new byte[message.GetMessageSizeInBytes()];
+        var serializedMessageId = message.SerializedMessageId;
+        var hasTicks = message.ProcessTimeTicks != 0;
+        var idLength = hasTicks || serializedMessageId.HasValue ? SerializedOmfMessage.SerializedMessageIdSize : 0;
+        var extensionLength = idLength + (hasTicks ? sizeof(long) : 0);
+        var dataBuffer = new byte[SerializedOmfMessage.MessageTypeEnumSize + SerializedOmfMessage.ValueCountSize + message.MessageBody.Length + 3 + extensionLength];
         dataBuffer[0] = (byte)message.MessageType;
 
         BinaryPrimitives.WriteInt32LittleEndian(
@@ -49,23 +56,30 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
             SerializedOmfMessage.MessageTypeEnumSize + SerializedOmfMessage.ValueCountSize,
             message.MessageBody.Length);
 
-        // V4 appends the serialized message ID after the V3 trailer.
-        var serializedMessageId = message.SerializedMessageId;
-        var idLength = serializedMessageId.HasValue ? SerializedOmfMessage.SerializedMessageIdSize : 0;
+        // V4 is unchanged. V5 appends ticks and a fixed GUID (empty means no ID) after the V3 trailer.
+        dataBuffer[^(3 + extensionLength)] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^(2 + extensionLength)] = (byte)message.MessageAction;
+        dataBuffer[^(1 + extensionLength)] = (byte)message.OmfVersion;
 
-        dataBuffer[^(3 + idLength)] = (byte)(message.PartitionKey ?? 0);
-        dataBuffer[^(2 + idLength)] = (byte)message.MessageAction;
-        dataBuffer[^(1 + idLength)] = (byte)message.OmfVersion;
-
-        if (serializedMessageId is not { } id)
+        if (hasTicks)
         {
-            return new DataItem(DataItemVersion.V3, dataBuffer);
+            BinaryPrimitives.WriteInt64LittleEndian(dataBuffer.AsSpan(dataBuffer.Length - extensionLength), message.ProcessTimeTicks);
         }
 
-        id.TryWriteBytes(dataBuffer.AsSpan(dataBuffer.Length - idLength));
-        return new DataItem(DataItemVersion.V4, dataBuffer) { TrackingId = id };
+        if (idLength > 0)
+        {
+            (serializedMessageId ?? Guid.Empty).TryWriteBytes(dataBuffer.AsSpan(dataBuffer.Length - idLength));
+        }
+
+        return new DataItem(hasTicks ? DataItemVersion.V5 : serializedMessageId.HasValue ? DataItemVersion.V4 : DataItemVersion.V3, dataBuffer)
+        {
+            TrackingId = serializedMessageId,
+        };
     }
 
+    /// <summary>
+    /// Reads writer records without changing the legacy V1 through V4 layouts.
+    /// </summary>
     protected override ISerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         if (dataItem?.Data == null || dataItem.Data.Length < SerializedOmfMessage.MessageTypeEnumSize + SerializedOmfMessage.ValueCountSize)
@@ -84,23 +98,35 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         var messageAction = MessageAction.Default;
         var omfVersion = OmfVersion.Omf12;
         Guid? serializedMessageId = null;
+        var processTimeTicks = 0L;
 
         switch (dataItem.Version)
         {
+            case DataItemVersion.V5:
             case DataItemVersion.V4:
             case DataItemVersion.V3:
             {
-                var idLength = dataItem.Version == DataItemVersion.V4 ? SerializedOmfMessage.SerializedMessageIdSize : 0;
-                if (data.Length < bodyOffset + 3 + idLength)
+                var idLength = dataItem.Version is DataItemVersion.V4 or DataItemVersion.V5 ? SerializedOmfMessage.SerializedMessageIdSize : 0;
+                var extensionLength = idLength + (dataItem.Version == DataItemVersion.V5 ? sizeof(long) : 0);
+                if (data.Length < bodyOffset + 3 + extensionLength)
                     return new SerializedOmfMessage(messageType, Array.Empty<byte>(), messageAction);
 
-                bodyLength = data.Length - bodyOffset - 3 - idLength;
-                partitionKey = data[^(3 + idLength)] == 0 ? null : (PartitionKey)data[^(3 + idLength)];  // 0 indicates No PartitionKey.
-                messageAction = (MessageAction)data[^(2 + idLength)];
-                omfVersion = (OmfVersion)data[^(1 + idLength)];
+                bodyLength = data.Length - bodyOffset - 3 - extensionLength;
+                partitionKey = data[^(3 + extensionLength)] == 0 ? null : (PartitionKey)data[^(3 + extensionLength)];  // 0 indicates No PartitionKey.
+                messageAction = (MessageAction)data[^(2 + extensionLength)];
+                omfVersion = (OmfVersion)data[^(1 + extensionLength)];
                 if (idLength > 0)
                 {
                     serializedMessageId = new Guid(data.AsSpan(data.Length - idLength));
+                }
+
+                if (dataItem.Version == DataItemVersion.V5)
+                {
+                    processTimeTicks = BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(data.Length - extensionLength));
+                    if (serializedMessageId == Guid.Empty)
+                    {
+                        serializedMessageId = null;
+                    }
                 }
 
                 break;
@@ -125,8 +151,8 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         var messageBody = new byte[bodyLength];
         Buffer.BlockCopy(data, bodyOffset, messageBody, 0, bodyLength);
 
-        return dataItem.Version is DataItemVersion.V3 or DataItemVersion.V4
-            ? new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey) { SerializedMessageId = serializedMessageId }
+        return dataItem.Version is DataItemVersion.V3 or DataItemVersion.V4 or DataItemVersion.V5
+            ? new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey) { SerializedMessageId = serializedMessageId, ProcessTimeTicks = processTimeTicks }
             : new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount);
     }
 }

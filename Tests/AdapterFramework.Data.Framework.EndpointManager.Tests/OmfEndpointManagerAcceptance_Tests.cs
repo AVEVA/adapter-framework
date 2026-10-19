@@ -176,6 +176,135 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
         }
     }
 
+    /// <summary>The aggregate is the minimum of every writer, including unsupported writers returning the minimum.</summary>
+    [Fact]
+    public void GetAcceptanceWatermark_AllWriters_UsesMinimum()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        _writers["A"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(200));
+        _writers["B"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(100));
+        Assert.Equal(100, manager.GetAcceptanceWatermark().Ticks);
+        _writers["B"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(DateTime.MinValue);
+        Assert.Equal(DateTime.MinValue, manager.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Health managers cannot authorize data trimming even when their writers expose coverage.</summary>
+    [Fact]
+    public void GetAcceptanceWatermark_HealthManager_ReturnsMinimum()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.HealthEndpointsFacetName);
+        foreach (var writer in _writers.Values)
+        {
+            writer.Setup(w => w.GetAcceptanceWatermark()).Returns(new DateTime(200));
+        }
+
+        Assert.Equal(DateTime.MinValue, manager.GetAcceptanceWatermark());
+    }
+
+    /// <summary>Removing a lagging endpoint must never let the remaining fast endpoint cover its lost bodies.</summary>
+    [Fact]
+    public void GetAcceptanceWatermark_RemovedEndpoint_FreezesAggregate()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        _writers["A"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(200));
+        _writers["B"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(99));
+        manager.AddRemoveEndpoints(new ConfigurationChangedEventArgs(_endpoints, new[] { Endpoint("A") }), OmfWriterType.Data);
+        Assert.Equal(99, manager.GetAcceptanceWatermark().Ticks);
+        _writers["A"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(300));
+        Assert.Equal(99, manager.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Resetting buffers and replacing writers preserves the pre-reset aggregate cap.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_ResetAndReplaceWriters_PreservesCap()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        foreach (var writer in _writers.Values)
+        {
+            writer.Setup(w => w.GetAcceptanceWatermark()).Returns(new DateTime(99));
+        }
+
+        await manager.ResetDataBuffersAsync();
+        foreach (var writer in _writers.Values)
+        {
+            writer.Setup(w => w.GetAcceptanceWatermark()).Returns(new DateTime(300));
+        }
+
+        Assert.Equal(99, manager.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>Unscoped dispatch failure freezes at the snapshot before any writer can advance.</summary>
+    [Fact]
+    public void GetAcceptanceWatermark_UnscopedEnqueueFailure_FreezesBeforeDispatch()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var ticks = 100L;
+        foreach (var writer in _writers.Values)
+        {
+            writer.Setup(w => w.GetAcceptanceWatermark()).Returns(() => new DateTime(ticks));
+        }
+
+        _writers["A"].Setup(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback(() => ticks = 200);
+        _writers["B"].Setup(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>())).Throws(new InvalidOperationException("Queue closed."));
+        manager.SendMessage(new SerializedOmfMessage(MessageType.Instance, new byte[] { 1 }, MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = 200 });
+        Assert.Equal(100, manager.GetAcceptanceWatermark().Ticks);
+    }
+
+    /// <summary>A dispatch with no endpoints permanently blocks later endpoints from claiming the missing body.</summary>
+    [Fact]
+    public void GetAcceptanceWatermark_NoWritersThenAdd_RemainsBlockedAfterLostDispatch()
+    {
+        _endpoints = Array.Empty<EndpointConfigurationBase>();
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        Assert.Equal(DateTime.MinValue, manager.GetAcceptanceWatermark());
+        manager.SendMessage(new SerializedOmfMessage(MessageType.Instance, new byte[] { 1 }, MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = 100 });
+        manager.AddRemoveEndpoints(new ConfigurationChangedEventArgs(_endpoints, new[] { Endpoint("A") }), OmfWriterType.Data);
+        _writers["A"].Setup(writer => writer.GetAcceptanceWatermark()).Returns(new DateTime(200));
+        Assert.Equal(DateTime.MinValue, manager.GetAcceptanceWatermark());
+    }
+
+    /// <summary>A watermark query cannot observe the middle of a dispatch to a multi-writer snapshot.</summary>
+    [Fact]
+    public async Task GetAcceptanceWatermark_ConcurrentDispatch_QueriesAfterAllEnqueues()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ticks = 100L;
+        foreach (var writer in _writers.Values)
+        {
+            writer.Setup(w => w.GetAcceptanceWatermark()).Returns(() => new DateTime(ticks));
+        }
+
+        _writers["A"].Setup(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback(() =>
+        {
+            entered.SetResult();
+            release.Task.GetAwaiter().GetResult();
+        });
+        _writers["B"].Setup(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback(() => ticks = 200);
+        var send = Task.Run(() => manager.SendMessage(new SerializedOmfMessage(MessageType.Instance, new byte[] { 1 }, MessageAction.Create, 1, OmfVersion.Omf20) { ProcessTimeTicks = 200 }));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var query = Task.Run(() =>
+        {
+            queryStarted.SetResult();
+            return manager.GetAcceptanceWatermark();
+        });
+        try
+        {
+            await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(100);
+            Assert.False(query.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await send.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(200, (await query.WaitAsync(TimeSpan.FromSeconds(10))).Ticks);
+    }
+
     /// <summary>
     /// Disposes the coordinator.
     /// </summary>

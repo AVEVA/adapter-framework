@@ -37,8 +37,6 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     }
 
     /// <inheritdoc/>
-    public long ProcessTimeTicks { get; set; }
-
     public override int GetMessageSizeInBytes() =>
-        base.GetMessageSizeInBytes() + BufferingConstants.ProcessTimeTicksLength;
+        base.GetMessageSizeInBytes() + (ProcessTimeTicks == 0 ? BufferingConstants.ProcessTimeTicksLength : 0);
 }

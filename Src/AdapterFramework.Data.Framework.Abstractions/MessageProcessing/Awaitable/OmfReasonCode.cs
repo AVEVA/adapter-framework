@@ -111,4 +111,9 @@ public enum OmfReasonCode
     /// The failover buffer was deleted on a mode change or configuration removal.
     /// </summary>
     BufferDeleted = 17,
+
+    /// <summary>
+    /// Hot failover uses legacy hand-off trimming, so acceptance of the buffered body cannot be established.
+    /// </summary>
+    AcceptanceTrackingDisabled = 18,
 }

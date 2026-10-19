@@ -19,6 +19,9 @@ namespace AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 
 internal interface IFileManager
 {
+    /// <summary>Gets whether the most recent directory repair may have lost unread data.</summary>
+    bool HadDataLossDuringRepair => false;
+
     Stream CreateWriterStream(int dataFileNumber);
     Stream CreateReaderStream(int dataFileNumber);
     Stream CreateStateStream();

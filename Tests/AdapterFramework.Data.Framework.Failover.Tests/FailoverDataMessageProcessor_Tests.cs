@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -26,9 +27,14 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
+using AdapterFramework.Data.Framework.Buffering;
+using AdapterFramework.Data.Framework.Failover.Configuration;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
+using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
+using AdapterFramework.Data.Framework.PersistentQueue.Queue;
+using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests;
@@ -184,6 +190,7 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
 
+    /// <summary>Verifies legacy hot mode rejects new scopes until acceptance tracking is explicitly enabled in the same mode.</summary>
     [Fact]
     public async Task FailoverDataMessageProcessor_UpdateMode_SetsCoordinatorFailoverMode()
     {
@@ -197,11 +204,20 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.Initialize();
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        Assert.Equal(FailoverMode.Hot, coordinator.CurrentFailoverMode);
+        Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot, true);
+        Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var hotScope));
+        await using var hotScopeLifetime = hotScope;
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Warm);
+        Assert.Equal(FailoverMode.Warm, coordinator.CurrentFailoverMode);
         Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
-        await scope.DisposeAsync();
+        await using var warmScopeLifetime = scope;
     }
 
     [Fact]
@@ -311,6 +327,7 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(FailoverRole.Secondary, failoverDataMessageProcessor.CurrentFailoverRole);
         Assert.Equal(cachedLastDataProcessedTime, failoverDataMessageProcessor.LastDataProcessedTime);
         Assert.Single(_sentMessages);
+        mockOmfDataEndpointManager.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
@@ -474,6 +491,99 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.True(returnedLastDataProcessedTime > utcTimeNow);
     }
 
+    /// <summary>Verifies new and older JSON configurations retain legacy trimming unless the property explicitly opts in.</summary>
+    [Theory]
+    [InlineData("{}", false)]
+    [InlineData("{\"EnableAcceptanceTrimWatermark\":false}", false)]
+    [InlineData("{\"EnableAcceptanceTrimWatermark\":true}", true)]
+    public void ClientFailoverConfiguration_AcceptanceOptIn_DefaultsFalseWhenMissing(string json, bool expected)
+    {
+        Assert.False(new ClientFailoverConfiguration().EnableAcceptanceTrimWatermark);
+
+        var configuration = JsonSerializer.Deserialize<ClientFailoverConfiguration>(json);
+
+        Assert.NotNull(configuration);
+        Assert.Equal(expected, configuration.EnableAcceptanceTrimWatermark);
+    }
+
+    /// <summary>Verifies legacy hot progress is exactly the last buffered handoff timestamp, does not grow while idle, and emits V3-compatible writer bodies.</summary>
+    [Fact]
+    public async Task LastDataProcessedTime_LegacyHot_IsExactLastHandoffWithoutAcceptanceQueryOrIdleExtension()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(LastDataProcessedTime_LegacyHot_IsExactLastHandoffWithoutAcceptanceQueryOrIdleExtension)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        var body = new SerializedOmfMessage(MessageType.Instance, new byte[] { 1, 2 }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5)
+        {
+            ProcessTimeTicks = 1,
+        };
+        processor.ProcessOmfMessage(body);
+        processor.ProcessOmfMessage(body);
+        var lastProcessTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
+        Assert.True(lastProcessTicks > 1);
+        Assert.Equal(DateTime.MinValue, processor.LastDataProcessedTime);
+
+        processor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 2, TimeSpan.FromSeconds(10)));
+        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        await Task.Delay(20);
+        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        processor.UpdateState(FailoverRole.Secondary, default);
+        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        Assert.Equal(DateTimeKind.Utc, processor.LastDataProcessedTime.Kind);
+        endpoint.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
+
+        var persistence = new Mock<IPersistentQueue>();
+        using var writerQueue = new PersistentOmfMessageQueue("legacy-writer", persistence.Object, new Mock<ILogger>().Object);
+        Assert.All(_sentMessages, sent =>
+        {
+            Assert.IsType<SerializedOmfMessage>(sent);
+            Assert.Equal(0, sent.ProcessTimeTicks);
+            Assert.Null(sent.SerializedMessageId);
+            Assert.Equal(body.MessageBody, sent.MessageBody);
+            Assert.Equal(body.MessageType, sent.MessageType);
+            Assert.Equal(body.MessageAction, sent.MessageAction);
+            Assert.Equal(body.ItemCount, sent.ItemCount);
+            Assert.Equal(body.OmfVersion, sent.OmfVersion);
+            Assert.Equal(body.PartitionKey, sent.PartitionKey);
+            writerQueue.Enqueue(sent);
+        });
+        persistence.Verify(queue => queue.Enqueue(It.Is<DataItem>(item => item.Version == DataItemVersion.V3 && item.TrackingId == null)), Times.Exactly(2));
+        persistence.Verify(queue => queue.Enqueue(It.IsAny<DataItem>()), Times.Exactly(2));
+    }
+
+    /// <summary>Verifies legacy failover buffering still stamps local process ticks and trims only the covered body before promotion.</summary>
+    [Fact]
+    public void ProcessOmfMessage_LegacyHot_RetainsTrimTicksButDoesNotForwardThemToWriter()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(ProcessOmfMessage_LegacyHot_RetainsTrimTicksButDoesNotForwardThemToWriter)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
+        var firstTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 2 }, MessageAction.Default));
+        var secondTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
+        Assert.True(secondTicks > firstTicks);
+
+        processor.UpdateState(FailoverRole.Secondary, new DateTime(firstTicks, DateTimeKind.Utc));
+        processor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        processor.UpdateState(FailoverRole.Secondary, default);
+
+        var sent = Assert.Single(_sentMessages);
+        Assert.Equal(new byte[] { 2 }, sent.MessageBody);
+        Assert.Equal(0, sent.ProcessTimeTicks);
+        Assert.Null(sent.SerializedMessageId);
+        Assert.Equal(new DateTime(secondTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        endpoint.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
+    }
+
     public void Dispose()
     {
         Dispose(true);
@@ -513,6 +623,7 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
     private Mock<IOmfDataEndpointManager> GetMockOmfDataEndpointManager()
     {
         var mockOmfDataEndpointManager = new Mock<IOmfDataEndpointManager>();
+        // Legacy handoff progress must not query endpoint acceptance, even when it is unknown.
         mockOmfDataEndpointManager.Setup(x => x.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback((ISerializedOmfMessage message) =>
         {
             _sentMessages.Add(message);
