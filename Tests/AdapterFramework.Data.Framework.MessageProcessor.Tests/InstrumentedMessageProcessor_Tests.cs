@@ -112,6 +112,73 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
+    public void InstrumentedMessageProcessor_KeyedSchemaWrites_InvalidKey_DoesNotMutateForwardOrCache_Test()
+    {
+        var innerProcessor = new Mock<IMessageProcessor>(MockBehavior.Strict);
+        var processor = new InstrumentedMessageProcessor(innerProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+        var dataType = new DynamicDataType { Id = InvalidTypeId };
+        var dataStream = new DataStream { Id = InvalidTypeId, TypeId = InvalidTypeId };
+        var link = new Link(new DataTypeLinkNode("source", null), new DataTypeLinkNode("target", null));
+        var invalidKey = (PartitionKey)99;
+        Action[] writes =
+        [
+            () => processor.WriteType(dataType, invalidKey, MessageAction.Create),
+            () => processor.WriteTypes([dataType], invalidKey, MessageAction.Create),
+            () => processor.WriteStream(dataStream, invalidKey, MessageAction.Create),
+            () => processor.WriteStreams([dataStream], invalidKey, MessageAction.Create),
+            () => processor.WriteSchemaRelationship(link, invalidKey, MessageAction.Create),
+        ];
+
+        foreach (var write in writes)
+        {
+            var exception = Assert.Throws<ArgumentOutOfRangeException>(write);
+            Assert.Equal("partitionKey", exception.ParamName);
+        }
+
+        Assert.Equal(InvalidTypeId, dataType.Id);
+        Assert.Equal(InvalidTypeId, dataStream.Id);
+        Assert.Equal(InvalidTypeId, dataStream.TypeId);
+        Assert.Null(dataStream.Metadata);
+        Assert.Equal(0, processor.GetTypeCount());
+        Assert.Equal(0, processor.GetStreamCount());
+        processor.ResendTypesAndStreams();
+        innerProcessor.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_KeyedSchemaWrites_RejectedByInnerProcessor_DoesNotCache_Test()
+    {
+        var innerProcessor = new Mock<IMessageProcessor>(MockBehavior.Strict);
+        innerProcessor.Setup(x => x.WriteType(It.IsAny<DataType>(), PartitionKey.Key1, MessageAction.Create))
+            .Throws<NotSupportedException>();
+        innerProcessor.Setup(x => x.WriteTypes(It.IsAny<DataType[]>(), PartitionKey.Key1, MessageAction.Create))
+            .Throws<NotSupportedException>();
+        innerProcessor.Setup(x => x.WriteStream(It.IsAny<DataStream>(), PartitionKey.Key1, MessageAction.Create))
+            .Throws<NotSupportedException>();
+        innerProcessor.Setup(x => x.WriteStreams(It.IsAny<DataStream[]>(), PartitionKey.Key1, MessageAction.Create))
+            .Throws<NotSupportedException>();
+        innerProcessor.Setup(x => x.WriteSchemaRelationship(It.IsAny<Link>(), PartitionKey.Key1, MessageAction.Create))
+            .Throws<NotSupportedException>();
+        var processor = new InstrumentedMessageProcessor(innerProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+        var dataType = new DynamicDataType { Id = TestTypeIdBase };
+        var dataStream = new DataStream { Id = TestStreamIdBase };
+        var link = new Link(new DataTypeLinkNode("source", null), new DataTypeLinkNode("target", null));
+
+        Assert.Throws<NotSupportedException>(() => processor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => processor.WriteTypes([dataType], PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => processor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => processor.WriteStreams([dataStream], PartitionKey.Key1, MessageAction.Create));
+        Assert.Throws<NotSupportedException>(() => processor.WriteSchemaRelationship(link, PartitionKey.Key1, MessageAction.Create));
+
+        innerProcessor.VerifyAll();
+        innerProcessor.Invocations.Clear();
+        Assert.Equal(0, processor.GetTypeCount());
+        Assert.Equal(0, processor.GetStreamCount());
+        processor.ResendTypesAndStreams();
+        innerProcessor.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public void InstrumentedMessageProcessor_WriteType_RefType_InvalidCharacters_Test()
     {
         ICollection<PropertyDefinition> receivedTypeProperties = null;

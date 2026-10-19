@@ -94,19 +94,24 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
 
-        PrepareAndCacheDataType(dataType, messageAction, null);
+        PrepareDataType(dataType);
 
         _messageProcessor.WriteType(dataType, messageAction);
+
+        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
     }
 
     /// <inheritdoc/>
     public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
-        PrepareAndCacheDataType(dataType, messageAction, partitionKey);
+        PrepareDataType(dataType);
 
         _messageProcessor.WriteType(dataType, partitionKey, messageAction);
+
+        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
@@ -116,23 +121,34 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
         foreach (var dataType in dataTypes)
         {
-            PrepareAndCacheDataType(dataType, messageAction, null);
+            PrepareDataType(dataType);
         }
 
         _messageProcessor.WriteTypes(dataTypes, messageAction);
+
+        foreach (var dataType in dataTypes)
+        {
+            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
+        }
     }
 
     /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         foreach (var dataType in dataTypes)
         {
-            PrepareAndCacheDataType(dataType, messageAction, partitionKey);
+            PrepareDataType(dataType);
         }
 
         _messageProcessor.WriteTypes(dataTypes, partitionKey, messageAction);
+
+        foreach (var dataType in dataTypes)
+        {
+            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
+        }
     }
 
     /// <inheritdoc/>
@@ -140,19 +156,24 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
-        PrepareAndCacheDataStream(dataStream, messageAction, null);
+        PrepareDataStream(dataStream);
 
         _messageProcessor.WriteStream(dataStream, messageAction);
+
+        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
     }
 
     /// <inheritdoc/>
     public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
-        PrepareAndCacheDataStream(dataStream, messageAction, partitionKey);
+        PrepareDataStream(dataStream);
 
         _messageProcessor.WriteStream(dataStream, partitionKey, messageAction);
+
+        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
@@ -164,25 +185,36 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         {
             ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
-            PrepareAndCacheDataStream(dataStream, messageAction, null);
+            PrepareDataStream(dataStream);
         }
 
         _messageProcessor.WriteStreams(dataStreams, messageAction);
+
+        foreach (var dataStream in dataStreams)
+        {
+            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
+        }
     }
 
     /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         foreach (var dataStream in dataStreams)
         {
             ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
-            PrepareAndCacheDataStream(dataStream, messageAction, partitionKey);
+            PrepareDataStream(dataStream);
         }
 
         _messageProcessor.WriteStreams(dataStreams, partitionKey, messageAction);
+
+        foreach (var dataStream in dataStreams)
+        {
+            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
+        }
     }
 
     /// <inheritdoc/>
@@ -260,19 +292,20 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
 
-        PrepareAndCacheRelationship(link, messageAction, null);
-
         _messageProcessor.WriteSchemaRelationship(link, messageAction);
+
+        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(null));
     }
 
     /// <inheritdoc/>
     public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
-
-        PrepareAndCacheRelationship(link, messageAction, partitionKey);
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         _messageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
+
+        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(partitionKey));
     }
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
@@ -409,16 +442,14 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         }
     }
 
-    private void PrepareAndCacheDataType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey)
+    private static void PrepareDataType(DataType dataType)
     {
         dataType.Id = dataType.Id.ToOmfIdentifier();
 
         EncodeUnsupportedCharactersInReferences(dataType);
-
-        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
     }
 
-    private void PrepareAndCacheDataStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey)
+    private void PrepareDataStream(DataStream dataStream)
     {
         // Callers rewrite the same object once per partition key; prefixing it again would change its ID.
         if (!_preparedStreamIds.TryGetValue(dataStream, out var preparedId) || !string.Equals(preparedId, dataStream.Id, StringComparison.Ordinal))
@@ -433,13 +464,11 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
         dataStream.DataSource = GetDataSource(dataStream.DataSource, dataStream.Id);
         ExcludeStreamProperties(dataStream);
-        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
     }
 
-    private void PrepareAndCacheRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey)
+    private void CacheRelationshipUpdateInstrumentation(Link link, MessageAction messageAction, PartitionTargets targets)
     {
         var key = GetRelationshipKey(link);
-        var targets = PartitionTargets.From(partitionKey);
 
         _relationships.AddOrUpdate(key,
             _ => (link, messageAction, targets, Interlocked.Increment(ref _cacheOrderSequence)),
