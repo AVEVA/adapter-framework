@@ -222,11 +222,12 @@ public class OmfWriter_Tests : IDisposable
     public void OmfWriter_SendMessage_RoutesMessageToExpectedQueue(MessageType messageType, bool expectMetadataQueue)
     {
         var bufferPath = Path.Combine(Path.GetTempPath(), "OmfWriterRoutingTests", Guid.NewGuid().ToString());
+        OmfWriter omfWriter = null;
 
         try
         {
             // Nothing listens on this endpoint, so sends fail and the message stays buffered.
-            var omfWriter = new OmfWriter(
+            omfWriter = new OmfWriter(
                 new EndpointConfigurationBase
                 {
                     Id = EndpointId,
@@ -262,6 +263,7 @@ public class OmfWriter_Tests : IDisposable
         }
         finally
         {
+            omfWriter?.Dispose();
             TestUtilities.CleanupDirectories(bufferPath);
         }
 

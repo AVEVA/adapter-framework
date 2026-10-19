@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -479,7 +479,7 @@ public class OmfWriter : IOmfWriter
                 PrintNoRepeatErrorMessage(response.ResponseStatus, serializedMessage, response.Message);
                 break;
             case ResponseStatusEnum.NotFound:
-                if (_messageType == MessageType.Container || _messageType == MessageType.Type)
+                if (IsMetadataMessage(_messageType))
                 {
                     PrintNoRepeatErrorMessage(response.ResponseStatus, serializedMessage, response.Message);
                     break;
