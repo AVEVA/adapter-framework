@@ -904,7 +904,8 @@ public abstract class AdapterMainBase<TDataSource, TSelection> : IEdgeAdapter
             ComponentId,
             ComponentType,
             _healthService.GetHealthLinkNode(),
-            _instrumentedMessageProcessor);
+            _instrumentedMessageProcessor,
+            _applicationManifest.OmfVersion);
 
         _adapterCommonService = new AdapterCommonService(
             _logger,
