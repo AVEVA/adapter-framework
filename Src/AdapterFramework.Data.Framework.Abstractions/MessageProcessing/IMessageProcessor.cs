@@ -36,6 +36,30 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 /// writes. Changing the key starts a new schema batch, so group writes by key.
 /// </para>
 /// <para>
+/// Do not pass the same schema object instance to concurrent write-method invocations: a second
+/// call must not enter while another call using that instance has not returned. This includes calls
+/// from different threads, with different partition keys, or through single-item and batch overloads.
+/// A sequential per-key loop that waits for each write method to return before calling the next
+/// does not violate this invocation restriction; pending pipeline work is not an active write call.
+/// This restriction concerns object reference identity, not equal schema IDs or values. Preparation
+/// modifies supplied objects, for example by prefixing stream IDs and merging metadata; concurrent
+/// calls sharing mutable state can double-prefix an ID or modify a dictionary concurrently.
+/// Shallow copies can still share mutable nested state. Independent deep copies of mutable state
+/// avoid this shared-state preparation race, but do not guarantee pipeline ordering or end-to-end
+/// thread safety. With the instrumentation cache, copies sharing a schema ID update one resend-cache
+/// entry; callers must not rely on a defined winner between concurrent writes with different
+/// contents or actions.
+/// </para>
+/// <para>
+/// Separately, completion of a write-method invocation does not mean queued processing is complete.
+/// Calling write methods one at a time does not wait for queued objects to be converted to JSON.
+/// A write can return while the pipeline still needs to read the supplied object. The pipeline
+/// queues object references rather than immutable snapshots, and the instrumentation cache can
+/// retain them for resend. After submission, callers must not modify schema objects, their nested
+/// collections, or submitted batch arrays. Use fresh objects and arrays for later changes.
+/// Sequential per-key reuse is not an end-to-end thread-safety guarantee.
+/// </para>
+/// <para>
 /// Keyed schema overloads don't keep independent resend state per key. Callers must not rely on a
 /// key-specific delete remaining limited to that key after a schema resend.
 /// </para>

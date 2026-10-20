@@ -1311,8 +1311,12 @@ public class InstrumentedMessageProcessor_Tests
         Assert.Equal(2, instrumentedMessageProcessor.GetStreamCount());
     }
 
+    /// <summary>
+    /// Verifies streams without caller metadata share adapter metadata and retain that shared
+    /// dictionary when the same stream is written again for another partition key.
+    /// </summary>
     [Fact]
-    public void InstrumentedMessageProcessor_WriteStream_WithoutMetadata_DoesNotShareMetadataAcrossStreams_Test()
+    public void InstrumentedMessageProcessor_WriteStream_WithoutMetadata_SharesMetadataAcrossStreams_Test()
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
         var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType)
@@ -1328,10 +1332,46 @@ public class InstrumentedMessageProcessor_Tests
         var firstStreamMetadata = firstStream.Metadata;
         instrumentedMessageProcessor.WriteStream(firstStream, PartitionKey.Key2, MessageAction.Create);
 
-        Assert.NotSame(firstStream.Metadata, secondStream.Metadata);
+        Assert.Same(firstStream.Metadata, secondStream.Metadata);
         Assert.Same(firstStreamMetadata, firstStream.Metadata);
+        Assert.Single(firstStream.Metadata);
         Assert.Equal(TestComponentType, firstStream.Metadata[EdgeSystemConstants.AdapterTypeString]);
         Assert.Equal(TestComponentType, secondStream.Metadata[EdgeSystemConstants.AdapterTypeString]);
+    }
+
+    /// <summary>
+    /// Verifies caller-provided metadata stays separate from the shared adapter dictionary,
+    /// preserves custom entries, and receives the adapter type on each per-key write.
+    /// </summary>
+    [Fact]
+    public void WriteStream_WhenCallerProvidesMetadata_MergesWithoutChangingSharedMetadata()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var processor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType)
+        {
+            StreamMetadataLevel = MetadataInfo.Low,
+        };
+        var sharedStream = new DataStream { Id = TestStreamIdBase + "1" };
+        var metadata = new Dictionary<string, object>
+        {
+            ["Custom"] = "Value",
+            [EdgeSystemConstants.AdapterTypeString] = "CallerType",
+        };
+        var customStream = new DataStream { Id = TestStreamIdBase + "2", Metadata = metadata };
+
+        processor.WriteStream(sharedStream, PartitionKey.Key1, MessageAction.Create);
+        processor.WriteStream(customStream, PartitionKey.Key1, MessageAction.Create);
+        Assert.Equal(TestComponentType, metadata[EdgeSystemConstants.AdapterTypeString]);
+
+        metadata[EdgeSystemConstants.AdapterTypeString] = "ChangedCallerType";
+        processor.WriteStream(customStream, PartitionKey.Key2, MessageAction.Create);
+
+        Assert.Same(metadata, customStream.Metadata);
+        Assert.NotSame(sharedStream.Metadata, customStream.Metadata);
+        Assert.Equal("Value", metadata["Custom"]);
+        Assert.Equal(TestComponentType, metadata[EdgeSystemConstants.AdapterTypeString]);
+        Assert.Single(sharedStream.Metadata);
+        Assert.Equal(TestComponentType, sharedStream.Metadata[EdgeSystemConstants.AdapterTypeString]);
     }
 
     [Fact]

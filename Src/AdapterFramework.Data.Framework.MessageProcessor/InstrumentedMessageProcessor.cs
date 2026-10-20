@@ -452,6 +452,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private void PrepareDataStream(DataStream dataStream)
     {
         // Callers rewrite the same object once per partition key; prefixing it again would change its ID.
+        // Weak-table operations do not make preparation atomic; concurrent writes of the same object are unsupported.
         if (!_preparedStreamIds.TryGetValue(dataStream, out var preparedId) || !string.Equals(preparedId, dataStream.Id, StringComparison.Ordinal))
         {
             dataStream.Id = dataStream.Id.ToPrefixedOmfIdentifier(_streamIdPrefix);
@@ -521,9 +522,9 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         {
             if (dataStream.Metadata == null)
             {
-                dataStream.Metadata = new Dictionary<string, object>(_metaDataDictionary);
+                dataStream.Metadata = _metaDataDictionary;
             }
-            else
+            else if (!ReferenceEquals(dataStream.Metadata, _metaDataDictionary))
             {
                 foreach (var (key, value) in _metaDataDictionary)
                 {
