@@ -306,6 +306,98 @@ public class AdapterMessageProcessor_Tests
     }
 
     [Fact]
+    public void AdapterMessageProcessor_WriteSchemaWithPartitionKey_Omf20_ForwardsPartitionKey()
+    {
+        var dataType = new DynamicDataType { Id = "Type" };
+        var dataStream = new DataStream { Id = "Stream" };
+        var link = new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null));
+
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var messageProcessor = new AdapterMessageProcessor(mockOmfMessageProcessor.Object, OmfVersion.Omf20);
+
+        messageProcessor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create);
+        messageProcessor.WriteTypes([dataType], PartitionKey.Key2, MessageAction.Create);
+        messageProcessor.WriteStream(dataStream, PartitionKey.Key3, MessageAction.Create);
+        messageProcessor.WriteStreams([dataStream], PartitionKey.Key4, MessageAction.Create);
+        messageProcessor.WriteTypeRelationship(link, PartitionKey.Key5, MessageAction.Create);
+
+        mockOmfMessageProcessor.Verify(mp => mp.WriteType(dataType, PartitionKey.Key1, MessageAction.Create), Times.Once);
+        mockOmfMessageProcessor.Verify(mp => mp.WriteTypes(It.IsAny<DataType[]>(), PartitionKey.Key2, MessageAction.Create), Times.Once);
+        mockOmfMessageProcessor.Verify(mp => mp.WriteStream(dataStream, PartitionKey.Key3, MessageAction.Create), Times.Once);
+        mockOmfMessageProcessor.Verify(mp => mp.WriteStreams(It.IsAny<DataStream[]>(), PartitionKey.Key4, MessageAction.Create), Times.Once);
+        mockOmfMessageProcessor.Verify(mp => mp.WriteSchemaRelationship(link, PartitionKey.Key5, MessageAction.Create), Times.Once);
+    }
+
+    /// <summary>
+    /// Verifies that every keyed schema write rejects protocols other than OMF 2.0 with the shared validation message
+    /// before forwarding anything to the inner processor.
+    /// </summary>
+    /// <param name="omfVersion">The unsupported protocol version.</param>
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    [InlineData((OmfVersion)99)]
+    public void AdapterMessageProcessor_WriteSchemaWithPartitionKey_UnsupportedVersion_Throws(OmfVersion omfVersion)
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var messageProcessor = new AdapterMessageProcessor(mockOmfMessageProcessor.Object, omfVersion);
+
+        Action[] writes =
+        [
+            () => messageProcessor.WriteType(new DynamicDataType { Id = "Type" }, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypes([new DynamicDataType { Id = "Type" }], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStream(new DataStream { Id = "Stream" }, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStreams([new DataStream { Id = "Stream" }], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypeRelationship(new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null)), PartitionKey.Key1, MessageAction.Create),
+        ];
+
+        foreach (var write in writes)
+        {
+            var exception = Assert.Throws<NotSupportedException>(write);
+            Assert.Equal("Schema partition keys are only supported in OMF 2.0.", exception.Message);
+        }
+
+        mockOmfMessageProcessor.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public void AdapterMessageProcessor_WriteSchemaWithPartitionKey_UndefinedKey_Throws()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var messageProcessor = new AdapterMessageProcessor(mockOmfMessageProcessor.Object, OmfVersion.Omf20);
+        var undefinedKey = (PartitionKey)0;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => messageProcessor.WriteType(new DynamicDataType { Id = "Type" }, undefinedKey, MessageAction.Create));
+        Assert.Throws<ArgumentOutOfRangeException>(() => messageProcessor.WriteTypes([new DynamicDataType { Id = "Type" }], undefinedKey, MessageAction.Create));
+        Assert.Throws<ArgumentOutOfRangeException>(() => messageProcessor.WriteStream(new DataStream { Id = "Stream" }, undefinedKey, MessageAction.Create));
+        Assert.Throws<ArgumentOutOfRangeException>(() => messageProcessor.WriteStreams([new DataStream { Id = "Stream" }], undefinedKey, MessageAction.Create));
+        Assert.Throws<ArgumentOutOfRangeException>(() => messageProcessor.WriteTypeRelationship(new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null)), undefinedKey, MessageAction.Create));
+        Assert.Empty(mockOmfMessageProcessor.Invocations);
+    }
+
+    [Fact]
+    public void PartitionKeyOverloads_DefaultInterfaceImplementation_ThrowsNotSupported()
+    {
+        var messageProcessor = new Mock<IMessageProcessor> { CallBase = true }.Object;
+        var adapterMessageProcessor = new Mock<IAdapterMessageProcessor> { CallBase = true }.Object;
+        var dataType = new DynamicDataType { Id = "Type" };
+        var dataStream = new DataStream { Id = "Stream" };
+        var link = new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null));
+
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteType(dataType, PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteTypes([dataType], PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStream(dataStream, PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStreams([dataStream], PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteSchemaRelationship(link, PartitionKey.Key1));
+
+        Assert.Throws<NotSupportedException>(() => adapterMessageProcessor.WriteType(dataType, PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => adapterMessageProcessor.WriteTypes([dataType], PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => adapterMessageProcessor.WriteStream(dataStream, PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => adapterMessageProcessor.WriteStreams([dataStream], PartitionKey.Key1));
+        Assert.Throws<NotSupportedException>(() => adapterMessageProcessor.WriteTypeRelationship(link, PartitionKey.Key1));
+    }
+
+    [Fact]
     public void AdapterMessageProcessor_WriteStaticValues()
     {
         var valuesSent = false;

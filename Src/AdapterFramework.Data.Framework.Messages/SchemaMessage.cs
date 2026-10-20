@@ -53,6 +53,60 @@ public class SchemaMessage : Message, IDisposable
         int relationshipCount,
         MessageAction messageAction,
         bool rentedFromPool = false)
+        : this(types, containers, relationships, typeCount, containerCount, relationshipCount, messageAction, rentedFromPool, null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a schema message with a partition key and arrays that are not rented from a pool.
+    /// </summary>
+    /// <param name="types">An array of OMF Type definitions.</param>
+    /// <param name="containers">An array of OMF Container definitions.</param>
+    /// <param name="relationships">An array of OMF Relationship (Link) definitions.</param>
+    /// <param name="typeCount">The number of valid elements in <paramref name="types"/>.</param>
+    /// <param name="containerCount">The number of valid elements in <paramref name="containers"/>.</param>
+    /// <param name="relationshipCount">The number of valid elements in <paramref name="relationships"/>.</param>
+    /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that describes the intent for these schema objects.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the schema to the OMFIngress Service.</param>
+    public SchemaMessage(
+        DataType[] types,
+        DataStream[] containers,
+        Link[] relationships,
+        int typeCount,
+        int containerCount,
+        int relationshipCount,
+        MessageAction messageAction,
+        PartitionKey? partitionKey)
+        : this(types, containers, relationships, typeCount, containerCount, relationshipCount, messageAction, false, partitionKey)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SchemaMessage"/> class with a partition key.
+    /// </summary>
+    /// <param name="types">An array of OMF Type definitions.</param>
+    /// <param name="containers">An array of OMF Container definitions.</param>
+    /// <param name="relationships">An array of OMF Relationship (Link) definitions.</param>
+    /// <param name="typeCount">The number of valid elements in <paramref name="types"/>.</param>
+    /// <param name="containerCount">The number of valid elements in <paramref name="containers"/>.</param>
+    /// <param name="relationshipCount">The number of valid elements in <paramref name="relationships"/>.</param>
+    /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that describes the intent for these schema objects.</param>
+    /// <param name="rentedFromPool">True if the arrays were rented from an <see cref="ArrayPool{T}"/> and should be returned on dispose; otherwise false.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the schema to the OMFIngress Service.</param>
+    /// <remarks>
+    /// The counts allow callers to reuse larger pooled arrays while only sending the active subset.
+    /// When <paramref name="rentedFromPool"/> is true, the arrays will be returned to their respective pools on <see cref="Dispose"/>.
+    /// </remarks>
+    public SchemaMessage(
+        DataType[] types,
+        DataStream[] containers,
+        Link[] relationships,
+        int typeCount,
+        int containerCount,
+        int relationshipCount,
+        MessageAction messageAction,
+        bool rentedFromPool,
+        PartitionKey? partitionKey)
     {
         Types = types;
         Containers = containers;
@@ -62,6 +116,7 @@ public class SchemaMessage : Message, IDisposable
         RelationshipCount = relationshipCount;
         MessageAction = messageAction;
         _rentedFromPool = rentedFromPool;
+        PartitionKey = partitionKey;
     }
 
     /// <summary>Gets the array of OMF Type definitions.</summary>
@@ -84,6 +139,9 @@ public class SchemaMessage : Message, IDisposable
 
     /// <summary>Gets the <see cref="Abstractions.Messages.MessageAction"/> describing the schema operation.</summary>
     public MessageAction MessageAction { get; }
+
+    /// <summary>Gets the PartitionKey that will be sent with the schema to the OMFIngress Service.</summary>
+    public PartitionKey? PartitionKey { get; }
 
     /// <summary>
     /// Releases resources used by the <see cref="SchemaMessage"/> and returns rented arrays to their pools when applicable.

@@ -20,6 +20,12 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 
 namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 
+/// <summary>
+/// Provides adapter-facing schema and data writes.
+/// </summary>
+/// <remarks>
+/// See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.
+/// </remarks>
 public interface IAdapterMessageProcessor
 {
     /// <summary>
@@ -35,11 +41,31 @@ public interface IAdapterMessageProcessor
     void WriteType(DataType dataType, MessageAction messageAction = MessageAction.Default);
 
     /// <summary>
+    /// Writes a single instance of <see cref="DataType"/> message with a PartitionKey.
+    /// </summary>
+    /// <param name="dataType">The type message instance.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the type once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
+
+    /// <summary>
     /// Writes an array of <see cref="DataType"/> type messages.
     /// </summary>
     /// <param name="dataTypes">An array of <see cref="DataType"/> instances.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
     void WriteTypes(DataType[] dataTypes, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes an array of <see cref="DataType"/> type messages with a PartitionKey.
+    /// </summary>
+    /// <param name="dataTypes">An array of <see cref="DataType"/> instances.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the types once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
     /// <summary>
     /// Writes a single instance of <see cref="DataStream"/> message.
@@ -49,11 +75,31 @@ public interface IAdapterMessageProcessor
     void WriteStream(DataStream dataStream, MessageAction messageAction = MessageAction.Default);
 
     /// <summary>
+    /// Writes a single instance of <see cref="DataStream"/> message with a PartitionKey.
+    /// </summary>
+    /// <param name="dataStream">The <see cref="DataStream"/> instance.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the stream once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
+
+    /// <summary>
     /// Writes an array of <see cref="DataStream"/> messages.
     /// </summary>
     /// <param name="dataStreams">An array of <see cref="DataStream"/> instances.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
     void WriteStreams(DataStream[] dataStreams, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes an array of <see cref="DataStream"/> messages with a PartitionKey.
+    /// </summary>
+    /// <param name="dataStreams">An array of <see cref="DataStream"/> instances.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the streams once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
     /// <summary>
     /// Writes a single instance of dynamic value.
@@ -124,6 +170,16 @@ public interface IAdapterMessageProcessor
     /// <param name="link">The <see cref="Link"/> object describing the source and target of the type relationship.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> directive for downstream processing.</param>
     void WriteTypeRelationship(Link link, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes a relationship between two type (schema) entities with a PartitionKey.
+    /// </summary>
+    /// <param name="link">The <see cref="Link"/> object describing the source and target of the type relationship.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the relationship once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> directive for downstream processing.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
     /// <summary>
     /// Writes a single event instance with temporal bounds and optional extended properties, overrides, metadata, and tags.

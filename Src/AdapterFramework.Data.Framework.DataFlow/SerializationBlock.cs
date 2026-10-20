@@ -373,11 +373,11 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (typesBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction);
+                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction, message.PartitionKey);
                 }
             }
 
@@ -387,11 +387,11 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (streamsBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction);
+                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction, message.PartitionKey);
                 }
             }
 
@@ -401,17 +401,17 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (linksBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction);
+                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction, message.PartitionKey);
                 }
             }
         }
         else
         {
-            Flush(count, MessageType.Schema, bytes, message.MessageAction);
+            Flush(count, MessageType.Schema, bytes, message.MessageAction, message.PartitionKey);
         }
 
         if (count > 0)
@@ -466,7 +466,7 @@ public class SerializationBlock : BaseBlock<Message>
             ?? _serializer.Serialize(array);
     }
 
-    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction)
+    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey)
     {
         if (typeof(T) != typeof(DataType) && typeof(T) != typeof(DataStream) && typeof(T) != typeof(Link))
         {
@@ -494,11 +494,11 @@ public class SerializationBlock : BaseBlock<Message>
 
             if (bytes.Length > _maxByteCount)
             {
-                FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction);
+                FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction, partitionKey);
             }
             else
             {
-                Flush(segment.Count, MessageType.Schema, bytes, messageAction);
+                Flush(segment.Count, MessageType.Schema, bytes, messageAction, partitionKey);
             }
         }
     }
