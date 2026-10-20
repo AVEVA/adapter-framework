@@ -328,17 +328,36 @@ public class AdapterMessageProcessor_Tests
         mockOmfMessageProcessor.Verify(mp => mp.WriteSchemaRelationship(link, PartitionKey.Key5, MessageAction.Create), Times.Once);
     }
 
-    [Fact]
-    public void AdapterMessageProcessor_WriteSchemaWithPartitionKey_Omf12_Throws()
+    /// <summary>
+    /// Verifies that every keyed schema write rejects protocols other than OMF 2.0 with the shared validation message
+    /// before forwarding anything to the inner processor.
+    /// </summary>
+    /// <param name="omfVersion">The unsupported protocol version.</param>
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    [InlineData((OmfVersion)99)]
+    public void AdapterMessageProcessor_WriteSchemaWithPartitionKey_UnsupportedVersion_Throws(OmfVersion omfVersion)
     {
         var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
-        var messageProcessor = new AdapterMessageProcessor(mockOmfMessageProcessor.Object, OmfVersion.Omf12);
+        var messageProcessor = new AdapterMessageProcessor(mockOmfMessageProcessor.Object, omfVersion);
 
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteType(new DynamicDataType { Id = "Type" }, PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteTypes([new DynamicDataType { Id = "Type" }], PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStream(new DataStream { Id = "Stream" }, PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStreams([new DataStream { Id = "Stream" }], PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteTypeRelationship(new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null)), PartitionKey.Key1, MessageAction.Create));
+        Action[] writes =
+        [
+            () => messageProcessor.WriteType(new DynamicDataType { Id = "Type" }, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypes([new DynamicDataType { Id = "Type" }], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStream(new DataStream { Id = "Stream" }, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStreams([new DataStream { Id = "Stream" }], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypeRelationship(new Link(new DataTypeLinkNode("E1", null), new DataTypeLinkNode("int", null)), PartitionKey.Key1, MessageAction.Create),
+        ];
+
+        foreach (var write in writes)
+        {
+            var exception = Assert.Throws<NotSupportedException>(write);
+            Assert.Equal("Schema partition keys are only supported in OMF 2.0.", exception.Message);
+        }
+
+        mockOmfMessageProcessor.VerifyNoOtherCalls();
     }
 
     [Fact]

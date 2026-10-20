@@ -64,6 +64,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     private readonly TypesStreamsGroupingBlock _typesStreamsGroupingBlock;
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
+    private readonly OmfVersion _omfVersion;
     private bool _disposed;
 
     #endregion
@@ -96,6 +97,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+        _omfVersion = omfVersion;
         var tuningParameters = omfVersion == OmfVersion.Omf20
             ? new TuningParameters
             {
@@ -407,12 +409,15 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         return failoverDataMessageProcessor.ProcessOmfMessage;
     }
 
-    // Only the OMF 2.0+ pipeline has a schema grouping block; the OMF 1.2 pipeline would drop the key.
+    /// <summary>
+    /// Rejects keyed schema writes unless the configured protocol is explicitly OMF 2.0.
+    /// A schema grouping block also exists for other versions, so its presence is not a capability check.
+    /// </summary>
     private void ThrowIfSchemaPartitionKeysUnsupported()
     {
-        if (_schemaGroupingBlock == null)
+        if (_omfVersion != OmfVersion.Omf20)
         {
-            throw new NotSupportedException("Schema partition keys are not supported in OMF 1.2.");
+            throw new NotSupportedException("Schema partition keys are only supported in OMF 2.0.");
         }
     }
 

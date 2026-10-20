@@ -24,18 +24,7 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 /// Provides adapter-facing schema and data writes.
 /// </summary>
 /// <remarks>
-/// <para>
-/// Schema partition keys control routing, not separate schema lifecycles. The framework's
-/// instrumentation cache keeps one latest object and action for each schema ID. Schema resend
-/// sends that latest state to every key previously used for the ID, including the default partition
-/// if an unkeyed write occurred. A delete written with one key therefore resends a delete to all
-/// those keys. The same rule applies to a schema relationship's cached identity.
-/// </para>
-/// <para>
-/// Keyed schema overloads don't keep independent resend state per key. Callers must write the same
-/// schema to each key used for dependent data and must not rely on a key-specific delete remaining
-/// limited to that key after a schema resend.
-/// </para>
+/// See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.
 /// </remarks>
 public interface IAdapterMessageProcessor
 {
@@ -57,7 +46,7 @@ public interface IAdapterMessageProcessor
     /// <param name="dataType">The type message instance.</param>
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the type once per key.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
-    /// <remarks>PartitionKeys are only supported for OMF 2.0+. Write the same schema to every key that dependent data will be sent with, before sending that data, and don't modify the object between per-key writes. Changing the key starts a new schema batch, so group writes by key. The default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
     void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
         => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
@@ -74,7 +63,7 @@ public interface IAdapterMessageProcessor
     /// <param name="dataTypes">An array of <see cref="DataType"/> instances.</param>
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the types once per key.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
-    /// <remarks>PartitionKeys are only supported for OMF 2.0+. Write the same schema to every key that dependent data will be sent with, before sending that data, and don't modify the objects between per-key writes. Changing the key starts a new schema batch, so group writes by key. The default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
     void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
         => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
@@ -91,7 +80,7 @@ public interface IAdapterMessageProcessor
     /// <param name="dataStream">The <see cref="DataStream"/> instance.</param>
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the stream once per key.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
-    /// <remarks>PartitionKeys are only supported for OMF 2.0+. Write the same schema to every key that dependent data will be sent with, before sending that data, and don't modify the object between per-key writes. Changing the key starts a new schema batch, so group writes by key. The default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
     void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
         => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
@@ -108,7 +97,7 @@ public interface IAdapterMessageProcessor
     /// <param name="dataStreams">An array of <see cref="DataStream"/> instances.</param>
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the streams once per key.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
-    /// <remarks>PartitionKeys are only supported for OMF 2.0+. Write the same schema to every key that dependent data will be sent with, before sending that data, and don't modify the objects between per-key writes. Changing the key starts a new schema batch, so group writes by key. The default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
     void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
         => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
@@ -188,7 +177,7 @@ public interface IAdapterMessageProcessor
     /// <param name="link">The <see cref="Link"/> object describing the source and target of the type relationship.</param>
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the relationship once per key.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> directive for downstream processing.</param>
-    /// <remarks>PartitionKeys are only supported for OMF 2.0+. Write the same schema to every key that dependent data will be sent with, before sending that data, and don't modify the object between per-key writes. Changing the key starts a new schema batch, so group writes by key. The default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
     void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
         => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 

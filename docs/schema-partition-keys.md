@@ -2,6 +2,11 @@
 
 OMF 2.0 schema writes accept a partition key for types, streams, and schema relationships. Write the same schema once per key used for dependent data. A key controls the service's processing route; it doesn't create a separate schema lifecycle.
 
+Keyed schema writes require the configured protocol to be explicitly OMF 2.0. OMF 1.2, OMF 1.3,
+and undefined protocol versions are rejected with `NotSupportedException` by both the adapter-facing
+processor and the underlying data processor. This restriction does not change unkeyed schema writes
+or existing dynamic-data partition-key behavior.
+
 ## Schema resend
 
 The instrumentation cache keeps one latest object and action for each schema ID. It also remembers every key used for that ID. A schema resend sends the latest state to all remembered keys. If an unkeyed write occurred, resend also sends that state without a key. Schema relationships follow the same rule for their cached identity.

@@ -303,12 +303,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     /// <inheritdoc/>
     public void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
     {
-        if (_omfVersion == OmfVersion.Omf12)
-        {
-            throw new NotSupportedException("Type relationships are not supported in OMF 1.2.");
-        }
-
-        ThrowIfInvalidPartitionKey(partitionKey);
+        ThrowIfInvalidSchemaPartitionKey(partitionKey);
         _messageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
     }
 
@@ -329,9 +324,9 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
 
     private void ThrowIfInvalidSchemaPartitionKey(PartitionKey partitionKey)
     {
-        if (_omfVersion == OmfVersion.Omf12)
+        if (_omfVersion != OmfVersion.Omf20)
         {
-            throw new NotSupportedException("Schema partition keys are not supported in OMF 1.2.");
+            throw new NotSupportedException("Schema partition keys are only supported in OMF 2.0.");
         }
 
         ThrowIfInvalidPartitionKey(partitionKey);

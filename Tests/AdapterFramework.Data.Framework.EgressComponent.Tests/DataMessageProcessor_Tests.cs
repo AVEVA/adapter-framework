@@ -466,14 +466,22 @@ public class DataMessageProcessor_Tests
         Assert.DoesNotContain(captured, x => x.MessageType == MessageType.Type || x.MessageType == MessageType.Container || x.MessageType == MessageType.Data);
     }
 
-    [Fact]
-    public void DataMessageProcessor_WriteSchemaWithPartitionKey_Omf12_Throws()
+    /// <summary>
+    /// Verifies that direct data-processor callers cannot use schema keys on OMF 1.2, OMF 1.3,
+    /// or undefined protocol versions, even when a schema grouping block exists.
+    /// </summary>
+    /// <param name="omfVersion">The unsupported protocol version.</param>
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    [InlineData((OmfVersion)99)]
+    public void DataMessageProcessor_WriteSchemaWithPartitionKey_UnsupportedVersion_Throws(OmfVersion omfVersion)
     {
         var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
         var mockApplicationManifest = new Mock<IApplicationManifest>();
 
         mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
-        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf12);
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
 
         using var messageProcessor = new DataMessageProcessor(
             new Mock<ILogManager>().Object,
@@ -489,11 +497,20 @@ public class DataMessageProcessor_Tests
         var dataStream = new DataStream { Id = "TestStreamId", TypeId = dataType.Id };
         var link = new Link(new DataTypeLinkNode("TestType", null), new DataTypeLinkNode("int", null));
 
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteTypes([dataType], PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteStreams([dataStream], PartitionKey.Key1, MessageAction.Create));
-        Assert.Throws<NotSupportedException>(() => messageProcessor.WriteSchemaRelationship(link, PartitionKey.Key1, MessageAction.Create));
+        Action[] writes =
+        [
+            () => messageProcessor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypes([dataType], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStreams([dataStream], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteSchemaRelationship(link, PartitionKey.Key1, MessageAction.Create),
+        ];
+
+        foreach (var write in writes)
+        {
+            var exception = Assert.Throws<NotSupportedException>(write);
+            Assert.Equal("Schema partition keys are only supported in OMF 2.0.", exception.Message);
+        }
     }
 
     [Fact]
