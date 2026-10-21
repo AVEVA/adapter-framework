@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
     private const int ConsolidateQueuesDelay = 2500;
     private const int Kilobyte = 1024;
     private const string LeaseOutstandingMessage = "A message lease is already outstanding.";
-    private const string MessageLeasedMessage = "Messages cannot be peeked or dequeued while a message is leased.";
+    private const string MessageLeasedMessage = "Messages cannot be peeked or dequeued while a message lease is outstanding.";
 
     #endregion
 
@@ -117,7 +117,19 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
         lock (_lock)
         {
-            ThrowIfMessageLeased();
+            ThrowIfLeaseOutstanding();
+
+            if (_leasedItem?.VolatileMessage != null)
+            {
+                // An abandoned volatile lease is the oldest message and lives only in _leasedItem.
+                message = _leasedItem.Message;
+                _currentVolatileQueueSize -= message.GetMessageSizeInBytes();
+                _leasedItem = null;
+                return true;
+            }
+
+            // An abandoned persistent lease is still the persistent head unless retention discarded it.
+            _leasedItem = null;
 
             if (_persistentQueue == null || !_persistentQueue.TryDequeue(out message))
             {
@@ -139,7 +151,13 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
         lock (_lock)
         {
-            ThrowIfMessageLeased();
+            ThrowIfLeaseOutstanding();
+
+            if (_leasedItem?.VolatileMessage != null)
+            {
+                message = _leasedItem.Message;
+                return true;
+            }
 
             if (_persistentQueue == null || !_persistentQueue.TryPeek(out message))
             {
@@ -294,33 +312,45 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
     {
         lock (_lock)
         {
-            SpillLeasedMessageIfRequired();
-
-            while ((_currentVolatileQueueSize > _maxVolatileQueueSize
-                    || (_persistentQueue != null && _volatileQueue.TryPeek(out var head) && HasMessageExpired(head.Timestamp)))
-                   && _volatileQueue.TryDequeue(out var timestampedMessage))
+            var now = DateTime.UtcNow;
+            while (IsSpillRequired(now))
             {
-                _currentVolatileQueueSize -= timestampedMessage.SerializedOmfMessage.GetMessageSizeInBytes();
-                _persistentQueue?.Enqueue(timestampedMessage.SerializedOmfMessage);
-                if (_persistentQueue == null)
+                if (_persistentQueue != null && _leasedItem?.VolatileMessage is { } leasedMessage)
                 {
-                    _logger.LogDebug(MaxBufferSizeReachedMessage);
+                    // Spill the leased message before anything else so it stays first in persistent storage.
+                    SpillLeasedMessage(leasedMessage);
+                }
+                else if (_volatileQueue.TryDequeue(out var timestampedMessage))
+                {
+                    _currentVolatileQueueSize -= timestampedMessage.SerializedOmfMessage.GetMessageSizeInBytes();
+                    _persistentQueue?.Enqueue(timestampedMessage.SerializedOmfMessage);
+                    if (_persistentQueue == null)
+                    {
+                        _logger.LogDebug(MaxBufferSizeReachedMessage);
+                    }
+                }
+                else
+                {
+                    return;
                 }
             }
         }
     }
 
-    // Must run before the volatile queue is spilled so the leased message stays first in persistent storage.
-    private void SpillLeasedMessageIfRequired()
+    private bool IsSpillRequired(DateTime now)
     {
-        var leasedMessage = _leasedItem?.VolatileMessage;
-        if (_persistentQueue == null
-            || leasedMessage == null
-            || (_currentVolatileQueueSize <= _maxVolatileQueueSize && !HasMessageExpired(leasedMessage.Timestamp)))
+        if (_currentVolatileQueueSize > _maxVolatileQueueSize)
         {
-            return;
+            return true;
         }
 
+        return _persistentQueue != null
+               && ((_volatileQueue.TryPeek(out var head) && HasMessageExpired(head.Timestamp, now))
+                   || (_leasedItem?.VolatileMessage is { } leasedMessage && HasMessageExpired(leasedMessage.Timestamp, now)));
+    }
+
+    private void SpillLeasedMessage(TimestampedOmfMessage<TMessage> leasedMessage)
+    {
         _persistentQueue.Enqueue(leasedMessage.SerializedOmfMessage);
         _currentVolatileQueueSize -= leasedMessage.SerializedOmfMessage.GetMessageSizeInBytes();
 
@@ -353,17 +383,17 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
     private bool IsActiveLease(MessageLease<TMessage> lease) => lease != null && _leaseOutstanding && lease.Token == _leaseToken;
 
-    private void ThrowIfMessageLeased()
+    private void ThrowIfLeaseOutstanding()
     {
-        if (_leasedItem != null)
+        if (_leaseOutstanding)
         {
             throw new InvalidOperationException(MessageLeasedMessage);
         }
     }
 
-    private bool HasMessageExpired(DateTime messageTimestamp)
+    private bool HasMessageExpired(DateTime messageTimestamp, DateTime now)
     {
-        return DateTime.UtcNow - messageTimestamp > _messageExpirationTime;
+        return now - messageTimestamp > _messageExpirationTime;
     }
 
     #endregion

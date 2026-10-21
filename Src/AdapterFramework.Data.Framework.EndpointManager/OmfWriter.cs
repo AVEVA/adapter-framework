@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -386,9 +386,21 @@ public class OmfWriter : IOmfWriter
     private async Task ProcessMessageAsync(MessageLease<ISerializedOmfMessage> lease, BackedUpOmfMessageQueue queue)
     {
         var message = lease.Message;
-        if (!await SendBufferedMessageAsync(message))
+        var delivered = false;
+        try
         {
-            queue.Abandon(lease);
+            delivered = await SendBufferedMessageAsync(message);
+        }
+        finally
+        {
+            if (!delivered)
+            {
+                queue.Abandon(lease);
+            }
+        }
+
+        if (!delivered)
+        {
             return;
         }
 

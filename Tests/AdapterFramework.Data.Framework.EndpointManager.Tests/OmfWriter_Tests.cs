@@ -741,6 +741,70 @@ public class OmfWriter_Tests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => _testEndpoint.VerifyMessageReceived(testMessage, expectedHeaders), TimeToWaitForBufferedRetry));
     }
 
+    [Fact]
+    public void OmfWriterWithBuffering_RetentionEvictsMessageWhileSending_NextUnsentMessageDelivered()
+    {
+        // Three 7 MB messages exceed the 20 MB volatile limit, and two fill the single 20 MB buffer file.
+        const int bodySize = 7 * 1024 * 1024;
+        var bufferDirectory = Path.Combine(Path.GetTempPath(), "AdapterFramework.OmfWriterLeaseTests", Guid.NewGuid().ToString("N"));
+        var messages = new[] { 'A', '1', '2', '3', '4' }.Select(marker => new string(marker, bodySize)).ToArray();
+        using var firstSendStarted = new ManualResetEventSlim();
+        using var releaseFirstSend = new ManualResetEventSlim();
+
+        _testEndpoint.SetMessageReceivedAction(() =>
+        {
+            firstSendStarted.Set();
+            releaseFirstSend.Wait(TimeToWaitForBufferedRetry);
+        });
+        _testEndpoint.StartListening();
+
+        var writer = new OmfWriter(
+            new EndpointConfigurationBase
+            {
+                Id = Guid.NewGuid().ToString(),
+                Endpoint = TestUri,
+                UserName = UserName,
+                Password = _dataProtector.Protect(Password),
+            },
+            _testLogger,
+            _serializer,
+            null,
+            _dataProtector,
+            new BufferingConfiguration { EnablePersistentBuffering = true, BufferLocation = bufferDirectory, MaxBufferSizeMB = BufferingConstants.MaxBufferFileSizeMb },
+            new ApplicationManifest(),
+            bufferDirectory,
+            string.Empty,
+            OmfWriterType.Data,
+            _ => { });
+
+        try
+        {
+            writer.SendMessage(new SerializedOmfMessage(MessageType.Data, Encoding.UTF8.GetBytes(messages[0]), MessageAction.Default));
+            Assert.True(firstSendStarted.Wait(TimeToWaitForBufferedRetry));
+
+            // Spills the in-flight message to disk, then evicts the buffer file holding it and message 1.
+            foreach (var message in messages.Skip(1))
+            {
+                writer.SendMessage(new SerializedOmfMessage(MessageType.Data, Encoding.UTF8.GetBytes(message), MessageAction.Default));
+            }
+
+            releaseFirstSend.Set();
+
+            Assert.True(SpinWait.SpinUntil(() => _testEndpoint.VerifyMessageReceived(messages[4]), LogMessageMaxWaitTime));
+            Assert.True(_testLogger.ContainsMessage("had already been discarded from the buffer by retention"));
+            Assert.True(_testEndpoint.VerifyMessageReceived(messages[2]));
+            Assert.True(_testEndpoint.VerifyMessageReceived(messages[3]));
+            Assert.False(_testEndpoint.VerifyMessageReceived(messages[1]));
+        }
+        finally
+        {
+            releaseFirstSend.Set();
+            writer.Dispose();
+            writer.DeleteBuffers();
+            TestUtilities.CleanupDirectories(bufferDirectory);
+        }
+    }
+
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]

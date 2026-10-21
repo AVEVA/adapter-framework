@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -94,16 +94,51 @@ public class BackedUpOmfMessageQueue_Lease_Tests : IDisposable
     }
 
     [Fact]
-    public void BackedUpOmfMessageQueue_TryPeekAndTryDequeue_MessageLeased_Throw()
+    public void BackedUpOmfMessageQueue_TryPeekAndTryDequeue_LeaseOutstanding_Throw()
     {
         using var queue = new BackedUpOmfMessageQueue(OneMb, _messageExpirationTime, null, _testLogger);
         queue.Enqueue(CreateMessage(1));
 
-        Assert.True(queue.TryLease(out var lease));
-        queue.Abandon(lease);
+        Assert.True(queue.TryLease(out _));
 
         Assert.Throws<InvalidOperationException>(() => queue.TryPeek(out _));
         Assert.Throws<InvalidOperationException>(() => queue.TryDequeue(out _));
+    }
+
+    [Fact]
+    public void BackedUpOmfMessageQueue_TryPeekAndTryDequeue_AfterAbandon_ReturnAbandonedVolatileMessageFirst()
+    {
+        using var queue = new BackedUpOmfMessageQueue(OneMb, _messageExpirationTime, null, _testLogger);
+        queue.Enqueue(CreateMessage(1));
+        queue.Enqueue(CreateMessage(2));
+
+        Assert.True(queue.TryLease(out var lease));
+        queue.Abandon(lease);
+
+        Assert.True(queue.TryPeek(out var message));
+        AssertMarker(1, message);
+        Assert.True(queue.TryDequeue(out message));
+        AssertMarker(1, message);
+
+        Assert.True(queue.TryLease(out lease));
+        AssertMarker(2, lease.Message);
+    }
+
+    [Fact]
+    public void BackedUpOmfMessageQueue_TryDequeue_AfterAbandon_ReturnsAbandonedPersistentMessageFirst()
+    {
+        using var queue = CreatePersistentBackedQueue(0);
+        queue.Enqueue(CreateMessage(1));
+        queue.Enqueue(CreateMessage(2));
+
+        Assert.True(queue.TryLease(out var lease));
+        queue.Abandon(lease);
+
+        Assert.True(queue.TryDequeue(out var message));
+        AssertMarker(1, message);
+
+        Assert.True(queue.TryLease(out lease));
+        AssertMarker(2, lease.Message);
     }
 
     [Fact]
@@ -168,6 +203,18 @@ public class BackedUpOmfMessageQueue_Lease_Tests : IDisposable
 
         Assert.True(queue.TryLease(out lease));
         AssertMarker(markerAfterEviction, lease.Message);
+    }
+
+    [Fact]
+    public void BackedUpOmfMessageQueue_ClearWhilePersistentLeaseOutstanding_CompleteReturnsFalse()
+    {
+        using var queue = CreatePersistentBackedQueue(0);
+        queue.Enqueue(CreateMessage(1));
+
+        Assert.True(queue.TryLease(out var lease));
+        queue.Clear();
+
+        Assert.False(queue.Complete(lease));
     }
 
     [Fact]
