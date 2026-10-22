@@ -27,4 +27,9 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Extensions\AdapterFramework.Data.Framework.Extensions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Tests use the internal flush-time constructor of HealthMessageProcessor for deterministic ordering tests. -->
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.MessageProcessor.Tests" />
+  </ItemGroup>
+
 </Project>

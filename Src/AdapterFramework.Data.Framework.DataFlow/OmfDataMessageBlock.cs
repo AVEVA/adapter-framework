@@ -60,6 +60,9 @@ public class OmfDataMessageBlock : BaseBlock<Message>
             case GroupedDataMessage groupedData:
                 ProcessGroupings(groupedData.Count, groupedData.Groupings, groupedData.StaticGroupings, groupedData.DynamicGroupingsWithPartitionKey, groupedData.MessageAction);
                 break;
+            case FlushThenForwardMessage envelope:
+                envelope.ReleaseMisrouted(Logger);
+                break;
         }
     }
 

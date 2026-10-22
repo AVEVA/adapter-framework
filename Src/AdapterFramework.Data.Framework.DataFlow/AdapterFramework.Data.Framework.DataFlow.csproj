@@ -27,4 +27,8 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Messages\AdapterFramework.Data.Framework.Messages.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.DataFlow.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -458,11 +458,77 @@ public class DataMessageProcessor_Tests
         var schemaMessage = captured.First(x => x.MessageType == MessageType.Schema);
         var instanceMessage = captured.First(x => x.MessageType == MessageType.Instance);
 
+        Assert.True(captured.IndexOf(schemaMessage) < captured.IndexOf(instanceMessage), "The schema must be sent before the instance that uses it.");
         Assert.Equal(OmfVersion.Omf20, schemaMessage.OmfVersion);
         Assert.Equal(OmfVersion.Omf20, instanceMessage.OmfVersion);
         Assert.Equal(2, schemaMessage.ItemCount);
         Assert.Equal(1, instanceMessage.ItemCount);
         Assert.DoesNotContain(captured, x => x.MessageType == MessageType.Type || x.MessageType == MessageType.Container || x.MessageType == MessageType.Data);
+    }
+
+    [Fact]
+    public void DataMessageProcessor_Omf12_DisposeBeforeFlushTimer_SendsTypeAndContainerBeforeData()
+    {
+        var sentMessages = new List<ISerializedOmfMessage>();
+        var dataType = new DynamicDataType
+        {
+            Id = "OrderedType",
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                { "Value", new PropertyDefinition { Type = "integer", Format = "int32" } },
+            },
+        };
+        var dataStream = new DataStream { Id = "OrderedStream", Name = "Stream", TypeId = dataType.Id };
+
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockFailoverDataMessageProcessor
+            .Setup(em => em.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(message =>
+            {
+                lock (sentMessagesLock)
+                {
+                    sentMessages.Add(message);
+                }
+            });
+
+        // Pin the data block's flush timer far beyond the test, so the value is still buffered in the producer when
+        // Dispose runs. Only the producers-first dispose order can then deliver it; a reverted order loses it.
+        var mockConfigurationProvider = new Mock<IConfigurationProvider>();
+        var bufferingConfiguration = new BufferingConfiguration { MaxDataBulkTime = TimeSpan.FromMinutes(10) };
+        ICollection<string> configurationErrors = null;
+        mockConfigurationProvider
+            .Setup(provider => provider.TryGetConfiguration(It.IsAny<string>(), It.IsAny<string>(), out bufferingConfiguration, out configurationErrors))
+            .Returns(true);
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            mockConfigurationProvider.Object,
+            mockFailoverDataMessageProcessor.Object);
+
+        messageProcessor.WriteType(dataType, MessageAction.Create);
+        messageProcessor.WriteStream(dataStream, MessageAction.Create);
+        messageProcessor.WriteValue(dataStream.Id, Classification.Dynamic, new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 }, MessageAction.Default);
+
+        // The value is still buffered (pinned timer): only the producers-first dispose order delivers it after its definitions.
+        Assert.Null(Record.Exception(messageProcessor.Dispose));
+
+        List<MessageType> order;
+        lock (sentMessagesLock)
+        {
+            order = sentMessages.Select(message => message.MessageType).ToList();
+        }
+
+        Assert.Contains(MessageType.Type, order);
+        Assert.Contains(MessageType.Container, order);
+        Assert.Contains(MessageType.DynamicData, order);
+        Assert.True(order.IndexOf(MessageType.Type) < order.IndexOf(MessageType.DynamicData), $"Type must be sent before data. Order: {string.Join(", ", order)}");
+        Assert.True(order.IndexOf(MessageType.Container) < order.IndexOf(MessageType.DynamicData), $"Container must be sent before data. Order: {string.Join(", ", order)}");
     }
 
     [Fact]
