@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -331,7 +331,7 @@ public class OmfWriter : IOmfWriter
     }
 
     private bool IsRetryable404MessageType(MessageType messageType) =>
-        _shouldRetry404 && (messageType == MessageType.Data || messageType == MessageType.StaticData || messageType == MessageType.DynamicData);
+        _shouldRetry404 && (messageType == MessageType.Data || messageType == MessageType.StaticData || messageType == MessageType.DynamicData || messageType == MessageType.Instance);
 
     private bool RequiresRequeue(EndpointResponse response)
     {
@@ -440,12 +440,8 @@ public class OmfWriter : IOmfWriter
         //// This checks whether we have sent Type, Container or Schema to the endpoint after 404 received for a data message.
         //// When no type/container/schema message was sent before this there is no reason to retry the send operation.
         return !_shouldRetry404
-               && _messageType != MessageType.Type
-               && _messageType != MessageType.Container
-               && _messageType != MessageType.Schema
-               && serializedMessage.MessageType != MessageType.Type
-               && serializedMessage.MessageType != MessageType.Container
-               && serializedMessage.MessageType != MessageType.Schema;
+               && !IsMetadataMessage(_messageType)
+               && !IsMetadataMessage(serializedMessage.MessageType);
     }
 
     private async Task<EndpointResponse> SendMessageAndProcessResponseAsync(

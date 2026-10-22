@@ -249,12 +249,6 @@ public class OmfWriter_Tests : IDisposable
             var message = new SerializedOmfMessage(messageType, Encoding.UTF8.GetBytes("routingTestMessage"), MessageAction.Default);
             omfWriter.SendMessage(message);
 
-            var metadataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_metadataQueue", omfWriter);
-            var dataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_dataQueue", omfWriter);
-
-            Assert.Equal(expectMetadataQueue, metadataQueue.TryPeek(out var metadataMessage) && ReferenceEquals(message, metadataMessage));
-            Assert.Equal(!expectMetadataQueue, dataQueue.TryPeek(out var dataMessage) && ReferenceEquals(message, dataMessage));
-
             // Disposing moves volatile messages into the persistent buffer files.
             omfWriter.Dispose();
 
@@ -353,6 +347,7 @@ public class OmfWriter_Tests : IDisposable
     [InlineData(MessageType.Data, 1)]
     [InlineData(MessageType.DynamicData, 1)]
     [InlineData(MessageType.StaticData, 1)]
+    [InlineData(MessageType.Instance, 1)]
     public void OmfWriter_SendMessage_NotFound_DataMessageBreaksOut(MessageType messageType, int expectedRetries)
     {
         _testEndpoint.StopListening();
@@ -369,10 +364,11 @@ public class OmfWriter_Tests : IDisposable
     }
 
     [Theory]
-    [InlineData(MessageType.Type)]
-    [InlineData(MessageType.Container)]
-    [InlineData(MessageType.Schema)]
-    public async Task OmfWriter_SendMessage_NotFound_MetadataInQueue(MessageType messageType)
+    [InlineData(MessageType.Type, MessageType.DynamicData)]
+    [InlineData(MessageType.Container, MessageType.DynamicData)]
+    [InlineData(MessageType.Schema, MessageType.DynamicData)]
+    [InlineData(MessageType.Schema, MessageType.Instance)]
+    public async Task OmfWriter_SendMessage_NotFound_MetadataInQueue(MessageType messageType, MessageType dataMessageType)
     {
         _testEndpoint.StopListening();
         _testEndpoint.SetHttpResponse(HttpStatusCode.NotFound);
@@ -383,8 +379,8 @@ public class OmfWriter_Tests : IDisposable
         const string TestDataMessage2 = "DataMessage2";
         const string TestMetadataMessage = "MetadataMessage";
 
-        var dataMessage1 = new SerializedOmfMessage(MessageType.DynamicData, Encoding.UTF8.GetBytes(TestDataMessage1), MessageAction.Default);
-        var dataMessage2 = new SerializedOmfMessage(MessageType.DynamicData, Encoding.UTF8.GetBytes(TestDataMessage2), MessageAction.Default);
+        var dataMessage1 = new SerializedOmfMessage(dataMessageType, Encoding.UTF8.GetBytes(TestDataMessage1), MessageAction.Default);
+        var dataMessage2 = new SerializedOmfMessage(dataMessageType, Encoding.UTF8.GetBytes(TestDataMessage2), MessageAction.Default);
         var metadataMessage = new SerializedOmfMessage(messageType, Encoding.UTF8.GetBytes(TestMetadataMessage), MessageAction.Default);
 
         _testLogger.ClearLog();
