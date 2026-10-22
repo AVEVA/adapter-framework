@@ -433,6 +433,29 @@ public class EgressDiagnosticsService_Tests
         Assert.True(_testLogger.ContainsMessage($"diagnostics stream {failingStreamId}"));
     }
 
+    [Fact]
+    public async Task IoRateStreamWriteFailure_ResendDoesNotRetryIoRateStream()
+    {
+        var failingStreamId = $"{_id}.ep1.{DiagnosticsConstants.IoRateStreamName}";
+        var recorder = new RecordingDiagnosticsMessageProcessor { FailStreamWritesForStreamId = failingStreamId };
+
+        using var egressService = new EgressDiagnosticsService(recorder, _testLogger, _id, CreateTwoEndpointManager().Object, _node,
+            new Mock<IEdgeComponentHealthService>().Object, OmfVersion.Omf20);
+        await egressService.InitializeAsync();
+
+        RunPublicationCycles(egressService, 1);
+        Assert.Equal(1, recorder.FailedStreamWriteCount);
+
+        recorder.Clear();
+        egressService.ResendTypesAndStreams();
+        egressService.ResendTypesAndStreams();
+
+        // Once IORate has failed it is not retried, but the resource rate streams are still resent.
+        Assert.Equal(1, recorder.FailedStreamWriteCount);
+        Assert.Equal(12, recorder.GetStreams().Count);
+        Assert.DoesNotContain(recorder.GetStreams(), s => s.Id.EndsWith($".{DiagnosticsConstants.IoRateStreamName}", StringComparison.Ordinal));
+    }
+
     private static Mock<IOmfDataEndpointManager> CreateTwoEndpointManager()
     {
         var mockEndpointManager = new Mock<IOmfDataEndpointManager>();
@@ -486,6 +509,7 @@ public class EgressDiagnosticsService_Tests
         private readonly Dictionary<string, double> _ioRates = new();
         private readonly Dictionary<string, int> _ioRatePublishCounts = new();
         private int _valueWriteFailures;
+        private int _failedStreamWrites;
 
         public MetadataInfo StreamMetadataLevel { get; set; }
 
@@ -499,6 +523,8 @@ public class EgressDiagnosticsService_Tests
 
         public string FailStreamWritesForStreamId { get; init; }
 
+        public int FailedStreamWriteCount => Volatile.Read(ref _failedStreamWrites);
+
         public void WriteDiagnosticsTypes(DataType[] dataTypes)
         {
         }
@@ -507,6 +533,7 @@ public class EgressDiagnosticsService_Tests
         {
             if (dataStreams.Any(s => s.Id == FailStreamWritesForStreamId))
             {
+                Interlocked.Increment(ref _failedStreamWrites);
                 throw new InvalidOperationException("Simulated diagnostics stream write failure.");
             }
 

@@ -171,9 +171,12 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     {
         CreateDiagnosticsTypesStreams();
 
-        foreach (var item in _egressIdToIoRateMovingAverage)
+        if (!_failedToUpdateIoRate)
         {
-            CreateIoRateStreamAndLink(item.Key);
+            foreach (var item in _egressIdToIoRateMovingAverage)
+            {
+                CreateIoRateStreamAndLink(item.Key);
+            }
         }
 
         foreach (var resourceIoRates in _egressIdToResourceIoRates.Values)
@@ -249,8 +252,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
                     return;
                 }
 
-                // Read separately from the value counters above, so a message delivered between the two reads
-                // can land in different ticks for IORate and the resource rates. That's fine for a 60 s average.
+                // Read separately from the value counters, so a message can land one tick apart in IORate and the resource rates.
                 var egressResourceCounts = _resourceIoRatesEnabled ? _dataEndpointManager.GetAndResetEgressedResourceCounters() : null;
                 var resendTypesStreamsLinks = false;
 

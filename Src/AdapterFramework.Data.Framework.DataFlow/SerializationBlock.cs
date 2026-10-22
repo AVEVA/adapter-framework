@@ -714,7 +714,8 @@ public class SerializationBlock : BaseBlock<Message>
         _flushAction(new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey)
         {
             // OMF 1.3 also uses instance messages, but per-resource egress rates are only published for OMF 2.0 and later.
-            ResourceCounts = _omfVersion >= OmfVersion.Omf20 ? resourceCounts : default,
+            // Deletes still count toward IORate through ItemCount, but not toward the resource rates, matching EventCount.
+            ResourceCounts = _omfVersion >= OmfVersion.Omf20 && messageAction != MessageAction.Delete ? resourceCounts : default,
         });
     }
 

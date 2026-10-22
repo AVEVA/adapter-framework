@@ -783,8 +783,11 @@ public class SerializationBlock_Tests
         Assert.Equal(eventsArray.Length + entitiesArray.Length + linksArray.Length + dataItems.Count, _receivedDataCount);
         Assert.Equal(isNonStreamingDataOversize ? 3 : (isMessageOversize ? 2 : 1), _messageActionTriggerCount);
 
-        // Relationships are excluded from resource counts; every other instance is counted exactly once however the message is split.
-        Assert.Equal(new OmfResourceCounts(dataItems.Count, entitiesArray.Length, eventsArray.Length), _receivedResourceCounts);
+        // Relationships and deletes are excluded from resource counts; every other instance is counted exactly once however the message is split.
+        var expectedResourceCounts = messageAction == MessageAction.Delete
+            ? default
+            : new OmfResourceCounts(dataItems.Count, entitiesArray.Length, eventsArray.Length);
+        Assert.Equal(expectedResourceCounts, _receivedResourceCounts);
     }
 
     private void DummyAction(ISerializedOmfMessage m)
