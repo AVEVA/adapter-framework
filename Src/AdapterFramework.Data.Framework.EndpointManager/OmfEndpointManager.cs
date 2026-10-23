@@ -52,6 +52,9 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     // Orders delivery registration against writer removal, so a removal discards every delivery registered for the writer.
     private readonly object _dispatchLock = new();
 
+    // Serializes endpoint changes, so a removed writer can be disposed outside the dispatch lock before its ID is added again.
+    private readonly object _configurationLock = new();
+
     private bool _disposed;
     private ILogger _logger;
     private OmfAwaitableCoordinator _dispatchCoordinator;
@@ -90,7 +93,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         _bufferingConfiguration = BufferingConfiguration.GetOrCreateBufferingConfiguration(_configurationProvider, _logger);
         _dispatchCoordinator = facet.Equals(DataEndpointsFacetName, StringComparison.OrdinalIgnoreCase) ? _awaitableCoordinator : null;
 
-        lock (_dispatchLock)
+        lock (_configurationLock)
         {
             AddOmfWriters(componentId, facet);
         }
@@ -157,7 +160,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     {
         ThrowHelper.ThrowIfArgumentNull(configurationChangedEvent, nameof(configurationChangedEvent));
 
-        lock (_dispatchLock)
+        lock (_configurationLock)
         {
             return AddRemoveEndpointsCore(configurationChangedEvent, omfWriterType);
         }
@@ -242,9 +245,13 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     public Task ResetDataBuffersAsync()
     {
-        lock (_dispatchLock)
+        lock (_configurationLock)
         {
-            return ResetDataBuffersCore();
+            // Reset replaces every writer, so sends wait instead of finding no writers mid-reset.
+            lock (_dispatchLock)
+            {
+                return ResetDataBuffersCore();
+            }
         }
     }
 
@@ -299,9 +306,12 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     protected virtual void Dispose(bool disposing)
     {
-        lock (_dispatchLock)
+        lock (_configurationLock)
         {
-            DisposeCore(disposing);
+            lock (_dispatchLock)
+            {
+                DisposeCore(disposing);
+            }
         }
     }
 
@@ -415,7 +425,10 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
             var writer = _writerFactory.GetOmfWriterInstance(writerConfig, _logger, writerType, bufferingConfig, ErrorCallback);
             _writersDeviceStatus.TryAdd(writerConfig.Id, DeviceStatus.Starting);
             _createdWriters.Add(writerConfig.Id, writer);
-            _writers = _writers.Add(writer);
+            lock (_dispatchLock)
+            {
+                _writers = _writers.Add(writer);
+            }
         }
         catch (Exception ex)
         {

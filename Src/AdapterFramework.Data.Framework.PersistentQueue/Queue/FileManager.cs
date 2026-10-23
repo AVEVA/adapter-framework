@@ -100,46 +100,24 @@ internal class FileManager : IFileManager
         return _filesToDelete.Count > 0;
     }
 
-    /// <inheritdoc/>
-    public bool HadDataLossDuringRepair { get; private set; }
-
     public void RepairDirectoryAndUpdateState(QueueState queueState, int maxQueueFiles = 0)
     {
-        HadDataLossDuringRepair = false;
-        var hadUnreadData = queueState.ReaderFileNumber != queueState.WriterFileNumber
-            || queueState.ReaderPosition != queueState.WriterPosition;
-
         // Gather info regarding what data files exist
         var dataFiles = GetSortedDataFiles();
         if (dataFiles.Length == 0)
         {
-            HadDataLossDuringRepair = hadUnreadData;
             ResetQueueState(queueState); // No data files means we need a clean state
             return;
         }
 
         // Data files exist, let's process them
         var fileNumbers = GetFileNumbers(dataFiles);
-        // Inspect original numbers before eviction or renaming can conceal a missing file.
-        HadDataLossDuringRepair = (hadUnreadData && !fileNumbers.Contains(queueState.ReaderFileNumber))
-            || !fileNumbers.Contains(queueState.WriterFileNumber);
-        var previousFileNumber = queueState.ReaderFileNumber;
-        foreach (var fileNumber in fileNumbers)
-        {
-            if (fileNumber > queueState.ReaderFileNumber && fileNumber <= queueState.WriterFileNumber)
-            {
-                HadDataLossDuringRepair |= fileNumber != previousFileNumber + 1;
-                previousFileNumber = fileNumber;
-            }
-        }
 
         // Check if we have too many queue files due to the limit - if we do, delete the old ones so that we satisfy the limit
         if (maxQueueFiles > 0)
         {
             if (fileNumbers.Length > maxQueueFiles)
             {
-                // Even a failed deletion removes these files from the repaired queue's view.
-                HadDataLossDuringRepair = true;
                 var numFilesToDelete = fileNumbers.Length - maxQueueFiles;
                 int[] newFiles = new int[maxQueueFiles];
                 string[] dataFilePaths = new string[maxQueueFiles];

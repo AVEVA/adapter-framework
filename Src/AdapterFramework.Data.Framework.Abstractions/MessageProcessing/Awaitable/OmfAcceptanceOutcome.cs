@@ -40,11 +40,6 @@ public enum OmfAcceptanceOutcome
     Filtered,
 
     /// <summary>
-    /// Compatibility value for explicit peer-covered dispositions. Runtime failover buffering does not produce this outcome.
-    /// </summary>
-    PeerCovered,
-
-    /// <summary>
     /// The outcome wasn't known when the wait ended. Delivery continues.
     /// </summary>
     TimedOut,

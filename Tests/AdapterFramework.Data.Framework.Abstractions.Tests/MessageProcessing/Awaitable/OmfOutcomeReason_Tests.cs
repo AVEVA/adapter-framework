@@ -45,7 +45,7 @@ public class OmfOutcomeReason_Tests
     [InlineData(OmfReasonCode.NoEndpoints, OmfPipelineStage.Dispatch)]
     [InlineData(OmfReasonCode.BufferFull, OmfPipelineStage.Buffering)]
     [InlineData(OmfReasonCode.NonAcceptedSuccess, OmfPipelineStage.Delivery)]
-    [InlineData(OmfReasonCode.BufferDeleted, OmfPipelineStage.Failover)]
+    [InlineData(OmfReasonCode.AcceptanceTrackingDisabled, OmfPipelineStage.Failover)]
     public void Stage_IsDerivedFromCode(OmfReasonCode code, OmfPipelineStage expectedStage)
     {
         Assert.Equal(expectedStage, new OmfOutcomeReason(code, string.Empty).Stage);

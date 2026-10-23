@@ -219,6 +219,39 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
     }
 
     /// <summary>
+    /// Verifies that while a writer removed by a configuration change is still disposing,
+    /// sends to the remaining writers complete instead of waiting for the disposal.
+    /// </summary>
+    [Fact]
+    public async Task AddRemoveEndpoints_RemovedWriterStillDisposing_DoesNotBlockSendMessage()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var disposing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _writers["A"].Setup(writer => writer.Dispose()).Callback(() =>
+        {
+            disposing.SetResult();
+            release.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        });
+        var removal = Task.Run(() => manager.AddRemoveEndpoints(new ConfigurationChangedEventArgs(_endpoints, new[] { Endpoint("B") }), OmfWriterType.Data));
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20);
+        try
+        {
+            await disposing.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await Task.Run(() => manager.SendMessage(message)).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await removal.WaitAsync(TimeSpan.FromSeconds(10));
+        _writers["B"].Verify(writer => writer.SendMessage(message), Times.Once);
+        _writers["A"].Verify(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>()), Times.Never);
+    }
+
+    /// <summary>
     /// Disposes the coordinator.
     /// </summary>
     public void Dispose() => _coordinator.Dispose();

@@ -37,7 +37,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
     #region Protected overrides
 
     /// <summary>
-    /// Writes the legacy V3 failover layout, appending an ID as V4 only for scoped bodies.
+    /// Writes the V3 failover layout, which adds the partition key and OMF version to the V2 layout.
     /// </summary>
     protected override DataItem CreateDataItem(IFailoverSerializedOmfMessage message)
     {
@@ -46,10 +46,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             return new DataItem(DataItemVersion.V3, Array.Empty<byte>());
         }
 
-        var serializedMessageId = message.SerializedMessageId;
-        var idLength = serializedMessageId.HasValue ? SerializedMessageIdSize : 0;
-        var dataBuffer = new byte[MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length + ProcessTimeTicksLength
-            + PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize + idLength];
+        var dataBuffer = new byte[FailoverSerializedOmfMessage.GetRecordSizeInBytes(message.MessageBody.Length)];
         dataBuffer[0] = (byte)message.MessageType;
         BinaryPrimitives.WriteInt32LittleEndian(dataBuffer.AsSpan(MessageTypeEnumSize), message.ItemCount);
 
@@ -61,34 +58,25 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
         BinaryPrimitives.WriteInt64LittleEndian(dataBuffer.AsSpan(MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length), message.ProcessTimeTicks);
 
-        dataBuffer[^(3 + idLength)] = (byte)(message.PartitionKey ?? 0);
-        dataBuffer[^(2 + idLength)] = (byte)message.MessageAction;
-        dataBuffer[^(1 + idLength)] = (byte)message.OmfVersion;
+        dataBuffer[^3] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^2] = (byte)message.MessageAction;
+        dataBuffer[^1] = (byte)message.OmfVersion;
 
-        if (serializedMessageId is { } id)
-        {
-            id.TryWriteBytes(dataBuffer.AsSpan(dataBuffer.Length - idLength));
-        }
-
-        return new DataItem(serializedMessageId.HasValue ? DataItemVersion.V4 : DataItemVersion.V3, dataBuffer)
-        {
-            TrackingId = serializedMessageId,
-        };
+        return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
     /// <summary>
-    /// Reads legacy V2/V3 failover records and scoped V4 records, preserving timestamps and IDs.
+    /// Reads V2 and V3 failover records, preserving timestamps.
     /// </summary>
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
-        var hasOmfTrailer = dataItem?.Version is DataItemVersion.V3 or DataItemVersion.V4;
-        var idLength = dataItem?.Version == DataItemVersion.V4 ? SerializedMessageIdSize : 0;
-        var trailerLength = (hasOmfTrailer
+        var hasOmfTrailer = dataItem?.Version == DataItemVersion.V3;
+        var trailerLength = hasOmfTrailer
             ? PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize
-            : MessageActionEnumSize) + idLength;
+            : MessageActionEnumSize;
 
-        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V3 or DataItemVersion.V4)
+        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V3)
             || serializedWithType == null || serializedWithType.Length < MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + trailerLength)
         {
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
@@ -102,20 +90,19 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
         var processTimeTicks = BinaryPrimitives.ReadInt64LittleEndian(serializedWithType.AsSpan(MessageTypeEnumSize + ValueCountSize + messageBody.Length));
 
-        var messageAction = (MessageAction)serializedWithType[^(1 + idLength)];
+        var messageAction = (MessageAction)serializedWithType[^1];
         var omfVersion = OmfVersion.Omf12;
         PartitionKey? partitionKey = null;
         if (hasOmfTrailer)
         {
-            partitionKey = serializedWithType[^(3 + idLength)] == 0 ? null : (PartitionKey)serializedWithType[^(3 + idLength)];
-            messageAction = (MessageAction)serializedWithType[^(2 + idLength)];
-            omfVersion = (OmfVersion)serializedWithType[^(1 + idLength)];
+            partitionKey = serializedWithType[^3] == 0 ? null : (PartitionKey)serializedWithType[^3];
+            messageAction = (MessageAction)serializedWithType[^2];
+            omfVersion = (OmfVersion)serializedWithType[^1];
         }
 
         var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey)
         {
             ProcessTimeTicks = processTimeTicks,
-            SerializedMessageId = idLength > 0 ? new Guid(serializedWithType.AsSpan(serializedWithType.Length - idLength)) : null,
         };
 
         return serializedOmfMessage;

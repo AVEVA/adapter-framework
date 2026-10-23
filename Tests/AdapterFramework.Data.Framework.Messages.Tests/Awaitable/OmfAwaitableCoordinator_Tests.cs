@@ -357,17 +357,6 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
     }
 
     [Fact]
-    public async Task Wait_PeerCoveredBody_IsPeerCovered()
-    {
-        await using var scope = CreateScope();
-        var bodyId = SimulateWriteAndDispatch(scope, 1, TargetA, TargetB);
-
-        _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.PeerCovered, null, null);
-
-        Assert.Equal(OmfAcceptanceOutcome.PeerCovered, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-    }
-
-    [Fact]
     public async Task Wait_FirstDispositionWins()
     {
         await using var scope = CreateScope();
@@ -516,24 +505,6 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfAcceptanceOutcome.Filtered, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
     }
 
-    [Theory]
-    [InlineData(OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch)]
-    [InlineData(OmfAwaitableEndpointMode.AnyCompleteEndpoint)]
-    public async Task Wait_MixedLocalAndPeerCoverage_IsPeerCovered(OmfAwaitableEndpointMode endpointMode)
-    {
-        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = endpointMode });
-        var (localBody, peerBody) = SimulateTwoBodies(scope, new[] { TargetA }, new[] { TargetA });
-
-        _coordinator.RecordDisposition(localBody, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-
-        _coordinator.RecordDisposition(peerBody, EndpointA, OmfDeliveryState.PeerCovered, null, null);
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.PeerCovered, result.Outcome);
-        Assert.Null(result.Reason);
-    }
-
     [Fact]
     public async Task Tracking_AtActiveScopeLimitDuringOutage_StaysBoundedAndIsReleasedOnDispose()
     {
@@ -607,236 +578,12 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.Pending, null, null));
     }
 
-    /// <summary>Verifies a buffered body exposes queue diagnostics without inventing peer acceptance or an HTTP response.</summary>
-    [Fact]
-    public async Task RecordFailoverBuffered_BeforeDispatch_IsQueued()
-    {
-        await using var scope = CreateScope();
-        var bodyId = SimulateBufferedBody(scope);
-
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, result.Outcome);
-        Assert.Equal(OmfReasonCode.Queued, result.Reason.Code);
-        var delivery = Assert.Single(result.Deliveries);
-        Assert.Equal(bodyId, delivery.SerializedMessageId);
-        Assert.Equal(OmfDeliveryState.Pending, delivery.State);
-        Assert.Equal(OmfReasonCode.Queued, delivery.Reason.Code);
-        Assert.Null(delivery.EndpointId);
-        Assert.Null(delivery.TargetUri);
-        Assert.Null(delivery.LastStatusCode);
-        Assert.Null(delivery.Receipt);
-        Assert.Null(delivery.CompletedAtUtc);
-    }
-
-    /// <summary>Verifies legacy peer reports cannot turn buffering into acceptance in any supported scope mode.</summary>
-    [Theory]
-    [InlineData(FailoverMode.NotConfigured)]
-    [InlineData(FailoverMode.Warm)]
-    [InlineData(FailoverMode.Cold)]
-    public async Task RecordPeerCoverage_BufferedBody_NeverSucceeds(FailoverMode mode)
-    {
-        _coordinator.SetFailoverMode(mode);
-        await using var scope = CreateScope();
-        var bodyId = SimulateBufferedBody(scope);
-        var wait = scope.WaitForAcceptanceAsync(Timeout.InfiniteTimeSpan);
-        Assert.False(wait.IsCompleted);
-
-        _coordinator.RecordPeerCoverage(bodyId);
-        _coordinator.RecordPeerCoverage(bodyId);
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.False(wait.IsCompleted);
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, result.Outcome);
-        Assert.Equal(OmfReasonCode.Queued, result.Reason.Code);
-        var delivery = Assert.Single(result.Deliveries);
-        Assert.Equal(bodyId, delivery.SerializedMessageId);
-        Assert.Equal(OmfDeliveryState.Pending, delivery.State);
-        Assert.Null(delivery.EndpointId);
-        Assert.Null(delivery.TargetUri);
-        Assert.Null(delivery.LastStatusCode);
-        Assert.Null(delivery.Receipt);
-        Assert.Equal(OmfReasonCode.Queued, delivery.Reason.Code);
-        Assert.Null(delivery.CompletedAtUtc);
-
-        _coordinator.RegisterDeliveries(bodyId, new[] { TargetA });
-        _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-        Assert.Equal(OmfAcceptanceOutcome.Accepted, (await wait.WaitAsync(LongWait)).Outcome);
-    }
-
-    /// <summary>Verifies promotion replaces the buffer placeholder and late buffer reports cannot complete a dispatched body.</summary>
-    [Fact]
-    public async Task RegisterDeliveries_AfterFailoverBuffering_OnlyLocalDispositionCompletesBody()
-    {
-        await using var scope = CreateScope();
-        var bodyId = SimulateBufferedBody(scope);
-
-        _coordinator.RegisterDeliveries(bodyId, new[] { TargetA });
-        _coordinator.RecordPeerCoverage(bodyId);
-        _coordinator.RecordFailoverDiscarded(bodyId, new OmfOutcomeReason(OmfReasonCode.CorruptRecord, "Late buffer report."));
-        _coordinator.RecordFailoverBuffersDeleted();
-        // A stale buffering notification must not recreate a placeholder after dispatch either.
-        _coordinator.RecordFailoverBuffered(bodyId, DateTime.UtcNow.Ticks);
-        var pending = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, pending.Outcome);
-        var delivery = Assert.Single(pending.Deliveries);
-        Assert.Equal(EndpointA, delivery.EndpointId);
-        Assert.Equal(TargetA.TargetUri, delivery.TargetUri);
-        Assert.Equal(OmfDeliveryState.Pending, delivery.State);
-        Assert.Equal(OmfReasonCode.Queued, delivery.Reason.Code);
-
-        _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-        var accepted = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-        Assert.Equal(OmfAcceptanceOutcome.Accepted, accepted.Outcome);
-        Assert.Equal(Receipt, Assert.Single(accepted.Deliveries).Receipt);
-    }
-
-    /// <summary>Verifies buffer deletion affects only queued bodies, not unbuffered bodies or pending endpoint deliveries.</summary>
-    [Fact]
-    public async Task RecordFailoverBuffersDeleted_MixedBodies_DiscardsOnlyBufferPlaceholder()
-    {
-        await using var scope = CreateScope();
-        scope.EnterWrite();
-        _coordinator.RecordAdmitted(scope, 3);
-        scope.ExitWrite();
-        var queued = Guid.NewGuid();
-        var dispatched = Guid.NewGuid();
-        var unbuffered = Guid.NewGuid();
-        foreach (var id in new[] { queued, dispatched, unbuffered })
-        {
-            _coordinator.RegisterBody(id, new Dictionary<ScopeToken, int> { [scope] = 1 });
-        }
-
-        _coordinator.CloseMaterialization(scope);
-        _coordinator.RecordFailoverBuffered(queued, DateTime.UtcNow.Ticks);
-        _coordinator.RecordFailoverBuffered(dispatched, DateTime.UtcNow.Ticks);
-        _coordinator.RegisterDeliveries(dispatched, new[] { TargetA });
-
-        _coordinator.RecordFailoverBuffersDeleted();
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
-        Assert.Equal(OmfReasonCode.BufferDeleted, result.Reason.Code);
-        var lost = result.Deliveries.Single(delivery => delivery.SerializedMessageId == queued);
-        Assert.Equal(OmfDeliveryState.Discarded, lost.State);
-        Assert.Equal(OmfReasonCode.BufferDeleted, lost.Reason.Code);
-        Assert.Null(lost.EndpointId);
-        Assert.Null(lost.TargetUri);
-        Assert.Equal(OmfDeliveryState.Pending, result.Deliveries.Single(delivery => delivery.SerializedMessageId == dispatched).State);
-        Assert.DoesNotContain(result.Deliveries, delivery => delivery.SerializedMessageId == unbuffered);
-    }
-
-    /// <summary>Verifies volatile overflow and corrupt-record losses complete the buffer placeholder with the original reason.</summary>
-    [Theory]
-    [InlineData(OmfReasonCode.BufferFull)]
-    [InlineData(OmfReasonCode.CorruptRecord)]
-    public async Task RecordFailoverDiscarded_PendingBuffer_PreservesLossReason(OmfReasonCode reasonCode)
-    {
-        await using var scope = CreateScope();
-        var bodyId = SimulateBufferedBody(scope);
-        var reason = new OmfOutcomeReason(reasonCode, "Failover body lost.");
-
-        _coordinator.RecordFailoverDiscarded(bodyId, reason);
-        _coordinator.RecordPeerCoverage(bodyId);
-        _coordinator.RecordFailoverBuffersDeleted();
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
-        Assert.Same(reason, result.Reason);
-        var delivery = Assert.Single(result.Deliveries);
-        Assert.Equal(OmfDeliveryState.Discarded, delivery.State);
-        Assert.Same(reason, delivery.Reason);
-        Assert.Null(delivery.EndpointId);
-        Assert.Null(delivery.TargetUri);
-        Assert.Null(delivery.LastStatusCode);
-        Assert.Null(delivery.Receipt);
-    }
-
-    /// <summary>Verifies switching to Hot wakes a buffered waiter and later peer reports cannot resurrect its observation.</summary>
-    [Fact]
-    public async Task SetFailoverMode_BufferedScope_PermanentlyDiscardsPendingWait()
-    {
-        await using var scope = CreateScope();
-        var bodyId = SimulateBufferedBody(scope);
-        var wait = scope.WaitForAcceptanceAsync(Timeout.InfiniteTimeSpan);
-        Assert.False(wait.IsCompleted);
-
-        _coordinator.SetFailoverMode(FailoverMode.Hot);
-        var first = await wait.WaitAsync(LongWait);
-        AssertTrackingDisabled(first);
-        Assert.Equal(OmfDeliveryState.Pending, Assert.Single(first.Deliveries).State);
-
-        _coordinator.SetFailoverMode(FailoverMode.Warm);
-        _coordinator.RecordPeerCoverage(bodyId);
-        _coordinator.RecordFailoverDiscarded(bodyId, new OmfOutcomeReason(OmfReasonCode.BufferFull, "Late loss."));
-        _coordinator.RecordFailoverBuffersDeleted();
-        var later = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        AssertTrackingDisabled(later);
-        Assert.Same(first.Reason, later.Reason);
-    }
-
-    /// <summary>Verifies neither endpoint mode can combine local acceptance with legacy peer reports into success.</summary>
-    [Theory]
-    [InlineData(OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch)]
-    [InlineData(OmfAwaitableEndpointMode.AnyCompleteEndpoint)]
-    public async Task RecordPeerCoverage_MixedLocalAndBufferedBodies_RemainsPending(OmfAwaitableEndpointMode endpointMode)
-    {
-        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = endpointMode });
-        scope.EnterWrite();
-        _coordinator.RecordAdmitted(scope, 2);
-        scope.ExitWrite();
-        var local = Guid.NewGuid();
-        var peer = Guid.NewGuid();
-        _coordinator.RegisterBody(local, new Dictionary<ScopeToken, int> { [scope] = 1 });
-        _coordinator.RegisterBody(peer, new Dictionary<ScopeToken, int> { [scope] = 1 });
-        _coordinator.CloseMaterialization(scope);
-        _coordinator.RegisterDeliveries(local, new[] { TargetA, TargetB });
-        _coordinator.RecordFailoverBuffered(peer, DateTime.UtcNow.Ticks);
-        _coordinator.RecordPeerCoverage(peer);
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-
-        _coordinator.RecordDisposition(local, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-        if (endpointMode == OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch)
-        {
-            Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-            _coordinator.RecordDisposition(local, EndpointB, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-        }
-
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, result.Outcome);
-        Assert.Equal(OmfReasonCode.Queued, result.Reason.Code);
-        var peerDelivery = result.Deliveries.Single(delivery => delivery.SerializedMessageId == peer);
-        Assert.Equal(OmfDeliveryState.Pending, peerDelivery.State);
-        Assert.Null(peerDelivery.EndpointId);
-        Assert.Null(peerDelivery.TargetUri);
-    }
-
-    /// <summary>Verifies failover reports for unknown IDs do not create tracking or affect an empty scope.</summary>
-    [Fact]
-    public async Task FailoverReports_UnknownBody_AreIgnored()
-    {
-        var unknown = Guid.NewGuid();
-        _coordinator.RecordFailoverBuffered(unknown, DateTime.UtcNow.Ticks);
-        _coordinator.RecordPeerCoverage(unknown);
-        _coordinator.RecordFailoverDiscarded(unknown, new OmfOutcomeReason(OmfReasonCode.CorruptRecord, "Unknown body."));
-        _coordinator.RecordFailoverBuffersDeleted();
-
-        await using var scope = CreateScope();
-        Assert.Equal(OmfAcceptanceOutcome.Filtered, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-        Assert.Equal(0, _coordinator.TrackedBodyCount);
-    }
-
     /// <summary>Verifies the disabled-tracking reason keeps its public numeric value and identifies the failover stage.</summary>
     [Fact]
     public void AcceptanceTrackingDisabled_HasStableCodeAndFailoverStage()
     {
-        Assert.Equal(18, (int)OmfReasonCode.AcceptanceTrackingDisabled);
+        Assert.Equal(16, (int)OmfReasonCode.AcceptanceTrackingDisabled);
         Assert.Equal(OmfPipelineStage.Failover, OmfReasonCode.AcceptanceTrackingDisabled.GetStage());
-        Assert.Equal(4, (int)OmfAcceptanceOutcome.PeerCovered);
-        Assert.Equal(4, (int)OmfDeliveryState.PeerCovered);
-        Assert.Equal(16, (int)OmfReasonCode.AwaitingPeerCoverage);
     }
 
     /// <summary>Verifies Hot immediately finalizes every unfinished pipeline stage, even without sealing or registered bodies.</summary>
@@ -897,7 +644,7 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
             {
                 _coordinator.SetFailoverMode(mode);
                 _coordinator.CloseMaterialization(scope);
-                _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.PeerCovered, null, null);
+                _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
                 AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(TimeSpan.Zero));
             }
         }
@@ -934,22 +681,19 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfDeliveryState.Accepted, Assert.Single(_coordinator.GetResult(first).Deliveries).State);
     }
 
-    /// <summary>Verifies Hot preserves already completed filtered, rejected, discarded, and compatibility peer-covered outcomes and reasons.</summary>
+    /// <summary>Verifies Hot preserves already completed filtered, rejected, and discarded outcomes and reasons.</summary>
     [Theory]
     [InlineData(OmfAcceptanceOutcome.Filtered)]
     [InlineData(OmfAcceptanceOutcome.Rejected)]
     [InlineData(OmfAcceptanceOutcome.Discarded)]
-    [InlineData(OmfAcceptanceOutcome.PeerCovered)]
     public async Task SetFailoverMode_CompletedScope_RemainsUnchanged(OmfAcceptanceOutcome outcome)
     {
         await using var scope = CreateScope();
         if (outcome != OmfAcceptanceOutcome.Filtered)
         {
             var body = SimulateWriteAndDispatch(scope, 1, TargetA);
-            var state = outcome == OmfAcceptanceOutcome.PeerCovered ? OmfDeliveryState.PeerCovered
-                : outcome == OmfAcceptanceOutcome.Rejected ? OmfDeliveryState.Rejected : OmfDeliveryState.Discarded;
-            _coordinator.RecordDisposition(body, EndpointA, state, null,
-                state == OmfDeliveryState.PeerCovered ? null : new OmfOutcomeReason(OmfReasonCode.EndpointRemoved, "Original failure."));
+            var state = outcome == OmfAcceptanceOutcome.Rejected ? OmfDeliveryState.Rejected : OmfDeliveryState.Discarded;
+            _coordinator.RecordDisposition(body, EndpointA, state, null, new OmfOutcomeReason(OmfReasonCode.EndpointRemoved, "Original failure."));
         }
 
         var before = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
@@ -1016,7 +760,6 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         foreach (var mode in new[] { FailoverMode.Cold, FailoverMode.Hot, FailoverMode.Warm, FailoverMode.Hot })
         {
             _coordinator.SetFailoverMode(mode);
-            _coordinator.RecordPeerCoverage(dispatched);
             var later = await dispatchedScope.WaitForAcceptanceAsync(TimeSpan.Zero);
             Assert.Equal(local.Outcome, later.Outcome);
             Assert.Same(local.Reason, later.Reason);
@@ -1050,14 +793,11 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         var body = Guid.NewGuid();
         _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
         _coordinator.CloseMaterialization(scope);
-        _coordinator.RecordFailoverBuffered(body, DateTime.UtcNow.Ticks);
-        _coordinator.RecordPeerCoverage(body);
         AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(Timeout.InfiniteTimeSpan).WaitAsync(LongWait));
 
         _coordinator.SetFailoverMode(originalMode);
         _coordinator.RegisterDeliveries(body, new[] { TargetA });
         _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-        _coordinator.RecordPeerCoverage(body);
         AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(TimeSpan.Zero));
     }
 
@@ -1067,19 +807,6 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
         Assert.Equal(OmfReasonCode.AcceptanceTrackingDisabled, result.Reason.Code);
         Assert.Equal(OmfPipelineStage.Failover, result.Reason.Stage);
-    }
-
-    /// <summary>Admits and materializes one body, then records its pre-dispatch buffer placeholder.</summary>
-    private Guid SimulateBufferedBody(OmfAwaitableScopeState scope)
-    {
-        scope.EnterWrite();
-        _coordinator.RecordAdmitted(scope, 1);
-        scope.ExitWrite();
-        var bodyId = Guid.NewGuid();
-        _coordinator.RegisterBody(bodyId, new Dictionary<ScopeToken, int> { [scope] = 1 });
-        _coordinator.CloseMaterialization(scope);
-        _coordinator.RecordFailoverBuffered(bodyId, DateTime.UtcNow.Ticks);
-        return bodyId;
     }
 
     private OmfAwaitableScopeState CreateScope(OmfAwaitableScopeOptions options = null)

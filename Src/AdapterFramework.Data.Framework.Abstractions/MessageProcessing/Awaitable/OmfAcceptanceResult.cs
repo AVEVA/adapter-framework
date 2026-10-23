@@ -24,7 +24,7 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// <param name="EndpointMode">The endpoint mode the outcome was evaluated with.</param>
 /// <param name="Deliveries">Every delivery of every body that carries the scope's items.</param>
 /// <param name="Reason">
-/// Null for <see cref="OmfAcceptanceOutcome.Accepted"/>, <see cref="OmfAcceptanceOutcome.PeerCovered"/>, and <see cref="OmfAcceptanceOutcome.Filtered"/>.
+/// Null for <see cref="OmfAcceptanceOutcome.Accepted"/> and <see cref="OmfAcceptanceOutcome.Filtered"/>.
 /// For a failure, the first recorded failure that made the endpoint mode unsatisfiable. For <see cref="OmfAcceptanceOutcome.TimedOut"/>,
 /// the reason of the least-advanced unfinished work.
 /// </param>

@@ -134,17 +134,6 @@ public class ClientFailoverConfiguration_Tests
         }
     }
 
-    /// <summary>
-    /// Verifies that CLI help no longer advertises the removed Hot acceptance opt-in.
-    /// </summary>
-    [Fact]
-    public void GetClientFailoverHelpOutput_WhenRequested_DoesNotAdvertiseAcceptanceOptIn()
-    {
-        var output = new FailoverCmdHelpService().GetClientFailoverHelpOutput();
-
-        Assert.DoesNotContain("acceptance watermark", output);
-    }
-
     private static ClientFailoverConfiguration CreateDefaultConfiguration()
     {
         return new ClientFailoverConfiguration()

@@ -58,11 +58,6 @@ public interface ISerializedOmfMessage
     Guid? SerializedMessageId => null;
 
     /// <summary>
-    /// Gets the process timestamp in ticks, or zero when no timestamp is available.
-    /// </summary>
-    long ProcessTimeTicks => 0;
-
-    /// <summary>
     /// Get the size of the serialized OMF message in bytes. 
     /// </summary>
     /// <returns>The message size in bytes.</returns>

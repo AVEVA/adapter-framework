@@ -103,17 +103,7 @@ public enum OmfReasonCode
     NonAcceptedSuccess = 15,
 
     /// <summary>
-    /// Compatibility value for peer-wait diagnostics; runtime failover buffering no longer waits for peer acceptance.
-    /// </summary>
-    AwaitingPeerCoverage = 16,
-
-    /// <summary>
-    /// The failover buffer was deleted on a mode change or configuration removal.
-    /// </summary>
-    BufferDeleted = 17,
-
-    /// <summary>
     /// Hot failover permanently ended an unfinished scope's acceptance observation without cancelling data delivery.
     /// </summary>
-    AcceptanceTrackingDisabled = 18,
+    AcceptanceTrackingDisabled = 16,
 }

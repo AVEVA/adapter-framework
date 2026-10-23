@@ -22,10 +22,8 @@ using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
-using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.Buffering;
-using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
@@ -50,8 +48,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private Task _internalDataQueueConsumerTask;
 
     private long _lastReceivedTimeTicks;
-    private long _lastDispatchedTimeTicks;
-    private long _nonHotProcessedTimeTicks;
+    private long _lastDataProcessedTimeTicks;
 
     private bool _disposed;
 
@@ -70,21 +67,10 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     public FailoverRole CurrentFailoverRole { get; private set; }
 
     /// <summary>
-    /// Gets the last hand-off timestamp. Hot mode reports the last successful buffer dispatch;
-    /// other modes report the most recent synchronous hand-off time.
+    /// Gets the last hand-off time: the receive time outside hot mode, or the process time of the last body sent from the hot buffer.
+    /// Read without a lock so a stalled send can't delay the failover heartbeat.
     /// </summary>
-    public DateTime LastDataProcessedTime
-    {
-        get
-        {
-            lock (_lockObject)
-            {
-                var ticks = CurrentFailoverMode == FailoverMode.Hot
-                    ? Interlocked.Read(ref _lastDispatchedTimeTicks) : _nonHotProcessedTimeTicks;
-                return new DateTime(ticks, DateTimeKind.Utc);
-            }
-        }
-    }
+    public DateTime LastDataProcessedTime => new(Interlocked.Read(ref _lastDataProcessedTimeTicks), DateTimeKind.Utc);
 
     #endregion
 
@@ -114,31 +100,12 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                     message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
                 {
                     ProcessTimeTicks = _lastReceivedTimeTicks,
-                    SerializedMessageId = message.SerializedMessageId,
                 };
-                if (failoverMessage.SerializedMessageId is { } bodyId)
-                {
-                    _awaitableCoordinator?.RecordFailoverBuffered(bodyId, failoverMessage.ProcessTimeTicks);
-                }
-
-                try
-                {
-                    _internalBackedUpMessageQueue.Enqueue(failoverMessage);
-                }
-                catch (Exception ex)
-                {
-                    if (failoverMessage.SerializedMessageId is { } failedId)
-                    {
-                        _awaitableCoordinator?.RecordFailoverDiscarded(failedId,
-                            new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
-                    }
-
-                    throw;
-                }
+                _internalBackedUpMessageQueue.Enqueue(failoverMessage);
             }
             else
             {
-                _nonHotProcessedTimeTicks = messageReceivedTime.Ticks;
+                Interlocked.Exchange(ref _lastDataProcessedTimeTicks, messageReceivedTime.Ticks);
 
                 _dataEndpointManager.SendMessage(message);
                 if ((CurrentFailoverMode == FailoverMode.Warm || CurrentFailoverMode == FailoverMode.Cold) & CurrentFailoverRole == FailoverRole.Secondary)
@@ -177,8 +144,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     }
 
     /// <summary>
-    /// Applies the failover mode under the dispatch lock and warns once on each transition into Hot,
-    /// before notifying the coordinator or returning to manager callbacks.
+    /// Applies the failover mode and logs a warning on each switch into hot mode, which doesn't support awaitable scopes.
     /// </summary>
     /// <param name="newFailoverMode">The configured failover mode.</param>
     public void UpdateMode(FailoverMode newFailoverMode)
@@ -187,7 +153,6 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         {
             if (CurrentFailoverMode != FailoverMode.Hot && newFailoverMode == FailoverMode.Hot)
             {
-                _lastDispatchedTimeTicks = 0;
                 CreateInternalDataQueue();
                 if (CurrentFailoverRole == FailoverRole.Primary)
                 {
@@ -230,14 +195,28 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
         if (disposing)
         {
-            lock (_lockObject)
+            _internalDataQueueConsumerCts?.Cancel();
+
+            if (_internalDataQueueConsumerTask != null)
             {
-                StopConsumingInternalDataQueue();
-                UnsubscribeFromInternalQueueReports();
-                _internalBackedUpMessageQueue?.Dispose();
-                _internalPersistentMessageQueue?.Dispose();
-                _internalFileQueue?.Dispose();
+                try
+                {
+                    _internalDataQueueConsumerTask?.GetAwaiter().GetResult();
+                }
+                catch (AggregateException ae)
+                {
+                    ae.Handle(ex => ex is TaskCanceledException);
+                }
+                finally
+                {
+                    _internalDataQueueConsumerTask.Dispose();
+                }
             }
+
+            _internalBackedUpMessageQueue?.Dispose();
+            _internalPersistentMessageQueue?.Dispose();
+            _internalFileQueue?.Dispose();
+            _internalDataQueueConsumerCts?.Dispose();
         }
 
         _disposed = true;
@@ -266,17 +245,10 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
         var maxVolatileMemorySize = _bufferingConfiguration.EnablePersistentBuffering ? _bufferingConfiguration.MaxBufferSizeMB : BufferingConstants.DefaultVolatileMemorySizeMb;
         _internalBackedUpMessageQueue = new FailoverBackedUpOmfMessageQueue(maxVolatileMemorySize, BufferingConstants.DefaultMessageExpirationTime, _internalPersistentMessageQueue, _logger);
-        _internalBackedUpMessageQueue.SerializedBodiesDiscarded += OnInternalBodiesDiscarded;
-        if (_internalPersistentMessageQueue is not null)
-        {
-            _internalPersistentMessageQueue.SerializedBodiesDiscarded += OnInternalBodiesDiscarded;
-        }
     }
 
     private void DeleteInternalDataQueue()
     {
-        _awaitableCoordinator?.RecordFailoverBuffersDeleted();
-        UnsubscribeFromInternalQueueReports();
         _internalBackedUpMessageQueue?.Dispose();
         _internalPersistentMessageQueue?.Dispose();
         _internalFileQueue?.Dispose();
@@ -329,22 +301,12 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 {
                     try
                     {
-                        // Failover records always need process ticks for local trimming. Legacy
-                        // endpoint-writer records do not: retain their original V3 format for
-                        // unscoped writes rather than forcing timestamp-bearing V5 records.
-                        var dispatched = new SerializedOmfMessage(message.MessageType, message.MessageBody,
-                            message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
-                        _dataEndpointManager.SendMessage(dispatched);
-                        Interlocked.Exchange(ref _lastDispatchedTimeTicks, message.ProcessTimeTicks);
+                        _dataEndpointManager.SendMessage(message);
+                        Interlocked.Exchange(ref _lastDataProcessedTimeTicks, message.ProcessTimeTicks);
                     }
                     catch (Exception ex)
                     {
-                        if (message.SerializedMessageId is { } id)
-                        {
-                            _awaitableCoordinator?.RecordFailoverDiscarded(id,
-                                new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
-                        }
-
+                        // Dropped, not retried: the next send moves the heartbeat past this body, so the secondary trims its copy too.
                         _logger.LogError(ex, "Failed to dispatch a body from the failover buffer.");
                     }
                 }
@@ -369,38 +331,8 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             while (_internalBackedUpMessageQueue.TryPeek(out var message)
                     && message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks)
             {
-                if (_internalBackedUpMessageQueue.TryDequeue(out var trimmed)
-                    && trimmed.SerializedMessageId is { } id)
-                {
-                    _awaitableCoordinator?.RecordFailoverDiscarded(id,
-                        new OmfOutcomeReason(OmfReasonCode.AcceptanceTrackingDisabled,
-                            "Legacy hand-off trimming removed the body without proving acceptance."));
-                }
+                _internalBackedUpMessageQueue.TryDequeue(out _);
             }
-        }
-    }
-
-    /// <summary>Unsubscribes before shutdown flushes or deletes the queues.</summary>
-    private void UnsubscribeFromInternalQueueReports()
-    {
-        if (_internalBackedUpMessageQueue is not null)
-        {
-            _internalBackedUpMessageQueue.SerializedBodiesDiscarded -= OnInternalBodiesDiscarded;
-        }
-
-        if (_internalPersistentMessageQueue is not null)
-        {
-            _internalPersistentMessageQueue.SerializedBodiesDiscarded -= OnInternalBodiesDiscarded;
-        }
-    }
-
-    /// <summary>Reports volatile eviction and persisted record loss without reentering queue locks.</summary>
-    private void OnInternalBodiesDiscarded(object sender, SerializedBodiesEventArgs e)
-    {
-        var reason = new OmfOutcomeReason(e.Reason, "The failover buffer lost the body before dispatch.");
-        foreach (var id in e.SerializedMessageIds)
-        {
-            _awaitableCoordinator?.RecordFailoverDiscarded(id, reason);
         }
     }
 

@@ -132,7 +132,9 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
     {
         return ResponseStatus.Equals(other.ResponseStatus) &&
                Message == other.Message &&
-               Delay.Equals(other.Delay);
+               Delay.Equals(other.Delay) &&
+               StatusCode == other.StatusCode &&
+               Equals(Receipt, other.Receipt);
     }
 
     public override bool Equals(object obj)
@@ -145,5 +147,5 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
         return false;
     }
 
-    public override int GetHashCode() => HashCode.Combine(ResponseStatus, Message, Delay);
+    public override int GetHashCode() => HashCode.Combine(ResponseStatus, Message, Delay, StatusCode, Receipt);
 }

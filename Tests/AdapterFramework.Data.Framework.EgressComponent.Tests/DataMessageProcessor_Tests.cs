@@ -29,8 +29,10 @@ using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.AdapterCommon;
+using AdapterFramework.Data.Framework.DataFlow;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
+using AdapterFramework.Data.Framework.Tests.Helper;
 using Moq;
 using AdapterFramework.Data.Framework.Serialization;
 using Xunit;
@@ -1135,6 +1137,59 @@ public class DataMessageProcessor_Tests
         var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(result.Outcome == OmfAcceptanceOutcome.Accepted, $"{result.Outcome}: {result.Reason}");
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that when only one grouping block accepts a scope's seal barrier, the scope fails with
+    /// <see cref="OmfReasonCode.PostRejected"/> and serialization doesn't keep a barrier count for the scope forever.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_SealRefusedByOneBlock_DiscardsScopeWithoutLeakingBarrierCount()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var schemaSent = new ManualResetEventSlim(false);
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockFailoverDataMessageProcessor.Setup(processor => processor.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(body =>
+            {
+                if (body.MessageType == MessageType.Schema)
+                {
+                    schemaSent.Set();
+                }
+            });
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+        var mockLogManager = new Mock<ILogManager>();
+        mockLogManager.Setup(logManager => logManager.GetOrCreateLogger(It.IsAny<string>(), It.IsAny<LoggerConfiguration>()))
+            .Returns(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+        using var messageProcessor = new DataMessageProcessor(
+            mockLogManager.Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            mockFailoverDataMessageProcessor.Object,
+            mockApplicationManifest.Object,
+            coordinator);
+        ((IDisposable)TestUtilities.GetFieldValueFromObject("_instanceGroupingBlock", messageProcessor)).Dispose();
+        var serializationBlock = (SerializationBlock)TestUtilities.GetFieldValueFromObject("_serializationBlock", messageProcessor);
+        var barrierCounts = (Dictionary<ScopeToken, int>)TestUtilities.GetFieldValueFromObject("_materializationBarrierCounts", serializationBlock);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
+        scope.WriteType(new DynamicDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() });
+        scope.Seal();
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfReasonCode.PostRejected, result.Reason.Code);
+        Assert.True(schemaSent.Wait(WaitTime), "The schema block did not flush the scoped type.");
+        await Task.Delay(300);
+        Assert.Empty(barrierCounts);
         await scope.DisposeAsync();
     }
 

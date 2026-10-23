@@ -188,28 +188,20 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
 
-    /// <summary>Verifies every transition into Hot warns exactly once, before coordinator notification, including direct users without a coordinator.</summary>
+    /// <summary>Verifies every transition into Hot warns exactly once, with or without a coordinator.</summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void UpdateMode_WhenEnteringHot_WarnsOncePerTransitionBeforeCoordinatorNotification(bool useCoordinator)
+    public void UpdateMode_WhenEnteringHot_WarnsOncePerTransition(bool useCoordinator)
     {
         using var coordinator = new OmfAwaitableCoordinator();
         var logger = new Mock<ILogger>();
         var warnings = new List<string>();
         logger.Setup(x => x.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(), It.IsAny<Exception>(),
                 It.IsAny<Func<It.IsAnyType, Exception, string>>()))
-            .Callback((LogLevel _, EventId _, object state, Exception _, object _) =>
-            {
-                if (useCoordinator)
-                {
-                    Assert.NotEqual(FailoverMode.Hot, coordinator.CurrentFailoverMode);
-                }
-
-                warnings.Add(state.ToString());
-            });
+            .Callback((LogLevel _, EventId _, object state, Exception _, object _) => warnings.Add(state.ToString()));
         using var processor = new FailoverDataMessageProcessor(logger.Object,
-            GetMockConfigurationProvider(nameof(UpdateMode_WhenEnteringHot_WarnsOncePerTransitionBeforeCoordinatorNotification)).Object,
+            GetMockConfigurationProvider(nameof(UpdateMode_WhenEnteringHot_WarnsOncePerTransition)).Object,
             GetMockOmfDataEndpointManager().Object, useCoordinator ? coordinator : null);
         processor.Initialize();
         processor.UpdateMode(FailoverMode.Warm);
@@ -248,14 +240,12 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.Initialize();
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
-        Assert.Equal(FailoverMode.Hot, coordinator.CurrentFailoverMode);
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Warm);
-        Assert.Equal(FailoverMode.Warm, coordinator.CurrentFailoverMode);
         Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
         await using var warmScopeLifetime = scope;
     }
@@ -549,14 +539,11 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
             endpoint.Object);
         processor.Initialize();
         processor.UpdateMode(FailoverMode.Hot);
-        var body = new SerializedOmfMessage(MessageType.Instance, new byte[] { 1, 2 }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5)
-        {
-            ProcessTimeTicks = 1,
-        };
+        var body = new SerializedOmfMessage(MessageType.Instance, new byte[] { 1, 2 }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
         processor.ProcessOmfMessage(body);
         processor.ProcessOmfMessage(body);
         var lastProcessTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
-        Assert.True(lastProcessTicks > 1);
+        Assert.True(lastProcessTicks > 0);
         Assert.Equal(DateTime.MinValue, processor.LastDataProcessedTime);
 
         processor.UpdateState(FailoverRole.Primary, default);
@@ -572,8 +559,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         using var writerQueue = new PersistentOmfMessageQueue("legacy-writer", persistence.Object, new Mock<ILogger>().Object);
         Assert.All(_sentMessages, sent =>
         {
-            Assert.IsType<SerializedOmfMessage>(sent);
-            Assert.Equal(0, sent.ProcessTimeTicks);
             Assert.Null(sent.SerializedMessageId);
             Assert.Equal(body.MessageBody, sent.MessageBody);
             Assert.Equal(body.MessageType, sent.MessageType);
@@ -610,7 +595,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
 
         var sent = Assert.Single(_sentMessages);
         Assert.Equal(new byte[] { 2 }, sent.MessageBody);
-        Assert.Equal(0, sent.ProcessTimeTicks);
         Assert.Null(sent.SerializedMessageId);
         Assert.Equal(new DateTime(secondTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
     }
@@ -645,6 +629,44 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         }
 
         Assert.Equal(new DateTime(42, DateTimeKind.Utc), processor.LastDataProcessedTime);
+    }
+
+    /// <summary>
+    /// Verifies that the heartbeat can read <see cref="FailoverDataMessageProcessor.LastDataProcessedTime"/>
+    /// while another thread holds the processor lock, for example during a slow send, and gets the last hand-off time.
+    /// </summary>
+    /// <param name="mode">The failover mode that selects which hand-off time is reported.</param>
+    [Theory]
+    [InlineData(FailoverMode.Warm)]
+    [InlineData(FailoverMode.Hot)]
+    public void LastDataProcessedTime_WhileProcessorLockHeld_ReturnsWithoutWaiting(FailoverMode mode)
+    {
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider($"{nameof(LastDataProcessedTime_WhileProcessorLockHeld_ReturnsWithoutWaiting)}_{mode}").Object,
+            GetMockOmfDataEndpointManager().Object);
+        processor.Initialize();
+        processor.UpdateMode(mode);
+        processor.UpdateState(FailoverRole.Primary, default);
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        var expected = processor.LastDataProcessedTime;
+        Assert.NotEqual(default, expected);
+        var processorLock = TestUtilities.GetFieldValueFromObject("_lockObject", processor);
+
+        var actual = default(DateTime);
+        var reader = new Thread(() => actual = processor.LastDataProcessedTime) { IsBackground = true };
+        Monitor.Enter(processorLock);
+        try
+        {
+            reader.Start();
+            Assert.True(reader.Join(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            Monitor.Exit(processorLock);
+        }
+
+        Assert.Equal(expected, actual);
     }
 
     public void Dispose()

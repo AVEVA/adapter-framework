@@ -37,6 +37,17 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     }
 
     /// <inheritdoc/>
-    public override int GetMessageSizeInBytes() =>
-        base.GetMessageSizeInBytes() + (ProcessTimeTicks == 0 ? BufferingConstants.ProcessTimeTicksLength : 0);
+    public long ProcessTimeTicks { get; set; }
+
+    /// <inheritdoc/>
+    public override int GetMessageSizeInBytes() => GetRecordSizeInBytes(MessageBody.Length);
+
+    /// <summary>
+    /// Gets the size of a V3 failover buffer record, which always stores the process time.
+    /// </summary>
+    /// <param name="bodyLength">The length of the message body in bytes.</param>
+    /// <returns>The record size in bytes.</returns>
+    internal static int GetRecordSizeInBytes(int bodyLength) =>
+        MessageTypeEnumSize + ValueCountSize + bodyLength + BufferingConstants.ProcessTimeTicksLength
+        + PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize;
 }

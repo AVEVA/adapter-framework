@@ -426,7 +426,13 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
     private async Task<EndpointResponse> CreateSuccessfulEndpointResponseAsync(HttpResponseMessage responseMessage, MessageType messageType, string httpTraceId)
     {
         var successfulResponse = new EndpointResponse(ResponseStatusEnum.Success);
-        var successfulMessageContent = await responseMessage.Content.ReadAsStringAsync();
+        var isAccepted = responseMessage.StatusCode == HttpStatusCode.Accepted;
+        var successfulMessageContent = string.Empty;
+
+        if (isAccepted || _logger.IsEnabled(LogLevel.Trace) || _httpDebugEnabled)
+        {
+            successfulMessageContent = await responseMessage.Content.ReadAsStringAsync();
+        }
 
         if (_logger.IsEnabled(LogLevel.Trace))
         {
@@ -440,7 +446,7 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 
         RaiseHttpRequestExecutedEvent(messageType, responseMessage.StatusCode, successfulMessageContent);
 
-        return successfulResponse with { Receipt = OmfIngressReceiptParser.Parse(successfulMessageContent) };
+        return isAccepted ? successfulResponse with { Receipt = OmfIngressReceiptParser.Parse(successfulMessageContent) } : successfulResponse;
     }
 
     private void RaiseHttpRequestExecutedEvent(MessageType messageType, HttpStatusCode? statusCode, string content, Exception exception = null)

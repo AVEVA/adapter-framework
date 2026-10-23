@@ -62,8 +62,6 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         fixture.Processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 2 }, MessageAction.Default));
         Assert.Equal(progress, fixture.Processor.LastDataProcessedTime);
         var sent = Assert.Single(fixture.Sent);
-        Assert.IsType<SerializedOmfMessage>(sent);
-        Assert.Equal(0, sent.ProcessTimeTicks);
         Assert.Null(sent.SerializedMessageId);
     }
 
@@ -87,7 +85,7 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         Assert.Equal(DateTimeKind.Utc, fixture.Processor.LastDataProcessedTime.Kind);
     }
 
-    /// <summary>Verifies late bodies from a non-hot scope are discarded diagnostically but still retained for legacy send or trim, never false peer coverage.</summary>
+    /// <summary>Verifies a scope whose body materializes after the switch to hot stays discarded, while the body is buffered, sent, or trimmed like any unscoped hot body.</summary>
     [Theory]
     [InlineData(FailoverMode.Warm, false)]
     [InlineData(FailoverMode.Warm, true)]
@@ -104,7 +102,7 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         fixture.Processor.ProcessOmfMessage(body);
 
         var discarded = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-        AssertTrackingDisabled(discarded, body.SerializedMessageId.Value);
+        AssertTrackingDisabled(discarded);
         Assert.Empty(fixture.Sent);
         if (trimBuffered)
         {
@@ -132,13 +130,12 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
             Assert.Equal(body.OmfVersion, legacy.OmfVersion);
             Assert.Equal(body.PartitionKey, legacy.PartitionKey);
             Assert.Null(legacy.SerializedMessageId);
-            Assert.Equal(0, legacy.ProcessTimeTicks);
         }
 
         fixture.Processor.UpdateMode(FailoverMode.Hot);
         var later = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-        AssertTrackingDisabled(later, body.SerializedMessageId.Value);
-        Assert.Equal(Assert.Single(discarded.Deliveries).CompletedAtUtc, Assert.Single(later.Deliveries).CompletedAtUtc);
+        AssertTrackingDisabled(later);
+        Assert.Same(discarded.Reason, later.Reason);
     }
 
     /// <summary>Verifies legacy hot handoff progress recovers after buffer loss or a dispatch exception without querying endpoint acceptance.</summary>
@@ -168,7 +165,7 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         fixture.Processor.UpdateState(FailoverRole.Secondary, default);
 
         Assert.Equal(new DateTime(ticks, DateTimeKind.Utc), fixture.Processor.LastDataProcessedTime);
-        Assert.Equal(0, Assert.Single(fixture.Sent).ProcessTimeTicks);
+        Assert.Null(Assert.Single(fixture.Sent).SerializedMessageId);
         fixture.Endpoint.Verify(endpoint => endpoint.SendMessage(It.IsAny<ISerializedOmfMessage>()), Times.Exactly(overflow ? 1 : 2));
     }
 
@@ -196,31 +193,21 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         fixture.Processor.UpdateState(FailoverRole.Secondary, default);
 
         var sent = Assert.Single(fixture.Sent);
-        Assert.IsType<SerializedOmfMessage>(sent);
         Assert.Equal(second.MessageBody, sent.MessageBody);
         Assert.Equal(second.MessageType, sent.MessageType);
         Assert.Equal(second.ItemCount, sent.ItemCount);
         Assert.Equal(second.PartitionKey, sent.PartitionKey);
         Assert.Equal(second.OmfVersion, sent.OmfVersion);
-        Assert.Equal(0, sent.ProcessTimeTicks);
         Assert.Null(sent.SerializedMessageId);
         Assert.Equal(new DateTime(lastTicks, DateTimeKind.Utc), fixture.Processor.LastDataProcessedTime);
     }
 
-    /// <summary>Checks tracking was explicitly finalized without an invented HTTP or peer-coverage success.</summary>
-    private static void AssertTrackingDisabled(OmfAcceptanceResult result, Guid bodyId)
+    /// <summary>Checks the scope was discarded by hot mode and that no delivery was recorded for its buffered body.</summary>
+    private static void AssertTrackingDisabled(OmfAcceptanceResult result)
     {
         Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
         Assert.Equal(OmfReasonCode.AcceptanceTrackingDisabled, result.Reason.Code);
-        var delivery = Assert.Single(result.Deliveries);
-        Assert.Equal(bodyId, delivery.SerializedMessageId);
-        Assert.Equal(OmfDeliveryState.Discarded, delivery.State);
-        Assert.Equal(OmfReasonCode.AcceptanceTrackingDisabled, delivery.Reason.Code);
-        Assert.Null(delivery.EndpointId);
-        Assert.Null(delivery.TargetUri);
-        Assert.Null(delivery.LastStatusCode);
-        Assert.Null(delivery.Receipt);
-        Assert.NotNull(delivery.CompletedAtUtc);
+        Assert.Empty(result.Deliveries);
     }
 
     private sealed class ProcessorFixture : IDisposable

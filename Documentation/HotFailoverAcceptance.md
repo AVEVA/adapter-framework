@@ -1,6 +1,6 @@
 # Awaitable scopes and failover
 
-**Updated:** 2026-10-22.
+**Updated:** 2026-10-23.
 
 Awaitable scopes require an OMF 2.0 pipeline. They remain available to writers without failover,
 and with warm or cold failover. **Hot failover does not support awaitable scopes.**
@@ -15,7 +15,7 @@ and with warm or cold failover. **Hot failover does not support awaitable scopes
 | OMF 1.2 or processor chain without scope support | New scopes throw `NotSupportedException` |
 
 `TryCreateScope` returns `false` only when the active-scope limit is reached. An unsupported
-configuration is not a capacity failure. There is no hot-scope opt-in or acceptance-watermark setting.
+configuration is not a capacity failure. There is no setting that enables scopes in hot mode.
 
 ## Configuration and runtime changes
 
@@ -23,7 +23,7 @@ Each transition into hot mode logs a warning that awaitable scopes are unsupport
 the same hot mode does not repeat the warning; leaving and re-entering hot mode does.
 
 Entering hot mode permanently completes every unfinished scope observation as `Discarded`,
-with reason `AcceptanceTrackingDisabled` (numeric code **18**). This includes unsealed scopes,
+with reason `AcceptanceTrackingDisabled` (numeric code **16**). This includes unsealed scopes,
 scopes whose bodies have not materialized, and scopes awaiting an endpoint response.
 Already completed outcomes remain unchanged. Leaving hot mode does not resurrect discarded scopes;
 create new scopes after returning to a supported mode.
@@ -37,31 +37,44 @@ as unscoped work or advance source checkpoints on a discarded result. If best-ef
 delivery is desired, make it an explicit writer policy that does not promise scoped acceptance.
 Drain and observe existing scopes before changing modes if their acceptance results are required.
 
-## Legacy hot-failover behavior
+## Hot failover without scopes
 
-Unscoped hot writes retain the existing buffering, promotion, and trimming behavior. Heartbeats
+Unscoped hot writes keep the existing buffering, promotion, and trimming rules. Heartbeats
 advertise the last dispatched body's process time, not proven endpoint acceptance. The secondary's
 existing `FailoverTimeout / 2` trim offset is unchanged. Peer trimming never completes a scope as
-accepted or peer-covered.
+accepted.
+
+Two things change for every hot body, with or without a scope:
+
+- **OMF version and partition key are kept.** Earlier releases dropped both when a body entered
+  the failover buffer, so OMF 2.0 bodies were sent labeled as OMF 1.2 and without a partition key.
+  Bodies now leave the failover buffer with the same OMF version and partition key they entered with.
+- **The failover buffer record format changes.** Earlier releases wrote V2 failover records. This
+  release writes V3 records, which add the partition key and OMF version. The failover buffer never
+  stores a scope ID. A body from a scope that was open when hot mode started is buffered like any
+  unscoped body, and its scope stays discarded.
 
 Hand-off time does not prove that an endpoint accepted a body. This is why enabling scopes with
 only a warning would be unsafe for source-checkpoint advancement. This change adds no split-brain
 fencing, cross-node checkpoint sharing, deduplication, or exactly-once delivery guarantee.
 
-## Migration and buffer compatibility
+## Buffer compatibility and rollback
 
-The former hot acceptance opt-in has been removed. Remove the obsolete property from existing
-configuration before applying it; configuration validation rejects unknown fields.
-The boolean `UpdateMode` and `SetFailoverMode` overloads and endpoint/writer acceptance-watermark
-APIs have also been removed. Call the single-parameter mode APIs instead.
+| Buffer | Unscoped body | Scoped body | Earlier releases wrote |
+| --- | --- | --- | --- |
+| Endpoint (writer) buffer | V3 | V4: V3 plus a 16-byte ID | V3 |
+| Failover buffer | V3 | V3, without the ID | V2 |
 
-Existing writer V3/V4/V5 and failover V2/V3/V4 readers are retained. No persisted format has been
-renumbered or reinterpreted. Ordinary scoped writer records still retain their identity for local
-acceptance tracking. Hot endpoint hand-off strips scope identity and process timestamps, preserving
-legacy unscoped writer output. Persisted IDs from a previous process do not reattach to new scopes.
+This release reads every format in the table. Persisted IDs from a previous process do not
+reattach to new scopes, so scoped bodies read back after a restart are delivered as ordinary data.
 
-Compatibility outcome and reason enum values remain reserved; retaining them does not enable hot
-scope support. `RecordPeerCoverage` is a compatibility no-op and cannot report acceptance.
+Earlier releases can't read these buffers correctly:
 
-Older builds may not understand newer buffer records. Drain endpoint and failover buffers before
-rolling back to an older build, or deliberately delete them knowing that deletion loses data.
+- **V4 endpoint buffer records** have a record marker that earlier releases don't know. They
+  treat each one as a corrupt record and skip it, so that body is lost.
+- **V3 failover records** are read with the V2 layout. No error is raised. Each body gets two extra
+  bytes at the end, and its action is read from the OMF version byte, so an OMF 2.0 body is sent
+  as `Update`. The endpoint receives a broken body with the wrong action.
+
+Before rolling back to an earlier release, drain the endpoint buffers and the hot failover
+buffers. If you can't drain them, delete them deliberately, knowing that deletion loses data.

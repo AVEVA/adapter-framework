@@ -18,8 +18,8 @@ namespace AdapterFramework.Data.Framework.Abstractions.Failover;
 
 public interface IFailoverSerializedOmfMessage : ISerializedOmfMessage
 {
-	/// <summary>
-	/// Gets the process timestamp in ticks for this failover message.
-	/// </summary>
-	new long ProcessTimeTicks { get; }
+    /// <summary>
+    /// A time stamp represented as ticks to track the process time of this message.
+    /// </summary>
+    long ProcessTimeTicks { get; }
 }

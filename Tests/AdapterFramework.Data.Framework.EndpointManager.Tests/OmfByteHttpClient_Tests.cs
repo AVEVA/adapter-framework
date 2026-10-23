@@ -164,6 +164,34 @@ public class OmfByteHttpClient_Tests : IDisposable
         Assert.False(_edgeEventProvider.EdgeEventChannel.Reader.TryRead(out var _), "Channel should contain only one event.");
     }
 
+    /// <summary>
+    /// Verifies that the client parses an ingress receipt only from a 202 Accepted response,
+    /// and ignores the same receipt body on any other successful status.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted, true)]
+    [InlineData(HttpStatusCode.OK, false)]
+    [InlineData(HttpStatusCode.Created, false)]
+    public async Task OmfByteHttpClient_SendMessageAsync_ParsesReceiptOnlyFor202(HttpStatusCode statusCode, bool expectReceipt)
+    {
+        var operationId = Guid.NewGuid();
+        _testEndpoint.SetPostResponseBody($"{{\"Operation-Id\":\"{operationId}\",\"ErrorCount\":0,\"QueueAge\":\"00:00:01\"}}");
+        _testEndpoint.SetHttpResponse(statusCode);
+        _testEndpoint.StartListening();
+
+        var response = await _omfByteHttpClient.SendMessageAsync(MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, CancellationToken.None);
+
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+        if (expectReceipt)
+        {
+            Assert.Equal(operationId, response.Receipt?.OperationId);
+        }
+        else
+        {
+            Assert.Null(response.Receipt);
+        }
+    }
+
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]

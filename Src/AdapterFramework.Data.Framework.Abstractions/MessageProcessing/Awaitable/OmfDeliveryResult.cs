@@ -28,7 +28,7 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// The status of the most recent HTTP attempt, or null when there was none. The writer can retry a body several times,
 /// so earlier attempts may have returned different statuses.
 /// </param>
-/// <param name="Reason">Why the delivery is in its state; null when <see cref="OmfDeliveryState.Accepted"/> or <see cref="OmfDeliveryState.PeerCovered"/>.</param>
+/// <param name="Reason">Why the delivery is in its state; null when <see cref="OmfDeliveryState.Accepted"/>.</param>
 /// <param name="Receipt">Values parsed from the 202 response body, when available.</param>
 /// <param name="CompletedAtUtc">When the delivery reached its disposition, or null while pending.</param>
 public sealed record OmfDeliveryResult(

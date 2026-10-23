@@ -67,19 +67,6 @@ public class FailoverManager_Tests
     #region Tests
 
     /// <summary>
-    /// Verifies that existing processor implementations remain usable through the single-parameter interface.
-    /// </summary>
-    [Fact]
-    public void UpdateMode_WhenLegacyProcessorImplementsInterface_AppliesMode()
-    {
-        using var legacyProcessor = new LegacyFailoverDataMessageProcessor();
-        var processor = (IFailoverDataMessageProcessor)legacyProcessor;
-
-        processor.UpdateMode(FailoverMode.Hot);
-        Assert.Equal(FailoverMode.Hot, processor.CurrentFailoverMode);
-    }
-
-    /// <summary>
     /// Verifies that startup commits the mode after initial endpoint activity and health links,
     /// then invokes callbacks without awaiting them before the final endpoint start observes the committed state.
     /// </summary>
@@ -1236,56 +1223,4 @@ public class FailoverManager_Tests
     }
 
     #endregion
-
-    /// <summary>
-    /// Represents a custom processor that implements only the original mode update contract.
-    /// </summary>
-    private sealed class LegacyFailoverDataMessageProcessor : IFailoverDataMessageProcessor
-    {
-        public FailoverMode CurrentFailoverMode { get; private set; } = FailoverMode.NotConfigured;
-
-        public FailoverRole CurrentFailoverRole => FailoverRole.Secondary;
-
-        public DateTime LastDataProcessedTime => default;
-
-        /// <summary>
-        /// Initializes the no-op test processor.
-        /// </summary>
-        public void Initialize()
-        {
-        }
-
-        /// <summary>
-        /// Ignores messages in this mode-contract test processor.
-        /// </summary>
-        /// <param name="message">The unused message.</param>
-        public void ProcessOmfMessage(ISerializedOmfMessage message)
-        {
-        }
-
-        /// <summary>
-        /// Ignores state changes in this mode-contract test processor.
-        /// </summary>
-        /// <param name="role">The unused role.</param>
-        /// <param name="lastDataProcessedTime">The unused timestamp.</param>
-        public void UpdateState(FailoverRole role, DateTime lastDataProcessedTime)
-        {
-        }
-
-        /// <summary>
-        /// Records mode updates received through the original contract.
-        /// </summary>
-        /// <param name="newFailoverMode">The requested mode.</param>
-        public void UpdateMode(FailoverMode newFailoverMode)
-        {
-            CurrentFailoverMode = newFailoverMode;
-        }
-
-        /// <summary>
-        /// Releases the no-op test processor.
-        /// </summary>
-        public void Dispose()
-        {
-        }
-    }
 }

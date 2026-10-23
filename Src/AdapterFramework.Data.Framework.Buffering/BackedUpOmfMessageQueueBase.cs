@@ -95,12 +95,6 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
     /// </summary>
     public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
 
-    /// <summary>
-    /// Raised for any lost body, including unscoped bodies. Handlers must not call back into queues
-    /// because notification can run under queue locks.
-    /// </summary>
-    public event EventHandler BodiesLost;
-
     #endregion
 
     #region Public Methods
@@ -166,7 +160,6 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
     {
         lock (_lock)
         {
-            BodiesLost?.Invoke(this, EventArgs.Empty);
             _persistentQueue?.Clear();
         }
     }
@@ -250,7 +243,6 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                     }
                     catch
                     {
-                        BodiesLost?.Invoke(this, EventArgs.Empty);
                         if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } lostId)
                         {
                             SerializedBodiesDiscarded?.Invoke(this,
@@ -261,7 +253,6 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                     }
                     if (_persistentQueue == null)
                     {
-                        BodiesLost?.Invoke(this, EventArgs.Empty);
                         _logger.LogDebug(MaxBufferSizeReachedMessage);
                         if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } serializedMessageId)
                         {

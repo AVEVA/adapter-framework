@@ -14,7 +14,6 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -144,7 +143,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     /// <summary>Gets the current failover mode reported by the pipeline.</summary>
-    public FailoverMode CurrentFailoverMode
+    internal FailoverMode CurrentFailoverMode
     {
         get
         {
@@ -337,19 +336,11 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 return;
             }
 
-            // Disabling tracking ended this observation, not delivery. A retained legacy body
-            // must still be dispatchable on promotion without replacing its final loss snapshot.
-            if (body.DiscardReason?.Code == OmfReasonCode.AcceptanceTrackingDisabled)
-            {
-                return;
-            }
-
             if (body.Deliveries is not null)
             {
                 throw new InvalidOperationException("The body's deliveries are already registered.");
             }
 
-            body.FailoverDelivery = null;
             body.Deliveries = targets
                 .Select(target => new DeliveryTracking(target.EndpointId, target.TargetUri))
                 .ToList();
@@ -371,96 +362,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         SignalCompleted(completed);
     }
 
-    /// <summary>
-    /// Marks a body as buffered for failover, before enqueueing it. Dispatch replaces this
-    /// diagnostic placeholder with the endpoint snapshot. Buffering and peer trimming never establish acceptance.
-    /// </summary>
-    /// <param name="serializedMessageId">The buffered body's ID.</param>
-    /// <param name="processTimeTicks">The local process time used by the trim comparison.</param>
-    public void RecordFailoverBuffered(Guid serializedMessageId, long processTimeTicks)
-    {
-        List<OmfAwaitableScopeState> completed = null;
-        lock (_lock)
-        {
-            if (_bodies.TryGetValue(serializedMessageId, out var body) && body.Deliveries is null)
-            {
-                body.FailoverDelivery = new DeliveryTracking(null, null)
-                {
-                    Reason = new OmfOutcomeReason(OmfReasonCode.Queued,
-                        string.Create(CultureInfo.InvariantCulture, $"A body with process time {processTimeTicks} is waiting in the failover buffer.")),
-                };
-                if (_failoverMode == FailoverMode.Hot)
-                {
-                    DiscardFailoverBody(body, AcceptanceTrackingDisabledReason(), ref completed);
-                }
-            }
-        }
-
-        SignalCompleted(completed);
-    }
-
     /// <summary>Explains why Hot mode cannot satisfy a scoped acceptance observation.</summary>
     private static OmfOutcomeReason AcceptanceTrackingDisabledReason() =>
         new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover does not support awaitable acceptance tracking.");
-
-    /// <summary>Retained for compatibility; peer trimming cannot establish scoped acceptance and this report is ignored.</summary>
-    /// <param name="serializedMessageId">The trimmed body's ID.</param>
-    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Retained as an instance method for API compatibility.")]
-    public void RecordPeerCoverage(Guid serializedMessageId)
-    {
-    }
-
-    /// <summary>Discards a body lost from the failover buffer before endpoint dispatch.</summary>
-    /// <param name="serializedMessageId">The lost body's ID.</param>
-    /// <param name="reason">Why the buffer lost the body.</param>
-    public void RecordFailoverDiscarded(Guid serializedMessageId, OmfOutcomeReason reason)
-    {
-        ArgumentNullException.ThrowIfNull(reason);
-        List<OmfAwaitableScopeState> completed = null;
-        lock (_lock)
-        {
-            if (_bodies.TryGetValue(serializedMessageId, out var body))
-            {
-                DiscardFailoverBody(body, reason, ref completed);
-            }
-        }
-
-        SignalCompleted(completed);
-    }
-
-    /// <summary>Discards only bodies still in the failover buffer, leaving dispatched deliveries alone.</summary>
-    public void RecordFailoverBuffersDeleted()
-    {
-        var reason = new OmfOutcomeReason(OmfReasonCode.BufferDeleted, "The failover buffer was deleted.");
-        List<OmfAwaitableScopeState> completed = null;
-        lock (_lock)
-        {
-            foreach (var body in _bodies.Values)
-            {
-                DiscardFailoverBody(body, reason, ref completed);
-            }
-        }
-
-        SignalCompleted(completed);
-    }
-
-    /// <summary>Records a final loss only while the body is waiting in the failover buffer.</summary>
-    private static void DiscardFailoverBody(BodyTracking body, OmfOutcomeReason reason, ref List<OmfAwaitableScopeState> completed)
-    {
-        if (body.FailoverDelivery is not { State: OmfDeliveryState.Pending } delivery)
-        {
-            return;
-        }
-
-        CompleteDelivery(delivery, OmfDeliveryState.Discarded, null, reason, null);
-        body.DiscardReason = reason;
-        body.Deliveries = new List<DeliveryTracking> { delivery };
-        body.FailoverDelivery = null;
-        foreach (var tracking in body.Membership.Keys)
-        {
-            Evaluate(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
-        }
-    }
 
     /// <summary>
     /// Records a non-final HTTP attempt for a pending delivery, such as a retryable status or a transport error.
@@ -489,7 +393,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <param name="endpointId">The endpoint ID.</param>
     /// <param name="state">The final delivery state.</param>
     /// <param name="statusCode">The last response status, or null when no response applies.</param>
-    /// <param name="reason">Why the delivery failed; required unless <paramref name="state"/> is accepted or peer-covered.</param>
+    /// <param name="reason">Why the delivery failed; required unless <paramref name="state"/> is accepted.</param>
     /// <param name="receipt">Values parsed from a 202 response body, when available.</param>
     public void RecordDisposition(
         Guid serializedMessageId,
@@ -504,7 +408,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             throw new ArgumentOutOfRangeException(nameof(state), state, "A disposition must be final.");
         }
 
-        var succeeded = state is OmfDeliveryState.Accepted or OmfDeliveryState.PeerCovered;
+        var succeeded = state == OmfDeliveryState.Accepted;
         if (!succeeded)
         {
             ArgumentNullException.ThrowIfNull(reason);
@@ -632,8 +536,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             }
 
             var deliveries = tracking.Bodies
-                .SelectMany(body => (body.Deliveries ?? (body.FailoverDelivery is { } pending
-                    ? new[] { pending } : Enumerable.Empty<DeliveryTracking>())).Select(delivery => delivery.ToResult(body.Id)))
+                .SelectMany(body => (body.Deliveries ?? Enumerable.Empty<DeliveryTracking>()).Select(delivery => delivery.ToResult(body.Id)))
                 .ToList();
 
             return tracking.Outcome is { } outcome
@@ -688,9 +591,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         {
             Complete(tracking, OmfAcceptanceOutcome.Filtered, null, ref completed);
         }
-        else if (tracking.Materialized && IsSatisfied(tracking, out var peerCovered))
+        else if (tracking.Materialized && IsSatisfied(tracking))
         {
-            Complete(tracking, peerCovered ? OmfAcceptanceOutcome.PeerCovered : OmfAcceptanceOutcome.Accepted, null, ref completed);
+            Complete(tracking, OmfAcceptanceOutcome.Accepted, null, ref completed);
         }
     }
 
@@ -718,7 +621,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 return true;
             }
 
-            if (body.Deliveries is null || body.IsPeerCovered)
+            if (body.Deliveries is null)
             {
                 continue;
             }
@@ -752,9 +655,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         return false;
     }
 
-    private static bool IsSatisfied(ScopeTracking tracking, out bool peerCovered)
+    private static bool IsSatisfied(ScopeTracking tracking)
     {
-        peerCovered = false;
         var anyEndpoint = tracking.Scope.Options.EndpointMode == OmfAwaitableEndpointMode.AnyCompleteEndpoint;
         HashSet<string> completeEndpoints = null;
         foreach (var body in tracking.Bodies)
@@ -762,12 +664,6 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             if (body.Deliveries is null)
             {
                 return false;
-            }
-
-            if (body.IsPeerCovered)
-            {
-                peerCovered = true;
-                continue;
             }
 
             if (!anyEndpoint)
@@ -814,12 +710,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         {
             if (body.Deliveries is null)
             {
-                return body.FailoverDelivery?.Reason ?? new OmfOutcomeReason(OmfReasonCode.Queued, "A body is waiting for dispatch.");
-            }
-
-            if (body.IsPeerCovered)
-            {
-                continue;
+                return new OmfOutcomeReason(OmfReasonCode.Queued, "A body is waiting for dispatch.");
             }
 
             foreach (var delivery in body.Deliveries)
@@ -892,11 +783,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
 
         public List<DeliveryTracking> Deliveries { get; set; }
 
-        public DeliveryTracking FailoverDelivery { get; set; }
-
         public OmfOutcomeReason DiscardReason { get; set; }
-
-        public bool IsPeerCovered => Deliveries?.Exists(delivery => delivery.State == OmfDeliveryState.PeerCovered) == true;
     }
 
     private sealed class DeliveryTracking

@@ -22,40 +22,29 @@ namespace AdapterFramework.Data.Framework.Messages.Tests;
 public class SerializedOmfMessage_Tests
 {
     /// <summary>
-    /// Verifies old interface implementations need not implement process timestamps or scoped IDs.
+    /// Verifies old interface implementations need not implement scoped IDs.
     /// </summary>
     [Fact]
-    public void SerializedOmfMessage_LegacyImplementation_DefaultsToZeroTicksAndNoId()
+    public void SerializedOmfMessage_LegacyImplementation_DefaultsToNoId()
     {
         ISerializedOmfMessage message = new LegacyMessage();
 
-        Assert.Equal(0, message.ProcessTimeTicks);
         Assert.Null(message.SerializedMessageId);
     }
 
     /// <summary>
-    /// Verifies mutable timestamps are visible through the interface and add exactly eight bytes only when nonzero,
-    /// independently of whether a body carries a serialized ID.
+    /// Verifies the size adds the 16-byte ID only for scoped bodies.
     /// </summary>
     [Theory]
-    [InlineData(false, 0L)]
-    [InlineData(true, 0L)]
-    [InlineData(false, long.MaxValue)]
-    [InlineData(true, long.MinValue)]
-    public void SerializedOmfMessage_ProcessTimeTicks_SizeIncludesOnlyPresentFields(bool scoped, long ticks)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SerializedOmfMessage_GetMessageSizeInBytes_IncludesIdOnlyWhenScoped(bool scoped)
     {
         var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x11, 0x22 }, MessageAction.Create)
         {
             SerializedMessageId = scoped ? Guid.NewGuid() : null,
-            ProcessTimeTicks = ticks,
         };
-        ISerializedOmfMessage contract = message;
 
-        Assert.Equal(ticks, contract.ProcessTimeTicks);
-        Assert.Equal(10 + (scoped ? 16 : 0) + (ticks != 0 ? 8 : 0), message.GetMessageSizeInBytes());
-
-        message.ProcessTimeTicks = 0;
-        Assert.Equal(0, contract.ProcessTimeTicks);
         Assert.Equal(10 + (scoped ? 16 : 0), message.GetMessageSizeInBytes());
     }
 

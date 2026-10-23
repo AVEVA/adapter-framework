@@ -38,9 +38,4 @@ public enum OmfDeliveryState
     /// The body was dropped without a response.
     /// </summary>
     Discarded,
-
-    /// <summary>
-    /// Compatibility value for explicit peer-covered dispositions. Runtime failover buffering does not produce this state.
-    /// </summary>
-    PeerCovered,
 }

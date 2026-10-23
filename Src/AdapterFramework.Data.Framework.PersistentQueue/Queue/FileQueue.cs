@@ -96,19 +96,7 @@ public class FileQueue : IPersistentQueue
         using (var stateStream = _fileManager.CreateStateStream())
         {
             _queueState = _serializer.DeserializeQueueState(stateStream);
-            var readerFileNumber = _queueState.ReaderFileNumber;
-            var readerPosition = _queueState.ReaderPosition;
-            var writerFileNumber = _queueState.WriterFileNumber;
-            var writerPosition = _queueState.WriterPosition;
-            HadPendingItemsAtStartup = _queueState.ReaderFileNumber != _queueState.WriterFileNumber
-                || _queueState.ReaderPosition != _queueState.WriterPosition;
             _fileManager.RepairDirectoryAndUpdateState(_queueState, _maxQueueFiles);
-            HadDataLossAtStartup = _fileManager.HadDataLossDuringRepair
-                || (HadPendingItemsAtStartup
-                    && (readerFileNumber != _queueState.ReaderFileNumber
-                        || readerPosition != _queueState.ReaderPosition
-                        || writerFileNumber != _queueState.WriterFileNumber
-                        || writerPosition != _queueState.WriterPosition));
             _serializer.SerializeQueueState(stateStream, _queueState);
         }
 
@@ -122,27 +110,7 @@ public class FileQueue : IPersistentQueue
 
         _readStream = _fileManager.CreateReaderStream(_queueState.ReaderFileNumber);
         _readStream.Position = _queueState.ReaderPosition;
-        // OpenOrCreate can hide absent files, and seeking past EOF does not report truncation.
-        HadDataLossAtStartup |= _queueState.WriterPosition > _writeStream.Length
-            || _queueState.ReaderPosition > _readStream.Length;
-        HadPendingItemsAtStartup |= _queueState.ReaderFileNumber != _queueState.WriterFileNumber
-            || _readStream.Position < _readStream.Length;
     }
-
-    /// <summary>Gets whether startup found unread disk records, before or after directory repair.</summary>
-    public bool HadPendingItemsAtStartup { get; }
-
-    /// <summary>
-    /// Gets whether startup repair or persisted positions indicate possible data loss before
-    /// loss handlers could subscribe. This snapshot does not change during queue operation.
-    /// </summary>
-    public bool HadDataLossAtStartup { get; }
-
-    /// <summary>
-    /// Raised when records may have been lost, including records without tracking IDs.
-    /// Handlers run under queue locks and must not call back into queues.
-    /// </summary>
-    public event EventHandler ItemsLost;
 
     /// <inheritdoc/>
     public event EventHandler<TrackedItemsLostEventArgs> TrackedItemsLost;
@@ -172,13 +140,7 @@ public class FileQueue : IPersistentQueue
                 _readStream.Dispose();
 
                 // Delete excess files and update queue state
-                var previousReaderFile = _queueState.ReaderFileNumber;
-                var previousReaderPosition = _queueState.ReaderPosition;
                 _fileManager.RepairDirectoryAndUpdateState(_queueState, _maxQueueFiles);
-                if (previousReaderFile != _queueState.ReaderFileNumber || previousReaderPosition != _queueState.ReaderPosition)
-                {
-                    ItemsLost?.Invoke(this, EventArgs.Empty);
-                }
 
                 // Persist the repaired state
                 using (var stateStream = _fileManager.CreateStateStream())
@@ -222,7 +184,6 @@ public class FileQueue : IPersistentQueue
                 }
                 catch (DataRecordException ex)
                 {
-                    ItemsLost?.Invoke(this, EventArgs.Empty);
                     // Attempt to recover by finding the next valid data item
                     _logger?.LogError(ex, "Error deserializing data item. Finding the next valid data item.");
 
@@ -281,7 +242,6 @@ public class FileQueue : IPersistentQueue
                 }
                 catch (DataRecordException ex)
                 {
-                    ItemsLost?.Invoke(this, EventArgs.Empty);
                     // Attempt to recover by finding the next valid data item
                     _logger?.LogError(ex, "Error deserializing data item. Finding the next valid data item.");
 
@@ -384,7 +344,6 @@ public class FileQueue : IPersistentQueue
     {
         lock (_enqueueOperationLock)
         {
-            ItemsLost?.Invoke(this, EventArgs.Empty);
             _writeStream.Dispose();
             lock (_dequeueOperationLock)
             {
@@ -475,11 +434,6 @@ public class FileQueue : IPersistentQueue
     {
         lock (_dequeueOperationLock)
         {
-            if (_readStream.Position < _readStream.Length)
-            {
-                ItemsLost?.Invoke(this, EventArgs.Empty);
-            }
-
             var previousFileNumber = _queueState.ReaderFileNumber;
             _queueState.IncrementReaderFileNumber();
             _queueState.SetReaderPosition(0);

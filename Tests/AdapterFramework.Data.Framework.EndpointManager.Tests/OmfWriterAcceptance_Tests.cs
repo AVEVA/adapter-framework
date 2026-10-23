@@ -18,6 +18,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Moq;
 using AdapterFramework.Data.DataModel;
@@ -114,24 +115,23 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         {
             _writer.SendMessage(retriedMessage);
             _writer.SendMessage(readBackMessage);
-            await Task.Delay(TimeSpan.FromSeconds(9));
             var dataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_dataQueue", _writer);
-            Assert.Equal(0L, (long)TestUtilities.GetFieldValueFromObject("_currentVolatileQueueSize", dataQueue));
+            Assert.True(SpinWait.SpinUntil(
+                () => (long)TestUtilities.GetFieldValueFromObject("_currentVolatileQueueSize", dataQueue) == 0,
+                TimeSpan.FromSeconds(30)));
             _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
             Assert.Equal(OmfAcceptanceOutcome.Accepted, (await retried.WaitForAcceptanceAsync(CompletionWait)).Outcome);
             Assert.Equal(OmfAcceptanceOutcome.Accepted, (await readBack.WaitForAcceptanceAsync(CompletionWait)).Outcome);
         }
     }
 
-    /// <summary>Recovered V3/V4/V5 records retain their payload, IDs, and timestamps; later ordinary scopes remain independent of earlier outcomes.</summary>
+    /// <summary>Recovered V3/V4 records retain their payload and IDs; later ordinary scopes remain independent of earlier outcomes.</summary>
     [Theory]
     [InlineData(DataItemVersion.V3, false, HttpStatusCode.Accepted)]
     [InlineData(DataItemVersion.V4, true, HttpStatusCode.Accepted)]
-    [InlineData(DataItemVersion.V5, true, HttpStatusCode.Accepted)]
-    [InlineData(DataItemVersion.V5, false, HttpStatusCode.Accepted)]
     [InlineData(DataItemVersion.V4, true, HttpStatusCode.OK)]
-    [InlineData(DataItemVersion.V5, true, HttpStatusCode.NoContent)]
-    [InlineData(DataItemVersion.V5, true, HttpStatusCode.BadRequest)]
+    [InlineData(DataItemVersion.V4, true, HttpStatusCode.NoContent)]
+    [InlineData(DataItemVersion.V4, true, HttpStatusCode.BadRequest)]
     public async Task SendMessage_PersistedBacklog_PreservesVersionsAndScopedAcceptance(DataItemVersion version, bool scoped, HttpStatusCode status)
     {
         _endpoint.SetHttpResponse(status);
@@ -144,7 +144,6 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
                 message.SerializedMessageId = null;
             }
 
-            message.ProcessTimeTicks = version == DataItemVersion.V5 ? 100 : 0;
             using (var files = new FileQueue(_bufferPath, "data", EndpointId, 1, 20, new TestLogger()))
             using (var messages = new PersistentOmfMessageQueue(_uri, files, new TestLogger()))
             {
@@ -152,7 +151,6 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
                 Assert.Equal(version, files.Peek().Version);
                 Assert.True(messages.TryPeek(out var restored));
                 Assert.Equal(message.SerializedMessageId, restored.SerializedMessageId);
-                Assert.Equal(message.ProcessTimeTicks, restored.ProcessTimeTicks);
                 Assert.Equal(message.MessageBody, restored.MessageBody);
             }
 

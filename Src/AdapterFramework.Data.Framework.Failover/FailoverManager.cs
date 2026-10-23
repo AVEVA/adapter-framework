@@ -413,10 +413,6 @@ public class FailoverManager : IFailoverManager
         }
     }
 
-    /// <summary>
-    /// Applies the mode at the existing configuration commit point, then notifies components.
-    /// </summary>
-    /// <param name="newMode">The configured failover mode.</param>
     private void UpdateFailoverMode(FailoverMode newMode)
     {
         var oldFailoverMode = _failoverDataMessageProcessor.CurrentFailoverMode;
