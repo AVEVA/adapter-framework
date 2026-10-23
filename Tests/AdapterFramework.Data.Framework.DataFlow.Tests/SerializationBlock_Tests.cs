@@ -14,8 +14,10 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Moq;
@@ -753,6 +755,528 @@ public class SerializationBlock_Tests
         Assert.Equal(eventsArray.Length + entitiesArray.Length + linksArray.Length + dataItems.Count, _receivedDataCount);
         Assert.Equal(isNonStreamingDataOversize ? 3 : (isMessageOversize ? 2 : 1), _messageActionTriggerCount);
     }
+
+    [Fact]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_RelationshipsCollocatedWithInstances()
+    {
+        const int GroupCount = 4;
+        var testLogger = new TestLogger();
+        var events = new Event[GroupCount];
+        var entities = new StaticStreamData[GroupCount];
+        var links = new Link[GroupCount];
+
+        for (var i = 0; i < GroupCount; i++)
+        {
+            events[i] = new Event { TypeId = "EventType", Id = $"ev-{i}", Value = new { V = i } };
+            entities[i] = new StaticStreamData { Id = "EntityType", InstanceId = $"en-{i}", Value = new { V = i } };
+        }
+
+        // Reverse order so a naive positional split would separate links from their instances.
+        for (var i = 0; i < GroupCount; i++)
+        {
+            var n = GroupCount - 1 - i;
+            links[i] = new Link(
+                new RelationshipLinkNode($"ev-{n}", "EventType", collection: Tokens.EventsCollection),
+                new RelationshipLinkNode($"en-{n}", "EntityType", collection: Tokens.EntitiesCollection));
+        }
+
+        var rentedEvents = ArrayPool<Event>.Shared.Rent(GroupCount);
+        var rentedEntities = ArrayPool<StaticStreamData>.Shared.Rent(GroupCount);
+        var rentedLinks = ArrayPool<Link>.Shared.Rent(GroupCount);
+        events.CopyTo(rentedEvents, 0);
+        entities.CopyTo(rentedEntities, 0);
+        links.CopyTo(rentedLinks, 0);
+
+        var totalByteCount = new OmfJsonSerializer().Serialize(new InstanceMessageWrapper
+        {
+            Events = new ArraySegment<Event>(rentedEvents, 0, GroupCount),
+            Entities = new ArraySegment<StaticStreamData>(rentedEntities, 0, GroupCount),
+            Relationships = new ArraySegment<Link>(rentedLinks, 0, GroupCount),
+        }).Length;
+
+        var flushed = new System.Collections.Concurrent.ConcurrentQueue<ISerializedOmfMessage>();
+        using var instanceMessage = new InstanceMessage(null, rentedEntities, rentedEvents, rentedLinks, 0, 0, GroupCount, GroupCount, GroupCount, MessageAction.Default, true);
+        using var serializationBlock = new SerializationBlock(null, null, totalByteCount / 2, testLogger, -1, new OmfJsonSerializer(), null, flushed.Enqueue, new CancellationToken());
+
+        serializationBlock.Post(instanceMessage);
+
+        Assert.True(SpinWait.SpinUntil(() => flushed.Sum(m => m.ItemCount) == GroupCount * 3, WaitTime));
+        Assert.False(testLogger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+
+        foreach (var message in flushed)
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(message.MessageBody);
+            var instanceIds = new HashSet<string>();
+
+            foreach (var collection in new[] { Tokens.EventsCollection, Tokens.EntitiesCollection })
+            {
+                if (document.RootElement.TryGetProperty(collection, out var items))
+                {
+                    foreach (var item in items.EnumerateArray())
+                    {
+                        instanceIds.Add(item.GetProperty(Tokens.Id).GetString());
+                    }
+                }
+            }
+
+            if (document.RootElement.TryGetProperty("relationships", out var relationships))
+            {
+                foreach (var relationship in relationships.EnumerateArray())
+                {
+                    Assert.Contains(relationship.GetProperty(Tokens.Source).GetProperty(Tokens.Id).GetString(), instanceIds);
+                }
+            }
+        }
+    }
+
+    #region Instance message splitting
+
+    private const string NullId = "(null)";
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_LinksStayWithTheirSourceOnly()
+    {
+        // Each event is the source of two links, whose targets are entities elsewhere in the message.
+        // Items are interleaved so a positional split would separate links from their source.
+        var events = new[] { NewEvent("e3"), NewEvent("e1"), NewEvent("e2"), NewEvent("e0") };
+        var entities = new[] { NewEntity("n3"), NewEntity("n1"), NewEntity("n2"), NewEntity("n0") };
+        var links = new[]
+        {
+            NewLink("e3", "n0"), NewLink("e1", "n2"), NewLink("e2", "n3"), NewLink("e0", "n1"),
+            NewLink("e3", "n1"), NewLink("e1", "n3"), NewLink("e2", "n0"), NewLink("e0", "n2"),
+        };
+
+        var maxByteCount = SerializedSize(events.Take(1), [], links.Take(2)) + 10;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, 16, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+        AssertLinksCollocated(flushed, "e0", "e1", "e2", "e3");
+
+        // Targets are not considered: entities are never pulled into the message of the link which points at them.
+        var e0Message = Assert.Single(flushed, m => m.EventIds.Contains("e0"));
+        Assert.Equal(["e0->n1", "e0->n2"], e0Message.Links.Select(l => $"{l.Source}->{l.Target}").Order(StringComparer.Ordinal));
+        Assert.Empty(e0Message.EntityIds.Intersect(["n1", "n2"]));
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_GroupLargerThanLimit_SplitsWithWarning()
+    {
+        // One hub event which is the source of many links forms a single group that cannot fit in one message.
+        var events = new[] { NewEvent("e1", 100), NewEvent("e0", 100) };
+        var entities = Enumerable.Range(0, 11).Select(i => NewEntity($"n{i}", 100)).ToArray();
+        var links = new[] { NewLink("e1", "n10") }.Concat(Enumerable.Range(0, 10).Select(i => NewLink("e0", $"n{i}"))).ToArray();
+
+        var hubSize = SerializedSize(events.Where(e => e.Id == "e0"), [], links.Where(l => l.Source.Index == "e0"));
+        var maxByteCount = hubSize / 3;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links, MessageAction.Delete), maxByteCount, events.Length + entities.Length + links.Length, logger);
+
+        var logs = logger.GetLogMessages();
+        var warning = Assert.Single(logs, l => l.LogLevel == Microsoft.Extensions.Logging.LogLevel.Warning);
+        Assert.Contains("related events, entities and relationships", warning.LogMessage);
+        Assert.DoesNotContain(logs, l => l.LogLevel >= Microsoft.Extensions.Logging.LogLevel.Error);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+        Assert.All(flushed, m => Assert.Equal(MessageAction.Delete, m.Action));
+
+        // A group which had to be split is flushed as events, then relationships.
+        var firstEventMessage = flushed.FindIndex(m => m.EventIds.Contains("e0"));
+        var firstLinkMessage = flushed.FindIndex(m => m.Links.Any(l => l.Source == "e0"));
+        Assert.True(firstEventMessage >= 0 && firstEventMessage < firstLinkMessage);
+
+        // The other event is still collocated with its link even though the hub group had to be split.
+        var pairMessage = Assert.Single(flushed, m => m.EventIds.Contains("e1"));
+        Assert.Contains(pairMessage.Links, l => l.Source == "e1" && l.Target == "n10");
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_SeveralGroupsLargerThanLimit_LogsOneWarning()
+    {
+        var events = new[] { NewEvent("hubA", 100), NewEvent("hubB", 100) };
+        var entities = Enumerable.Range(0, 8).Select(i => NewEntity($"a{i}", 100))
+            .Concat(Enumerable.Range(0, 8).Select(i => NewEntity($"b{i}", 100)))
+            .ToArray();
+        var links = Enumerable.Range(0, 8).Select(i => NewLink("hubA", $"a{i}"))
+            .Concat(Enumerable.Range(0, 8).Select(i => NewLink("hubB", $"b{i}")))
+            .ToArray();
+
+        var maxByteCount = SerializedSize(events.Take(1), [], links.Take(8)) / 3;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, events.Length + entities.Length + links.Length, logger);
+
+        var warning = Assert.Single(logger.GetLogMessages(), l => l.LogLevel >= Microsoft.Extensions.Logging.LogLevel.Warning);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, warning.LogLevel);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_UnevenGroupSizes_MessagesAreWellFilled()
+    {
+        // Each event is the source of a link, so the first groups are much heavier per item than the lone entities that follow.
+        // Chunks cut by item count would overshoot the limit and be halved, leaving most messages about half full.
+        const int Count = 3000;
+        var events = Enumerable.Range(0, Count).Select(i => NewEvent($"e{i}", 20)).ToArray();
+        var entities = Enumerable.Range(0, Count).Select(i => NewEntity($"n{i}", 20)).ToArray();
+        var links = Enumerable.Range(0, Count).Select(i => NewLink($"e{(i * 7) % Count}", $"n{i}")).ToArray();
+
+        var total = SerializedSize(events, entities, links);
+        var maxByteCount = total / 25;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, 3 * Count, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+        AssertLinksCollocated(flushed, [.. events.Select(e => e.Id)]);
+
+        // Aiming at 90% of the limit, all but the last message should be close to it.
+        var fill = flushed.Sum(m => (double)m.ByteLength) / (flushed.Count * (double)maxByteCount);
+        Assert.True(fill > 0.8, $"Messages are only {fill:P0} full on average ({flushed.Count} messages).");
+        Assert.True(flushed.Count <= 30, $"Expected about 28 messages, got {flushed.Count}.");
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_UnevenItemSizes_ChunksAreSplitFurther()
+    {
+        // Chunks are first cut by item count, so a chunk holding the large items is still oversize and must be split again.
+        var entities = Enumerable.Range(0, 4).Select(i => NewEntity($"big{i}", 2000))
+            .Concat(Enumerable.Range(0, 12).Select(i => NewEntity($"small{i}", 5)))
+            .ToArray();
+        const int MaxByteCount = 5000;
+        Assert.True(SerializedSize([], entities, []) > MaxByteCount);
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage([], entities, []), MaxByteCount, entities.Length, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count >= 3);
+        AssertFlushedExactlyOnce(flushed, [], entities, []);
+        AssertWithinLimit(flushed, MaxByteCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_SingleItemLargerThanLimit_LogsErrorAndFlushesTheRest()
+    {
+        var entities = new[] { NewEntity("s0"), NewEntity("s1"), NewEntity("huge", 3000), NewEntity("s2") };
+        const int MaxByteCount = 1000;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage([], entities, []), MaxByteCount, 3, logger);
+
+        Assert.Contains(logger.GetLogMessages(), l => l.LogLevel == Microsoft.Extensions.Logging.LogLevel.Error && l.LogMessage.Contains("too big"));
+        AssertFlushedExactlyOnce(flushed, [], entities.Where(e => e.InstanceId != "huge"), []);
+        AssertWithinLimit(flushed, MaxByteCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_UnresolvableNullAndDuplicateIds_AreHandled()
+    {
+        var events = new[] { NewEvent("e0"), NewEvent(null), NewEvent("d"), NewEvent("d") };
+        var entities = new[] { NewEntity("n0"), NewEntity("d"), NewEntity(null) }
+            .Concat(Enumerable.Range(0, 20).Select(i => NewEntity($"f{i}", 50)))
+            .ToArray();
+        var links = new[]
+        {
+            NewLink("e0", "n0"),
+            NewLink("unknownA", "unknownB"), // source references nothing in the message
+            NewLink("e0", "unknownC"),       // the target is not in the message
+            NewLink("unknownD", "n0"),       // only the target is in the message, which does not matter
+            NewLink("d", "n0"),              // the source id is shared by two events and an entity
+        };
+
+        var total = SerializedSize(events, entities, links);
+        var maxByteCount = total / 3;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, events.Length + entities.Length + links.Length, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+
+        var linkedMessage = Assert.Single(flushed, m => m.Links.Any(l => l.Source == "e0" && l.Target == "n0"));
+        Assert.Contains("e0", linkedMessage.EventIds);
+        Assert.Contains(linkedMessage.Links, l => l.Source == "e0" && l.Target == "unknownC");
+
+        // Instances sharing an id (including across events and entities) are kept together with the links they are the source of.
+        var duplicateMessage = Assert.Single(flushed, m => m.EventIds.Contains("d"));
+        Assert.Equal(2, duplicateMessage.EventIds.Count(id => id == "d"));
+        Assert.Contains("d", duplicateMessage.EntityIds);
+        Assert.Contains(duplicateMessage.Links, l => l.Source == "d" && l.Target == "n0");
+    }
+
+    [Theory]
+    [InlineData(60, 0, 0)]
+    [InlineData(0, 60, 0)]
+    [InlineData(0, 0, 60)]
+    [InlineData(30, 30, 0)]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_WithoutLinksOrWithoutInstances_Success(int eventCount, int entityCount, int linkCount)
+    {
+        var events = Enumerable.Range(0, eventCount).Select(i => NewEvent($"e{i}", 30)).ToArray();
+        var entities = Enumerable.Range(0, entityCount).Select(i => NewEntity($"n{i}", 30)).ToArray();
+        var links = Enumerable.Range(0, linkCount).Select(i => NewLink($"n{i}", $"e{i}")).ToArray();
+
+        var maxByteCount = SerializedSize(events, entities, links) / 4;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, eventCount + entityCount + linkCount, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        AssertWithinLimit(flushed, maxByteCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_WithStreamingData_StreamingDataKeepsPartitionKeyAndAction()
+    {
+        var events = Enumerable.Range(0, 15).Select(i => NewEvent($"e{i}", 50)).ToArray();
+        var entities = Enumerable.Range(0, 15).Select(i => NewEntity($"n{i}", 50)).ToArray();
+        var links = Enumerable.Range(0, 15).Select(i => NewLink($"n{i}", $"e{i}")).ToArray();
+        var streamingData = new[]
+        {
+            new StreamingDataInstance { Id = "stream-1", Values = new List<object> { new { V = 1 }, new { V = 2 }, new { V = 3 } } },
+        };
+
+        var maxByteCount = SerializedSize(events, entities, links) / 3;
+        var logger = new TestLogger();
+        var message = NewInstanceMessage(events, entities, links, MessageAction.Update, streamingData, 3, PartitionKey.Key5);
+
+        var flushed = FlushInstanceMessage(message, maxByteCount, 48, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.All(flushed, m => Assert.Equal(MessageAction.Update, m.Action));
+        var streamingMessage = Assert.Single(flushed, m => m.HasStreamingData);
+        Assert.Equal(3, streamingMessage.ItemCount);
+        Assert.Equal(PartitionKey.Key5, streamingMessage.PartitionKey);
+
+        var instanceMessages = flushed.Where(m => !m.HasStreamingData).ToList();
+        Assert.True(instanceMessages.Count > 1);
+        AssertFlushedExactlyOnce(instanceMessages, events, entities, links);
+        AssertWithinLimit(instanceMessages, maxByteCount);
+        AssertLinksCollocated(instanceMessages, [.. events.Select(e => e.Id), .. entities.Select(e => e.InstanceId)]);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_WithCompressor_CompressesEveryMessage()
+    {
+        var events = Enumerable.Range(0, 20).Select(i => NewEvent($"e{i}", 40)).ToArray();
+        var entities = Enumerable.Range(0, 20).Select(i => NewEntity($"n{i}", 40)).ToArray();
+        var links = Enumerable.Range(0, 20).Select(i => NewLink($"n{i}", $"e{i}")).ToArray();
+
+        var compressor = new Mock<ICompressor>();
+        compressor.Setup(c => c.Compress(It.IsAny<byte[]>())).Returns((byte[] data) => data);
+
+        var maxByteCount = SerializedSize(events, entities, links) / 3;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, 60, logger, compressor.Object);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+        AssertFlushedExactlyOnce(flushed, events, entities, links);
+        compressor.Verify(c => c.Compress(It.IsAny<byte[]>()), Times.AtLeast(flushed.Count));
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_ArraysLargerThanCounts_OnlyCountedItemsAreFlushed()
+    {
+        var events = new[] { NewEvent("e0"), NewEvent("e1"), NewEvent("ghost-e") };
+        var entities = new[] { NewEntity("n0"), NewEntity("n1"), NewEntity("ghost-n") };
+        var links = new[] { NewLink("n0", "e0"), NewLink("n1", "e1"), NewLink("ghost-n", "ghost-e") };
+        var message = new InstanceMessage(null, entities, events, links, 0, 0, 2, 2, 2, MessageAction.Default);
+
+        var maxByteCount = SerializedSize(events.Take(2), entities.Take(2), links.Take(2)) * 3 / 4;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(message, maxByteCount, 6, logger);
+
+        Assert.False(logger.AreErrorsWarningsInLog());
+        Assert.True(flushed.Count > 1);
+        AssertFlushedExactlyOnce(flushed, events.Take(2), entities.Take(2), links.Take(2));
+        AssertWithinLimit(flushed, maxByteCount);
+    }
+
+    private sealed record FlushedInstanceMessage(
+        int ItemCount,
+        int ByteLength,
+        MessageAction Action,
+        PartitionKey? PartitionKey,
+        bool HasStreamingData,
+        List<string> EventIds,
+        List<string> EntityIds,
+        List<(string Source, string Target)> Links)
+    {
+        public bool ContainsInstance(string id) => EventIds.Contains(id) || EntityIds.Contains(id);
+    }
+
+    private static Event NewEvent(string id, int payloadLength = 10)
+    {
+        return new Event { TypeId = "EventType", Id = id, Value = new { Payload = new string('e', payloadLength) } };
+    }
+
+    private static StaticStreamData NewEntity(string id, int payloadLength = 10)
+    {
+        return new StaticStreamData { Id = "EntityType", InstanceId = id, Value = new { Payload = new string('n', payloadLength) } };
+    }
+
+    private static Link NewLink(string sourceId, string targetId)
+    {
+        return new Link(
+            new RelationshipLinkNode(sourceId, "EventType", collection: Tokens.EventsCollection),
+            new RelationshipLinkNode(targetId, "EntityType", collection: Tokens.EntitiesCollection));
+    }
+
+    private static InstanceMessage NewInstanceMessage(
+        Event[] events,
+        StaticStreamData[] entities,
+        Link[] links,
+        MessageAction messageAction = MessageAction.Default,
+        StreamingDataInstance[] streamingData = null,
+        int streamingDataTotalCount = 0,
+        PartitionKey? partitionKey = null)
+    {
+        return new InstanceMessage(
+            streamingData,
+            entities,
+            events,
+            links,
+            streamingData?.Length ?? 0,
+            streamingDataTotalCount,
+            entities.Length,
+            events.Length,
+            links.Length,
+            messageAction,
+            false,
+            partitionKey);
+    }
+
+    private static int SerializedSize(IEnumerable<Event> events, IEnumerable<StaticStreamData> entities, IEnumerable<Link> links)
+    {
+        var eventArray = events.ToArray();
+        var entityArray = entities.ToArray();
+        var linkArray = links.ToArray();
+
+        return new OmfJsonSerializer().Serialize(new InstanceMessageWrapper
+        {
+            Events = eventArray.Length == 0 ? default : new ArraySegment<Event>(eventArray),
+            Entities = entityArray.Length == 0 ? default : new ArraySegment<StaticStreamData>(entityArray),
+            Relationships = linkArray.Length == 0 ? default : new ArraySegment<Link>(linkArray),
+        }).Length;
+    }
+
+    private static List<FlushedInstanceMessage> FlushInstanceMessage(
+        InstanceMessage message,
+        int maxByteCount,
+        int expectedItemCount,
+        TestLogger logger,
+        ICompressor compressor = null)
+    {
+        var flushed = new ConcurrentQueue<ISerializedOmfMessage>();
+        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, logger, -1, new OmfJsonSerializer(), compressor, flushed.Enqueue, new CancellationToken());
+
+        serializationBlock.Post(message);
+
+        Assert.True(SpinWait.SpinUntil(() => flushed.Sum(m => m.ItemCount) >= expectedItemCount, WaitTime), "Not all items were flushed.");
+        Thread.Sleep(100); // gives unexpected additional (duplicate) messages a chance to show up
+
+        return [.. flushed.Select(ParseInstanceMessage)];
+    }
+
+    private static FlushedInstanceMessage ParseInstanceMessage(ISerializedOmfMessage message)
+    {
+        using var document = JsonDocument.Parse(message.MessageBody);
+        var root = document.RootElement;
+
+        var links = new List<(string, string)>();
+        if (root.TryGetProperty("relationships", out var relationships))
+        {
+            foreach (var relationship in relationships.EnumerateArray())
+            {
+                links.Add((
+                    relationship.GetProperty(Tokens.Source).GetProperty(Tokens.Id).GetString(),
+                    relationship.GetProperty(Tokens.Target).GetProperty(Tokens.Id).GetString()));
+            }
+        }
+
+        return new FlushedInstanceMessage(
+            message.ItemCount,
+            message.MessageBody.Length,
+            message.MessageAction,
+            message.PartitionKey,
+            root.TryGetProperty("streamingdata", out _),
+            ReadIds(root, Tokens.EventsCollection),
+            ReadIds(root, Tokens.EntitiesCollection),
+            links);
+    }
+
+    private static List<string> ReadIds(JsonElement root, string collection)
+    {
+        if (!root.TryGetProperty(collection, out var items))
+        {
+            return [];
+        }
+
+        return [.. items.EnumerateArray().Select(item =>
+            item.TryGetProperty(Tokens.Id, out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : NullId)];
+    }
+
+    private static void AssertFlushedExactlyOnce(
+        List<FlushedInstanceMessage> flushed,
+        IEnumerable<Event> events,
+        IEnumerable<StaticStreamData> entities,
+        IEnumerable<Link> links)
+    {
+        static IEnumerable<string> Sorted(IEnumerable<string> values) => values.OrderBy(v => v, StringComparer.Ordinal);
+
+        Assert.Equal(Sorted(events.Select(e => e.Id ?? NullId)), Sorted(flushed.SelectMany(m => m.EventIds)));
+        Assert.Equal(Sorted(entities.Select(e => e.InstanceId ?? NullId)), Sorted(flushed.SelectMany(m => m.EntityIds)));
+        Assert.Equal(Sorted(links.Select(l => $"{l.Source.Index}->{l.Target.Index}")), Sorted(flushed.SelectMany(m => m.Links).Select(l => $"{l.Source}->{l.Target}")));
+        Assert.All(flushed, m => Assert.Equal(m.EventIds.Count + m.EntityIds.Count + m.Links.Count, m.ItemCount));
+    }
+
+    private static void AssertWithinLimit(List<FlushedInstanceMessage> flushed, int maxByteCount)
+    {
+        Assert.All(flushed, m => Assert.True(m.ByteLength <= maxByteCount, $"Message of {m.ByteLength} bytes exceeds the limit of {maxByteCount}."));
+    }
+
+    // Every link must be in the same message as the instance its source references, if that instance is part of the batch.
+    private static void AssertLinksCollocated(List<FlushedInstanceMessage> flushed, params string[] instanceIds)
+    {
+        var known = new HashSet<string>(instanceIds);
+
+        foreach (var message in flushed)
+        {
+            foreach (var (source, _) in message.Links)
+            {
+                Assert.True(!known.Contains(source) || message.ContainsInstance(source), $"Source {source} is not in the same message as its link.");
+            }
+        }
+    }
+
+    #endregion
 
     private void DummyAction(ISerializedOmfMessage m)
     {

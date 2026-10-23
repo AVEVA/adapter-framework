@@ -332,3 +332,4 @@ ASALocalRun/
 /Connectors/OPCConnector/OPCConnector/Configuration/Logging.config.json
 /Dockerfile
 /DockerScripts
+.devcontainer/devcontainer-lock.json

@@ -1,0 +1,19 @@
+{
+  "name": "Adapter Framework (.NET 10)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/dotnet:2": {
+      "version": "10.0"
+    }
+  },
+  // Tests write to /usr/share (CommonApplicationData on Linux), which requires root.
+  "remoteUser": "root",
+  "postCreateCommand": "dotnet restore Src/AdapterFramework.sln",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csdevkit"
+      ]
+    }
+  }
+}
