@@ -56,6 +56,7 @@ public class OmfWriter : IOmfWriter
     private const string SentMessageDebugMessage = "The request that was sent to the endpoint: {SentMessageBody}";
     private const string EndpointErrorClearedMessage = "Error has been resolved and data will be successfully processed by {Uri}.";
     private const string EndpointInErrorMessage = "No data from this adapter will be successfully processed by endpoint {Uri} until error is resolved.";
+    private const string LeasedMessageDiscardedMessage = "A {MessageType} message sent to endpoint {Uri} had already been discarded from the buffer by retention. No other buffered message was removed.";
 
     #endregion
 
@@ -362,13 +363,13 @@ public class OmfWriter : IOmfWriter
         {
             while (!_writerCts.Token.IsCancellationRequested)
             {
-                if (_typesAndStreamsQueue.TryPeek(out var message))
+                if (_typesAndStreamsQueue.TryLease(out var lease))
                 {
-                    await ProcessMessageAsync(message, _typesAndStreamsQueue);
+                    await ProcessMessageAsync(lease, _typesAndStreamsQueue);
                 }
-                else if (_dataQueue.TryPeek(out message))
+                else if (_dataQueue.TryLease(out lease))
                 {
-                    await ProcessMessageAsync(message, _dataQueue);
+                    await ProcessMessageAsync(lease, _dataQueue);
                 }
                 else
                 {
@@ -382,13 +383,33 @@ public class OmfWriter : IOmfWriter
         }
     }
 
-    private async Task ProcessMessageAsync(ISerializedOmfMessage message, BackedUpOmfMessageQueue queue)
+    private async Task ProcessMessageAsync(MessageLease<ISerializedOmfMessage> lease, BackedUpOmfMessageQueue queue)
     {
-        if (await SendBufferedMessageAsync(message))
+        var message = lease.Message;
+        var delivered = false;
+        try
         {
-            queue.TryDequeue(out _);
-            Interlocked.Add(ref _valueCount, message.ItemCount);
+            delivered = await SendBufferedMessageAsync(message);
         }
+        finally
+        {
+            if (!delivered)
+            {
+                queue.Abandon(lease);
+            }
+        }
+
+        if (!delivered)
+        {
+            return;
+        }
+
+        if (!queue.Complete(lease))
+        {
+            _logger.LogWarning(LeasedMessageDiscardedMessage, OmfByteHttpClient.GetOmfMessageType(message.MessageType).ToString().ToUpperInvariant(), _client.Uri);
+        }
+
+        Interlocked.Add(ref _valueCount, message.ItemCount);
     }
 
     private async Task<bool> SendBufferedMessageAsync(ISerializedOmfMessage serializedMessage)

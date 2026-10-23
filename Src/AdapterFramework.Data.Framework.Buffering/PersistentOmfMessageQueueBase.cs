@@ -59,6 +59,13 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
 
     #endregion
 
+    #region Public Properties
+
+    /// <inheritdoc/>
+    public long ReaderEpoch => _persistentQueue.ReaderEpoch;
+
+    #endregion
+
     #region Public Methods
 
     /// <inheritdoc/>
@@ -95,6 +102,18 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         }
 
         return false;
+    }
+
+    /// <inheritdoc/>
+    public bool TryDequeueIfEpoch(long expectedEpoch)
+    {
+        if (_persistentQueue.DequeueIfEpoch(expectedEpoch) == null)
+        {
+            return false;
+        }
+
+        _persistentQueue.FlushDequeues();
+        return true;
     }
 
     /// <inheritdoc/>
