@@ -88,18 +88,28 @@ internal sealed class InstanceGroups : IDisposable
         {
             var groupCount = AssignGroupIds(message, groupOfNode, groupOfLink);
 
-            var eventStarts = ArrayPool<int>.Shared.Rent(groupCount + 1);
-            var entityStarts = ArrayPool<int>.Shared.Rent(groupCount + 1);
-            var linkStarts = ArrayPool<int>.Shared.Rent(groupCount + 1);
-            var events = ArrayPool<Event>.Shared.Rent(eventsCount);
-            var entities = ArrayPool<StaticStreamData>.Shared.Rent(entitiesCount);
-            var links = ArrayPool<Link>.Shared.Rent(linksCount);
+            var groups = new InstanceGroups(
+                groupCount,
+                ArrayPool<Event>.Shared.Rent(eventsCount),
+                ArrayPool<StaticStreamData>.Shared.Rent(entitiesCount),
+                ArrayPool<Link>.Shared.Rent(linksCount),
+                ArrayPool<int>.Shared.Rent(groupCount + 1),
+                ArrayPool<int>.Shared.Rent(groupCount + 1),
+                ArrayPool<int>.Shared.Rent(groupCount + 1));
 
-            SortByGroup(message.Events.AsSpan(0, eventsCount), groupOfNode.AsSpan(0, eventsCount), groupCount, eventStarts, events);
-            SortByGroup(message.Entities.AsSpan(0, entitiesCount), groupOfNode.AsSpan(eventsCount, entitiesCount), groupCount, entityStarts, entities);
-            SortByGroup(message.Relationships.AsSpan(0, linksCount), groupOfLink.AsSpan(0, linksCount), groupCount, linkStarts, links);
+            try
+            {
+                SortByGroup(message.Events.AsSpan(0, eventsCount), groupOfNode.AsSpan(0, eventsCount), groupCount, groups._eventStarts, groups._events);
+                SortByGroup(message.Entities.AsSpan(0, entitiesCount), groupOfNode.AsSpan(eventsCount, entitiesCount), groupCount, groups._entityStarts, groups._entities);
+                SortByGroup(message.Relationships.AsSpan(0, linksCount), groupOfLink.AsSpan(0, linksCount), groupCount, groups._linkStarts, groups._links);
+            }
+            catch
+            {
+                groups.Dispose();
+                throw;
+            }
 
-            return new InstanceGroups(groupCount, events, entities, links, eventStarts, entityStarts, linkStarts);
+            return groups;
         }
         finally
         {

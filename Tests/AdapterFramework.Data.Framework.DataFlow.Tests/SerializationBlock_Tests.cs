@@ -794,7 +794,7 @@ public class SerializationBlock_Tests
             Relationships = new ArraySegment<Link>(rentedLinks, 0, GroupCount),
         }).Length;
 
-        var flushed = new System.Collections.Concurrent.ConcurrentQueue<ISerializedOmfMessage>();
+        var flushed = new ConcurrentQueue<ISerializedOmfMessage>();
         using var instanceMessage = new InstanceMessage(null, rentedEntities, rentedEvents, rentedLinks, 0, 0, GroupCount, GroupCount, GroupCount, MessageAction.Default, true);
         using var serializationBlock = new SerializationBlock(null, null, totalByteCount / 2, testLogger, -1, new OmfJsonSerializer(), null, flushed.Enqueue, new CancellationToken());
 
@@ -806,7 +806,7 @@ public class SerializationBlock_Tests
 
         foreach (var message in flushed)
         {
-            using var document = System.Text.Json.JsonDocument.Parse(message.MessageBody);
+            using var document = JsonDocument.Parse(message.MessageBody);
             var instanceIds = new HashSet<string>();
 
             foreach (var collection in new[] { Tokens.EventsCollection, Tokens.EntitiesCollection })
@@ -833,6 +833,7 @@ public class SerializationBlock_Tests
     #region Instance message splitting
 
     private const string NullId = "(null)";
+    private const string EndMarkerId = "end-of-test-marker";
 
     [Fact]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
@@ -951,9 +952,9 @@ public class SerializationBlock_Tests
 
     [Fact]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
-    public void SerializationBlock_Post_InstanceMessage_OverSize_UnevenItemSizes_ChunksAreSplitFurther()
+    public void SerializationBlock_Post_InstanceMessage_OverSize_UnevenItemSizes_AreSplitIntoMultipleMessages()
     {
-        // Chunks are first cut by item count, so a chunk holding the large items is still oversize and must be split again.
+        // A few very large items among many small ones: no single item count per message fits both kinds.
         var entities = Enumerable.Range(0, 4).Select(i => NewEntity($"big{i}", 2000))
             .Concat(Enumerable.Range(0, 12).Select(i => NewEntity($"small{i}", 5)))
             .ToArray();
@@ -966,6 +967,24 @@ public class SerializationBlock_Tests
         Assert.False(logger.AreErrorsWarningsInLog());
         Assert.True(flushed.Count >= 3);
         AssertFlushedExactlyOnce(flushed, [], entities, []);
+        AssertWithinLimit(flushed, MaxByteCount);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
+    public void SerializationBlock_Post_InstanceMessage_OverSize_GroupContainingItemLargerThanLimit_LogsErrorAndFlushesTheRest()
+    {
+        // The oversize entity is the source of a link, so they form one group which has to be split item by item.
+        // Splitting a single item which is still too big must stop with an error instead of recursing forever.
+        var entities = new[] { NewEntity("huge", 3000), NewEntity("s0"), NewEntity("s1") };
+        var links = new[] { NewLink("huge", "s0") };
+        const int MaxByteCount = 1000;
+        var logger = new TestLogger();
+
+        var flushed = FlushInstanceMessage(NewInstanceMessage([], entities, links), MaxByteCount, 3, logger);
+
+        Assert.Contains(logger.GetLogMessages(), l => l.LogLevel == Microsoft.Extensions.Logging.LogLevel.Error && l.LogMessage.Contains("too big"));
+        AssertFlushedExactlyOnce(flushed, [], entities.Where(e => e.InstanceId != "huge"), links);
         AssertWithinLimit(flushed, MaxByteCount);
     }
 
@@ -1187,6 +1206,7 @@ public class SerializationBlock_Tests
         }).Length;
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed by SerializationBlock handler")]
     private static List<FlushedInstanceMessage> FlushInstanceMessage(
         InstanceMessage message,
         int maxByteCount,
@@ -1195,14 +1215,31 @@ public class SerializationBlock_Tests
         ICompressor compressor = null)
     {
         var flushed = new ConcurrentQueue<ISerializedOmfMessage>();
-        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, logger, -1, new OmfJsonSerializer(), compressor, flushed.Enqueue, new CancellationToken());
+        using var endMarkerFlushed = new ManualResetEventSlim(false);
+
+        void OnFlush(ISerializedOmfMessage flushedMessage)
+        {
+            flushed.Enqueue(flushedMessage);
+
+            if (ParseInstanceMessage(flushedMessage).EventIds.Contains(EndMarkerId))
+            {
+                endMarkerFlushed.Set();
+            }
+        }
+
+        using var serializationBlock = new SerializationBlock(null, null, maxByteCount, logger, -1, new OmfJsonSerializer(), compressor, OnFlush, new CancellationToken());
 
         serializationBlock.Post(message);
 
-        Assert.True(SpinWait.SpinUntil(() => flushed.Sum(m => m.ItemCount) >= expectedItemCount, WaitTime), "Not all items were flushed.");
-        Thread.Sleep(100); // gives unexpected additional (duplicate) messages a chance to show up
+        // The block handles messages in order, so once the marker has been flushed everything posted before it has been flushed too.
+        serializationBlock.Post(NewInstanceMessage([NewEvent(EndMarkerId, 1)], [], []));
 
-        return [.. flushed.Select(ParseInstanceMessage)];
+        Assert.True(endMarkerFlushed.Wait(WaitTime), "The messages were not flushed in time.");
+
+        var result = flushed.Select(ParseInstanceMessage).Where(m => !m.EventIds.Contains(EndMarkerId)).ToList();
+        Assert.Equal(expectedItemCount, result.Sum(m => m.ItemCount));
+
+        return result;
     }
 
     private static FlushedInstanceMessage ParseInstanceMessage(ISerializedOmfMessage message)
