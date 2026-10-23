@@ -15,7 +15,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -28,7 +27,6 @@ using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Buffering;
-using AdapterFramework.Data.Framework.Failover.Configuration;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
@@ -190,7 +188,53 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
 
-    /// <summary>Verifies legacy hot mode rejects new scopes until acceptance tracking is explicitly enabled in the same mode.</summary>
+    /// <summary>Verifies every transition into Hot warns exactly once, before coordinator notification, including direct users without a coordinator.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UpdateMode_WhenEnteringHot_WarnsOncePerTransitionBeforeCoordinatorNotification(bool useCoordinator)
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        var logger = new Mock<ILogger>();
+        var warnings = new List<string>();
+        logger.Setup(x => x.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(), It.IsAny<Exception>(),
+                It.IsAny<Func<It.IsAnyType, Exception, string>>()))
+            .Callback((LogLevel _, EventId _, object state, Exception _, object _) =>
+            {
+                if (useCoordinator)
+                {
+                    Assert.NotEqual(FailoverMode.Hot, coordinator.CurrentFailoverMode);
+                }
+
+                warnings.Add(state.ToString());
+            });
+        using var processor = new FailoverDataMessageProcessor(logger.Object,
+            GetMockConfigurationProvider(nameof(UpdateMode_WhenEnteringHot_WarnsOncePerTransitionBeforeCoordinatorNotification)).Object,
+            GetMockOmfDataEndpointManager().Object, useCoordinator ? coordinator : null);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Warm);
+        Assert.Empty(warnings);
+        foreach (var nextMode in new[] { FailoverMode.Cold, FailoverMode.Warm, FailoverMode.NotConfigured })
+        {
+            var previousCount = warnings.Count;
+            processor.UpdateMode(FailoverMode.Hot);
+            Assert.Equal(previousCount + 1, warnings.Count);
+            processor.UpdateMode(FailoverMode.Hot);
+            Assert.Equal(previousCount + 1, warnings.Count);
+            processor.UpdateMode(nextMode);
+            Assert.Equal(previousCount + 1, warnings.Count);
+        }
+
+        Assert.All(warnings, warning =>
+        {
+            Assert.Contains("does not support awaitable scopes", warning);
+            Assert.Contains("Existing scopes are discarded", warning);
+            Assert.Contains("new scopes are rejected", warning);
+            Assert.Contains("Unscoped delivery is unaffected", warning);
+        });
+    }
+
+    /// <summary>Verifies Hot always rejects scopes, including repeated mode updates, while Warm remains supported.</summary>
     [Fact]
     public async Task FailoverDataMessageProcessor_UpdateMode_SetsCoordinatorFailoverMode()
     {
@@ -206,10 +250,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
         Assert.Equal(FailoverMode.Hot, coordinator.CurrentFailoverMode);
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
-
-        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot, true);
-        Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var hotScope));
-        await using var hotScopeLifetime = hotScope;
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
@@ -327,7 +367,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(FailoverRole.Secondary, failoverDataMessageProcessor.CurrentFailoverRole);
         Assert.Equal(cachedLastDataProcessedTime, failoverDataMessageProcessor.LastDataProcessedTime);
         Assert.Single(_sentMessages);
-        mockOmfDataEndpointManager.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
@@ -491,19 +530,13 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.True(returnedLastDataProcessedTime > utcTimeNow);
     }
 
-    /// <summary>Verifies new and older JSON configurations retain legacy trimming unless the property explicitly opts in.</summary>
-    [Theory]
-    [InlineData("{}", false)]
-    [InlineData("{\"EnableAcceptanceTrimWatermark\":false}", false)]
-    [InlineData("{\"EnableAcceptanceTrimWatermark\":true}", true)]
-    public void ClientFailoverConfiguration_AcceptanceOptIn_DefaultsFalseWhenMissing(string json, bool expected)
+    /// <summary>Verifies neither the processor nor its interface exposes an opt-in mode overload.</summary>
+    [Fact]
+    public void UpdateMode_WhenInspectingPublicApi_ExposesOnlySingleParameter()
     {
-        Assert.False(new ClientFailoverConfiguration().EnableAcceptanceTrimWatermark);
-
-        var configuration = JsonSerializer.Deserialize<ClientFailoverConfiguration>(json);
-
-        Assert.NotNull(configuration);
-        Assert.Equal(expected, configuration.EnableAcceptanceTrimWatermark);
+        var signature = new[] { typeof(FailoverMode), typeof(bool) };
+        Assert.Null(typeof(IFailoverDataMessageProcessor).GetMethod(nameof(IFailoverDataMessageProcessor.UpdateMode), signature));
+        Assert.Null(typeof(FailoverDataMessageProcessor).GetMethod(nameof(FailoverDataMessageProcessor.UpdateMode), signature));
     }
 
     /// <summary>Verifies legacy hot progress is exactly the last buffered handoff timestamp, does not grow while idle, and emits V3-compatible writer bodies.</summary>
@@ -534,7 +567,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         processor.UpdateState(FailoverRole.Secondary, default);
         Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
         Assert.Equal(DateTimeKind.Utc, processor.LastDataProcessedTime.Kind);
-        endpoint.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
 
         var persistence = new Mock<IPersistentQueue>();
         using var writerQueue = new PersistentOmfMessageQueue("legacy-writer", persistence.Object, new Mock<ILogger>().Object);
@@ -581,7 +613,6 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(0, sent.ProcessTimeTicks);
         Assert.Null(sent.SerializedMessageId);
         Assert.Equal(new DateTime(secondTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
-        endpoint.Verify(manager => manager.GetAcceptanceWatermark(), Times.Never);
     }
 
     public void Dispose()

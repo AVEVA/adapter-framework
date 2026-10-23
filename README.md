@@ -73,13 +73,12 @@ Version: 2.1.0
 
 ## Additional documentation
 
-Updated 2026-10-19: hot failover preserves legacy writer hand-off watermarks by default.
-`ClientFailoverConfiguration.EnableAcceptanceTrimWatermark` is a Boolean defaulting to `false`
-(also when absent). Enable it on **both nodes** to use Phase 6 acceptance watermarks and hot
-awaitable scopes; warm/cold scopes are unchanged. Mismatched settings are unsafe for peer coverage,
-and heartbeat messages do not negotiate this capability. Use coordinated maintenance or restart
-after draining the pair; toggling cannot recover legacy-trimmed data or clear conservative freezes.
+Updated 2026-10-22: awaitable scopes require OMF 2.0 and are supported without failover,
+or with warm/cold failover. Hot failover retains legacy writer hand-off timestamps and does
+not support scoped acceptance. Entering hot mode logs a warning, discards unfinished scope
+observations without cancelling data delivery, and rejects new scopes. Writers must not advance
+source checkpoints on discarded observations or silently fall back to unscoped writes.
 
-- [Documentation/HotFailoverAcceptance.md](Documentation/HotFailoverAcceptance.md) - Configuration example, legacy versus opt-in policies, runtime-switch outcomes, pair-upgrade prerequisites, recovery, and rollback.
+- [Documentation/HotFailoverAcceptance.md](Documentation/HotFailoverAcceptance.md) - Supported scope configurations, hot-mode restrictions, migration, and buffer compatibility.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute changes, tests, and documentation.
 - [SECURITY.md](SECURITY.md) - How to report suspected vulnerabilities responsibly.

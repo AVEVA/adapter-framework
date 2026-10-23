@@ -103,7 +103,7 @@ public enum OmfReasonCode
     NonAcceptedSuccess = 15,
 
     /// <summary>
-    /// This node's copy is waiting for the hot-failover peer's acceptance watermark.
+    /// Compatibility value for peer-wait diagnostics; runtime failover buffering no longer waits for peer acceptance.
     /// </summary>
     AwaitingPeerCoverage = 16,
 
@@ -113,7 +113,7 @@ public enum OmfReasonCode
     BufferDeleted = 17,
 
     /// <summary>
-    /// Hot failover uses legacy hand-off trimming, so acceptance of the buffered body cannot be established.
+    /// Hot failover permanently ended an unfinished scope's acceptance observation without cancelling data delivery.
     /// </summary>
     AcceptanceTrackingDisabled = 18,
 }

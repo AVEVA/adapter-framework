@@ -40,7 +40,7 @@ public enum OmfAcceptanceOutcome
     Filtered,
 
     /// <summary>
-    /// The hot-failover peer's acceptance watermark covers the data.
+    /// Compatibility value for explicit peer-covered dispositions. Runtime failover buffering does not produce this outcome.
     /// </summary>
     PeerCovered,
 

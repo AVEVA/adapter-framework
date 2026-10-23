@@ -80,11 +80,8 @@ public class OmfWriter : IOmfWriter
     private readonly TimeSpan _retryFirstDelay = TimeSpan.FromSeconds(1);
     private readonly OmfWriterType _writerType;
     private readonly OmfAwaitableCoordinator _awaitableCoordinator;
-    private readonly AcceptanceLowWaterTracker _acceptanceTracker = new();
-    private readonly object _admissionLock = new();
 
     private Action<bool> _statusUpdateCallback = obj => { };
-    private bool _recovering;
     private IEndpointConfiguration _configuration;
     private bool _endpointInError;
     private bool _firstStatusSent;
@@ -185,28 +182,6 @@ public class OmfWriter : IOmfWriter
 
         _typesAndStreamsQueue = new BackedUpOmfMessageQueue(DefaultVolatileMemorySizeMb, DefaultMessageExpirationTime, _persistentTypesAndStreamsQueue, logger);
         _dataQueue = new BackedUpOmfMessageQueue(GetDataQueueVolatileMemorySize(bufferingConfiguration, writerType), DefaultMessageExpirationTime, _persistentDataQueue, logger);
-        // Disk records predate this in-memory multiset (including legacy records without timestamps).
-        // Gate coverage until BOTH queues drain, including new admissions during recovery.
-        if (_typesAndStreamsFileQueue?.HadPendingItemsAtStartup == true || _dataFileQueue?.HadPendingItemsAtStartup == true)
-        {
-            _recovering = true;
-            _acceptanceTracker.BeginRecovery();
-        }
-
-        // Repair runs in FileQueue's constructor, before ItemsLost can be subscribed.
-        // Freeze before starting the consumer, even if repair removed the entire backlog.
-        if (_typesAndStreamsFileQueue?.HadDataLossAtStartup == true || _dataFileQueue?.HadDataLossAtStartup == true)
-        {
-            _acceptanceTracker.Freeze();
-        }
-
-        _typesAndStreamsQueue.BodiesLost += OnBodiesLost;
-        _dataQueue.BodiesLost += OnBodiesLost;
-        if (_typesAndStreamsFileQueue is not null)
-        {
-            _typesAndStreamsFileQueue.ItemsLost += OnBodiesLost;
-            _dataFileQueue.ItemsLost += OnBodiesLost;
-        }
 
         SubscribeToDataQueueReports();
         _bufferConsumerTask = Task.Run(BufferedOmfMessageHandlerAsync);
@@ -239,15 +214,6 @@ public class OmfWriter : IOmfWriter
 
     #region IOmfWriter
 
-    /// <inheritdoc/>
-    /// <remarks>
-    /// Startup backlog gates this boundary until both writer queues drain with exact 202 outcomes.
-    /// This does not clear the endpoint manager's separate permanent cap on endpoint configuration
-    /// updates, removal, or reset, even when queues were drained; that cap requires process restart.
-    /// </remarks>
-    public DateTime GetAcceptanceWatermark() => _writerType == OmfWriterType.Data
-        ? _acceptanceTracker.GetWatermark() : DateTime.MinValue;
-
     public long GetAndResetEgressedValuesCounter()
     {
         return Interlocked.Exchange(ref _valueCount, 0);
@@ -276,25 +242,13 @@ public class OmfWriter : IOmfWriter
     {
         ThrowHelper.ThrowIfArgumentNull(serializedMessage, nameof(serializedMessage));
 
-        lock (_admissionLock)
+        if (IsTypeOrContainer(serializedMessage.MessageType))
         {
-            _acceptanceTracker.Register(serializedMessage.ProcessTimeTicks);
-            try
-            {
-                if (IsTypeOrContainer(serializedMessage.MessageType))
-                {
-                    _typesAndStreamsQueue.Enqueue(serializedMessage);
-                }
-                else
-                {
-                    _dataQueue.Enqueue(serializedMessage);
-                }
-            }
-            catch
-            {
-                _acceptanceTracker.Freeze();
-                throw;
-            }
+            _typesAndStreamsQueue.Enqueue(serializedMessage);
+        }
+        else
+        {
+            _dataQueue.Enqueue(serializedMessage);
         }
     }
 
@@ -312,7 +266,6 @@ public class OmfWriter : IOmfWriter
     /// <inheritdoc/>
     public void DeleteBuffers()
     {
-        _acceptanceTracker.Freeze();
         _dataQueue.Clear();
     }
 
@@ -336,7 +289,6 @@ public class OmfWriter : IOmfWriter
 
         if (disposing)
         {
-            _acceptanceTracker.Freeze();
             _statusUpdateCallback = obj => { };
             UnsubscribeFromDataQueueReports();
             _writerCts.Cancel();
@@ -366,14 +318,6 @@ public class OmfWriter : IOmfWriter
             _dataFileQueue?.Dispose();
             _persistentDataQueue?.Dispose();
             _persistentTypesAndStreamsQueue?.Dispose();
-
-            _typesAndStreamsQueue.BodiesLost -= OnBodiesLost;
-            _dataQueue.BodiesLost -= OnBodiesLost;
-            if (_typesAndStreamsFileQueue is not null)
-            {
-                _typesAndStreamsFileQueue.ItemsLost -= OnBodiesLost;
-                _dataFileQueue.ItemsLost -= OnBodiesLost;
-            }
         }
 
         _disposed = true;
@@ -442,7 +386,6 @@ public class OmfWriter : IOmfWriter
                 }
                 else
                 {
-                    TryCompleteRecovery();
                     await Task.Delay(BufferRetryInterval);
                 }
             }
@@ -451,67 +394,15 @@ public class OmfWriter : IOmfWriter
         {
             _logger.LogInformation("OMF message buffer consumer task stopped. Endpoint: {Endpoint}.", _client.Uri);
         }
-        catch
-        {
-            // Includes failures while peeking, before a body reaches ProcessMessageAsync.
-            _acceptanceTracker.Freeze();
-            throw;
-        }
     }
 
     private async Task ProcessMessageAsync(ISerializedOmfMessage message, BackedUpOmfMessageQueue queue)
     {
-        try
+        if (await SendBufferedMessageAsync(message))
         {
-            if (await SendBufferedMessageAsync(message))
-            {
-                queue.TryDequeue(out _);
-                if (_lastResponse.ResponseStatus == ResponseStatusEnum.Success && _lastResponse.StatusCode == HttpStatusCode.Accepted)
-                {
-                    _acceptanceTracker.Accept(message.ProcessTimeTicks);
-                }
-                else
-                {
-                    _acceptanceTracker.Freeze();
-                }
-
-                TryCompleteRecovery();
-                Interlocked.Add(ref _valueCount, message.ItemCount);
-                ReportDisposition(message, _lastResponse);
-            }
-        }
-        catch
-        {
-            _acceptanceTracker.Freeze();
-            throw;
-        }
-    }
-
-    /// <summary>Freezes without calling into queues, since loss notifications can hold their locks.</summary>
-    /// <param name="sender">The queue reporting a possible loss.</param>
-    /// <param name="e">The event arguments.</param>
-    private void OnBodiesLost(object sender, EventArgs e) => _acceptanceTracker.Freeze();
-
-    /// <summary>
-    /// Opens the recovery gate only at a quiescent boundary observed by the sole consumer.
-    /// Admission cannot interleave registration and enqueue with this check. Queue callbacks take
-    /// only the tracker lock; no tracker lock is held while peeking either queue.
-    /// Continuous ingestion may conservatively keep coverage at zero until both queues drain.
-    /// </summary>
-    private void TryCompleteRecovery()
-    {
-        if (!_recovering)
-        {
-            return;
-        }
-
-        lock (_admissionLock)
-        {
-            if (!_typesAndStreamsQueue.TryPeek(out _) && !_dataQueue.TryPeek(out _))
-            {
-                _acceptanceTracker.CompleteRecovery();
-                _recovering = false;
-            }
+            queue.TryDequeue(out _);
+            Interlocked.Add(ref _valueCount, message.ItemCount);
+            ReportDisposition(message, _lastResponse);
         }
     }
 

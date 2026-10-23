@@ -53,8 +53,6 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     private readonly object _dispatchLock = new();
 
     private bool _disposed;
-    private bool _isDataManager;
-    private DateTime? _frozenWatermark;
     private ILogger _logger;
     private OmfAwaitableCoordinator _dispatchCoordinator;
     private BufferingConfiguration _bufferingConfiguration;
@@ -90,25 +88,11 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
         _logger = _logManager.GetOrCreateLogger(componentId);
         _bufferingConfiguration = BufferingConfiguration.GetOrCreateBufferingConfiguration(_configurationProvider, _logger);
-        _isDataManager = facet.Equals(DataEndpointsFacetName, StringComparison.OrdinalIgnoreCase);
-        _dispatchCoordinator = _isDataManager ? _awaitableCoordinator : null;
+        _dispatchCoordinator = facet.Equals(DataEndpointsFacetName, StringComparison.OrdinalIgnoreCase) ? _awaitableCoordinator : null;
 
         lock (_dispatchLock)
         {
             AddOmfWriters(componentId, facet);
-        }
-    }
-
-    /// <summary>
-    /// Gets the minimum acceptance boundary of a stable snapshot of all data writers. Dispatch loss,
-    /// endpoint removal, and reset permanently cap the aggregate until process restart.
-    /// </summary>
-    /// <returns>The inclusive safe process-time watermark, or the minimum value for health or no writers.</returns>
-    public DateTime GetAcceptanceWatermark()
-    {
-        lock (_dispatchLock)
-        {
-            return GetAcceptanceWatermarkCore();
         }
     }
 
@@ -118,27 +102,13 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
         lock (_dispatchLock)
         {
-            // Query, snapshot, delivery registration, and enqueue share the removal lock. Never
-            // publish a snapshot that omits a writer whose queued bodies have not been accepted.
-            var beforeDispatch = GetAcceptanceWatermarkCore();
+            // Snapshot, delivery registration, and enqueue share the removal lock so endpoint
+            // removal cannot miss a delivery registered for that writer.
             var writers = _writers;
             var serializedMessageId = _dispatchCoordinator is null ? null : serializedMessage.SerializedMessageId;
             if (serializedMessageId is { } bodyId)
             {
-                try
-                {
-                    _dispatchCoordinator.RegisterDeliveries(bodyId, writers.Select(writer => new OmfDeliveryTarget(writer.Id, writer.TargetUri)).ToList());
-                }
-                catch
-                {
-                    FreezeWatermark(beforeDispatch);
-                    throw;
-                }
-            }
-
-            if (writers.IsEmpty || _disposed)
-            {
-                FreezeWatermark(beforeDispatch);
+                _dispatchCoordinator.RegisterDeliveries(bodyId, writers.Select(writer => new OmfDeliveryTarget(writer.Id, writer.TargetUri)).ToList());
             }
 
             foreach (var writer in writers)
@@ -149,7 +119,6 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
                 }
                 catch (Exception ex)
                 {
-                    FreezeWatermark(beforeDispatch);
                     _logger.LogError(
                         ex,
                         SendErrorMessageTemplate,
@@ -226,7 +195,6 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
                     // This relies on the RemoveOmfWriter for-each above for correctness
                     if (RequiresUpdate(configuration, oldConfiguration))
                     {
-                        FreezeWatermark(GetAcceptanceWatermarkCore());
                         writer.UpdateConfiguration(configuration);
 
                         // when endpoint URL changes we should send again types and streams
@@ -344,7 +312,6 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
             return;
         }
 
-        FreezeWatermark(GetAcceptanceWatermarkCore());
         foreach (var writer in _writers)
         {
             writer?.Dispose();
@@ -400,7 +367,6 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         {
             lock (_dispatchLock)
             {
-                FreezeWatermark(GetAcceptanceWatermarkCore());
                 _writers = _writers.Remove(writer);
                 _dispatchCoordinator?.RecordEndpointDiscarded(id, reason);
             }
@@ -453,30 +419,10 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         }
         catch (Exception ex)
         {
-            FreezeWatermark(GetAcceptanceWatermarkCore());
             _logger.LogError(ex, "Error creating OMF writer for endpoint {Endpoint}. Data for this endpoint is not going to be buffered or sent. Please contact endpoint provider Tech Support for assistance.", writerConfig.Endpoint);
         }
 
         void ErrorCallback(bool x) => UpdateWriterDeviceStatus(writerConfig.Id, x);
-    }
-
-    private DateTime GetAcceptanceWatermarkCore()
-    {
-        if (!_isDataManager || _writers.IsEmpty)
-        {
-            return DateTime.MinValue;
-        }
-
-        var minimum = _writers.Min(writer => writer.GetAcceptanceWatermark());
-        return _frozenWatermark.HasValue && _frozenWatermark.Value < minimum ? _frozenWatermark.Value : minimum;
-    }
-
-    private void FreezeWatermark(DateTime watermark)
-    {
-        if (!_frozenWatermark.HasValue || watermark < _frozenWatermark.Value)
-        {
-            _frozenWatermark = watermark;
-        }
     }
 
     private void UpdateWriterDeviceStatus(string id, bool inError)

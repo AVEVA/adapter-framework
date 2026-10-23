@@ -52,9 +52,6 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private long _lastReceivedTimeTicks;
     private long _lastDispatchedTimeTicks;
     private long _nonHotProcessedTimeTicks;
-    private long? _failedDispatchBoundary;
-    private int _internalBodiesLost;
-    private bool _enableAcceptanceTrimWatermark;
 
     private bool _disposed;
 
@@ -73,11 +70,8 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     public FailoverRole CurrentFailoverRole { get; private set; }
 
     /// <summary>
-    /// Gets legacy hand-off progress by default, or opt-in hot acceptance progress across every data endpoint.
-    /// With acceptance trimming enabled, a fully accepted idle primary
-    /// advances through idle time, but never past a body still waiting in the failover buffer.
-    /// A legacy endpoint manager that cannot report acceptance blocks trimming conservatively.
-    /// Warm and cold modes retain their existing hand-off timestamp behavior.
+    /// Gets the last hand-off timestamp. Hot mode reports the last successful buffer dispatch;
+    /// other modes report the most recent synchronous hand-off time.
     /// </summary>
     public DateTime LastDataProcessedTime
     {
@@ -85,37 +79,8 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         {
             lock (_lockObject)
             {
-                var ticks = _nonHotProcessedTimeTicks;
-                if (CurrentFailoverMode == FailoverMode.Hot && !_enableAcceptanceTrimWatermark)
-                {
-                    ticks = _lastDispatchedTimeTicks;
-                }
-                else if (CurrentFailoverMode == FailoverMode.Hot)
-                {
-                    var acceptanceTicks = _dataEndpointManager.GetAcceptanceWatermark().Ticks;
-                    ticks = Math.Min(_lastDispatchedTimeTicks, acceptanceTicks);
-                    if (CurrentFailoverRole == FailoverRole.Primary && _lastDispatchedTimeTicks > 0
-                        && acceptanceTicks >= _lastDispatchedTimeTicks)
-                    {
-                        // Otherwise the final batch on a quiet source can never cross the heartbeat's
-                        // trim offset, leaving its secondary scope pending forever without new traffic.
-                        ticks = Math.Max(ticks, DateTime.UtcNow.Ticks);
-                        if (_internalBackedUpMessageQueue.TryPeek(out var pending))
-                        {
-                            ticks = Math.Min(ticks, Math.Max(pending.ProcessTimeTicks - 1, 0));
-                        }
-                    }
-                    if (_failedDispatchBoundary is { } boundary)
-                    {
-                        ticks = Math.Min(ticks, boundary);
-                    }
-
-                    if (Volatile.Read(ref _internalBodiesLost) != 0)
-                    {
-                        ticks = 0;
-                    }
-                }
-
+                var ticks = CurrentFailoverMode == FailoverMode.Hot
+                    ? _lastDispatchedTimeTicks : _nonHotProcessedTimeTicks;
                 return new DateTime(ticks, DateTimeKind.Utc);
             }
         }
@@ -144,11 +109,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
             if (CurrentFailoverMode == FailoverMode.Hot)
             {
-                // Keep enqueue order monotonic even when the wall clock moves backwards or two bodies
-                // arrive in the same tick. Every body participates, not only those carrying a scope.
-                _lastReceivedTimeTicks = _enableAcceptanceTrimWatermark
-                    ? Math.Max(messageReceivedTime.Ticks, _lastReceivedTimeTicks + 1)
-                    : messageReceivedTime.Ticks;
+                _lastReceivedTimeTicks = messageReceivedTime.Ticks;
                 var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody,
                     message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
                 {
@@ -166,7 +127,6 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 }
                 catch (Exception ex)
                 {
-                    Interlocked.Exchange(ref _internalBodiesLost, 1);
                     if (failoverMessage.SerializedMessageId is { } failedId)
                     {
                         _awaitableCoordinator?.RecordFailoverDiscarded(failedId,
@@ -216,23 +176,18 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         }
     }
 
-    public void UpdateMode(FailoverMode newFailoverMode)
-        => UpdateMode(newFailoverMode, false);
-
     /// <summary>
-    /// Applies failover mode and trimming policy under the same lock as dispatch and trim. The default
-    /// is legacy hand-off progress; both nodes must opt in before hot scope acceptance can be trusted.
+    /// Applies the failover mode under the dispatch lock and warns once on each transition into Hot,
+    /// before notifying the coordinator or returning to manager callbacks.
     /// </summary>
     /// <param name="newFailoverMode">The configured failover mode.</param>
-    /// <param name="enableAcceptanceTrimWatermark">Whether hot failover advertises endpoint acceptance progress.</param>
-    public void UpdateMode(FailoverMode newFailoverMode, bool enableAcceptanceTrimWatermark)
+    public void UpdateMode(FailoverMode newFailoverMode)
     {
         lock (_lockObject)
         {
             if (CurrentFailoverMode != FailoverMode.Hot && newFailoverMode == FailoverMode.Hot)
             {
                 _lastDispatchedTimeTicks = 0;
-                _failedDispatchBoundary = null;
                 CreateInternalDataQueue();
                 if (CurrentFailoverRole == FailoverRole.Primary)
                 {
@@ -245,9 +200,14 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 DeleteInternalDataQueue();
             }
 
+            var enteringHot = CurrentFailoverMode != FailoverMode.Hot && newFailoverMode == FailoverMode.Hot;
             CurrentFailoverMode = newFailoverMode;
-            _enableAcceptanceTrimWatermark = enableAcceptanceTrimWatermark;
-            _awaitableCoordinator?.SetFailoverMode(newFailoverMode, enableAcceptanceTrimWatermark);
+            if (enteringHot)
+            {
+                _logger.LogWarning("Hot failover does not support awaitable scopes. Existing scopes are discarded and new scopes are rejected. Unscoped delivery is unaffected.");
+            }
+
+            _awaitableCoordinator?.SetFailoverMode(newFailoverMode);
         }
     }
 
@@ -301,33 +261,20 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 ? Path.Combine(_configurationProvider.GetCommonApplicationDataDirectoryPath(), EdgeSystemConstants.BuffersDirectoryName, FailoverConstants.FailoverKeyword)
                 : Path.Combine(_bufferingConfiguration.BufferLocation, FailoverConstants.FailoverKeyword);
             _internalFileQueue = new FileQueue(bufferFilesPath, BufferingConstants.DataBufferFilePrefix, FailoverConstants.FailoverKeyword, BufferingConstants.MaxBufferFileSizeMb, maxBufferFiles, _logger);
-            if (_internalFileQueue.HadDataLossAtStartup)
-            {
-                Interlocked.Exchange(ref _internalBodiesLost, 1);
-            }
-
-            _internalFileQueue.ItemsLost += OnInternalBodiesLost;
             _internalPersistentMessageQueue = new FailoverPersistentOmfMessageQueue(FailoverConstants.FailoverKeyword, _internalFileQueue, _logger);
         }
 
         var maxVolatileMemorySize = _bufferingConfiguration.EnablePersistentBuffering ? _bufferingConfiguration.MaxBufferSizeMB : BufferingConstants.DefaultVolatileMemorySizeMb;
         _internalBackedUpMessageQueue = new FailoverBackedUpOmfMessageQueue(maxVolatileMemorySize, BufferingConstants.DefaultMessageExpirationTime, _internalPersistentMessageQueue, _logger);
-        _internalBackedUpMessageQueue.BodiesLost += OnInternalBodiesLost;
         _internalBackedUpMessageQueue.SerializedBodiesDiscarded += OnInternalBodiesDiscarded;
         if (_internalPersistentMessageQueue is not null)
         {
             _internalPersistentMessageQueue.SerializedBodiesDiscarded += OnInternalBodiesDiscarded;
-            _internalPersistentMessageQueue.SerializedBodyWriteFailed += OnInternalBodyWriteFailed;
         }
     }
 
     private void DeleteInternalDataQueue()
     {
-        if (_internalBackedUpMessageQueue?.TryPeek(out _) == true)
-        {
-            Interlocked.Exchange(ref _internalBodiesLost, 1);
-        }
-
         _awaitableCoordinator?.RecordFailoverBuffersDeleted();
         UnsubscribeFromInternalQueueReports();
         _internalBackedUpMessageQueue?.Dispose();
@@ -394,18 +341,13 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                                 // Failover records always need process ticks for local trimming. Legacy
                                 // endpoint-writer records do not: retain their original V3 format for
                                 // unscoped writes rather than forcing timestamp-bearing V5 records.
-                                var dispatched = _enableAcceptanceTrimWatermark ? (ISerializedOmfMessage)message
-                                    : new SerializedOmfMessage(message.MessageType, message.MessageBody,
-                                        message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
+                                var dispatched = new SerializedOmfMessage(message.MessageType, message.MessageBody,
+                                    message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
                                 _dataEndpointManager.SendMessage(dispatched);
-                                _lastDispatchedTimeTicks = _enableAcceptanceTrimWatermark
-                                    ? Math.Max(_lastDispatchedTimeTicks, message.ProcessTimeTicks)
-                                    : message.ProcessTimeTicks;
+                                _lastDispatchedTimeTicks = message.ProcessTimeTicks;
                             }
                             catch (Exception ex)
                             {
-                                var boundary = Math.Max(message.ProcessTimeTicks - 1, 0);
-                                _failedDispatchBoundary = Math.Min(_failedDispatchBoundary ?? boundary, boundary);
                                 if (message.SerializedMessageId is { } id)
                                 {
                                     _awaitableCoordinator?.RecordFailoverDiscarded(id,
@@ -446,16 +388,9 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 if (_internalBackedUpMessageQueue.TryDequeue(out var trimmed)
                     && trimmed.SerializedMessageId is { } id)
                 {
-                    if (_enableAcceptanceTrimWatermark)
-                    {
-                        _awaitableCoordinator?.RecordPeerCoverage(id);
-                    }
-                    else
-                    {
-                        _awaitableCoordinator?.RecordFailoverDiscarded(id,
-                            new OmfOutcomeReason(OmfReasonCode.AcceptanceTrackingDisabled,
-                                "Legacy hand-off trimming removed the body without proving acceptance."));
-                    }
+                    _awaitableCoordinator?.RecordFailoverDiscarded(id,
+                        new OmfOutcomeReason(OmfReasonCode.AcceptanceTrackingDisabled,
+                            "Legacy hand-off trimming removed the body without proving acceptance."));
                 }
             }
         }
@@ -466,43 +401,23 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     {
         if (_internalBackedUpMessageQueue is not null)
         {
-            _internalBackedUpMessageQueue.BodiesLost -= OnInternalBodiesLost;
             _internalBackedUpMessageQueue.SerializedBodiesDiscarded -= OnInternalBodiesDiscarded;
-        }
-
-        if (_internalFileQueue is not null)
-        {
-            _internalFileQueue.ItemsLost -= OnInternalBodiesLost;
         }
 
         if (_internalPersistentMessageQueue is not null)
         {
             _internalPersistentMessageQueue.SerializedBodiesDiscarded -= OnInternalBodiesDiscarded;
-            _internalPersistentMessageQueue.SerializedBodyWriteFailed -= OnInternalBodyWriteFailed;
         }
     }
 
     /// <summary>Reports volatile eviction and persisted record loss without reentering queue locks.</summary>
     private void OnInternalBodiesDiscarded(object sender, SerializedBodiesEventArgs e)
     {
-        var reason = new OmfOutcomeReason(e.Reason, "The failover buffer lost the body before dispatch or peer coverage.");
+        var reason = new OmfOutcomeReason(e.Reason, "The failover buffer lost the body before dispatch.");
         foreach (var id in e.SerializedMessageIds)
         {
             _awaitableCoordinator?.RecordFailoverDiscarded(id, reason);
         }
-    }
-
-    /// <summary>
-    /// Blocks local coverage after any internal loss, including unscoped bodies. This callback runs
-    /// under queue locks and must not acquire the processor lock or call back into a queue.
-    /// </summary>
-    private void OnInternalBodiesLost(object sender, EventArgs e) => Interlocked.Exchange(ref _internalBodiesLost, 1);
-
-    /// <summary>Leaves failed disk writes pending; the queue retains them for a later flush.</summary>
-    private void OnInternalBodyWriteFailed(object sender, SerializedBodiesEventArgs e)
-    {
-        // The body still has its AwaitingPeerCoverage placeholder and can be sent after promotion.
-        _logger.LogWarning("Writing {Count} scoped bodies to the failover buffer failed; they remain pending.", e.SerializedMessageIds.Count);
     }
 
     #endregion

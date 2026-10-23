@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -53,7 +54,6 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     private readonly TaskCompletionSource _shutdown = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private OmfVersion? _omfVersion;
     private FailoverMode _failoverMode;
-    private bool _enableAcceptanceTrimWatermark;
     private Action<OmfAwaitableScopeState> _sealHandler;
     private bool _disposed;
 
@@ -112,31 +112,30 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Sets the current failover mode with legacy trimming. Hot scopes require explicit opt-in.
+    /// Sets the current failover mode. Hot mode rejects new scopes and permanently discards every unfinished scope.
     /// </summary>
     /// <param name="failoverMode">The current failover mode.</param>
+    /// <remarks>
+    /// Only the acceptance observation ends; data delivery is never cancelled. Completed outcomes remain unchanged.
+    /// An old unsealed scope may still deliver later writes, but its discarded observation cannot become successful,
+    /// even after leaving Hot mode. Completion notifications run outside the coordinator lock.
+    /// </remarks>
     public void SetFailoverMode(FailoverMode failoverMode)
-        => SetFailoverMode(failoverMode, false);
-
-    /// <summary>
-    /// Sets the failover mode and acceptance-trimming policy atomically. Disabling hot acceptance
-    /// fails pending buffered bodies without cancelling their delivery or changing dispatched work.
-    /// </summary>
-    /// <param name="failoverMode">The current failover mode.</param>
-    /// <param name="enableAcceptanceTrimWatermark">Whether hot failover uses acceptance-based trimming.</param>
-    public void SetFailoverMode(FailoverMode failoverMode, bool enableAcceptanceTrimWatermark)
     {
         List<OmfAwaitableScopeState> completed = null;
         lock (_lock)
         {
             _failoverMode = failoverMode;
-            _enableAcceptanceTrimWatermark = enableAcceptanceTrimWatermark;
-            if (failoverMode == FailoverMode.Hot && !enableAcceptanceTrimWatermark)
+            if (failoverMode == FailoverMode.Hot)
             {
                 var reason = AcceptanceTrackingDisabledReason();
-                foreach (var body in _bodies.Values)
+                foreach (var tracking in _scopes.Values)
                 {
-                    DiscardFailoverBody(body, reason, ref completed);
+                    // Unlike Evaluate, this must finalize even empty, unsealed, or not-yet-materialized scopes.
+                    if (tracking.Outcome is null)
+                    {
+                        Complete(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+                    }
                 }
             }
         }
@@ -174,7 +173,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <param name="options">The scope options.</param>
     /// <param name="scope">The created scope, or null when the limit is reached.</param>
     /// <returns><c>true</c> if the scope was created; otherwise <c>false</c>.</returns>
-    /// <exception cref="NotSupportedException">The pipeline isn't OMF 2.0, or hot failover has not opted into acceptance trimming.</exception>
+    /// <exception cref="NotSupportedException">The pipeline isn't OMF 2.0, or hot failover is configured.</exception>
     /// <exception cref="ObjectDisposedException">The coordinator is shut down.</exception>
     public bool TryCreateScope(OmfAwaitableScopeOptions options, out OmfAwaitableScopeState scope)
     {
@@ -192,9 +191,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 throw new NotSupportedException("Awaitable scopes require an OMF 2.0 data pipeline.");
             }
 
-            if (_failoverMode == FailoverMode.Hot && !_enableAcceptanceTrimWatermark)
+            if (_failoverMode == FailoverMode.Hot)
             {
-                throw new NotSupportedException("Hot failover scopes require EnableAcceptanceTrimWatermark on both nodes.");
+                throw new NotSupportedException("Hot failover does not support awaitable scopes. Use warm or cold failover mode.");
             }
 
             if (_scopes.Count >= MaxActiveScopes)
@@ -373,8 +372,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Marks a body as buffered for hot failover, before enqueueing it. Promotion replaces this
-    /// placeholder with the actual endpoint snapshot; trimming completes it without inventing a receipt.
+    /// Marks a body as buffered for failover, before enqueueing it. Dispatch replaces this
+    /// diagnostic placeholder with the endpoint snapshot. Buffering and peer trimming never establish acceptance.
     /// </summary>
     /// <param name="serializedMessageId">The buffered body's ID.</param>
     /// <param name="processTimeTicks">The local process time used by the trim comparison.</param>
@@ -387,10 +386,10 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             {
                 body.FailoverDelivery = new DeliveryTracking(null, null)
                 {
-                    Reason = new OmfOutcomeReason(OmfReasonCode.AwaitingPeerCoverage,
-                        string.Create(CultureInfo.InvariantCulture, $"Waiting for the peer acceptance watermark to cover process time {processTimeTicks}.")),
+                    Reason = new OmfOutcomeReason(OmfReasonCode.Queued,
+                        string.Create(CultureInfo.InvariantCulture, $"A body with process time {processTimeTicks} is waiting in the failover buffer.")),
                 };
-                if (_failoverMode == FailoverMode.Hot && !_enableAcceptanceTrimWatermark)
+                if (_failoverMode == FailoverMode.Hot)
                 {
                     DiscardFailoverBody(body, AcceptanceTrackingDisabledReason(), ref completed);
                 }
@@ -400,33 +399,15 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         SignalCompleted(completed);
     }
 
-    /// <summary>Explains why legacy hot trimming cannot satisfy a scoped acceptance observation.</summary>
+    /// <summary>Explains why Hot mode cannot satisfy a scoped acceptance observation.</summary>
     private static OmfOutcomeReason AcceptanceTrackingDisabledReason() =>
-        new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover acceptance trimming was not enabled or was disabled by a configuration change.");
+        new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover does not support awaitable acceptance tracking.");
 
-    /// <summary>Completes a buffered body when the peer's acceptance watermark trims it.</summary>
+    /// <summary>Retained for compatibility; peer trimming cannot establish scoped acceptance and this report is ignored.</summary>
     /// <param name="serializedMessageId">The trimmed body's ID.</param>
+    [SuppressMessage("Performance", "CA1822:Mark members as static", Justification = "Retained as an instance method for API compatibility.")]
     public void RecordPeerCoverage(Guid serializedMessageId)
     {
-        List<OmfAwaitableScopeState> completed = null;
-        lock (_lock)
-        {
-            if (!_bodies.TryGetValue(serializedMessageId, out var body)
-                || body.FailoverDelivery is not { State: OmfDeliveryState.Pending } delivery)
-            {
-                return;
-            }
-
-            CompleteDelivery(delivery, OmfDeliveryState.PeerCovered, null, null, null);
-            body.Deliveries = new List<DeliveryTracking> { delivery };
-            body.FailoverDelivery = null;
-            foreach (var tracking in body.Membership.Keys)
-            {
-                Evaluate(tracking, null, null, ref completed);
-            }
-        }
-
-        SignalCompleted(completed);
     }
 
     /// <summary>Discards a body lost from the failover buffer before endpoint dispatch.</summary>

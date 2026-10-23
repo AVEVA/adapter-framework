@@ -46,16 +46,6 @@ public class ClientFailoverConfiguration : EndpointConfigurationBase, IEquatable
     [EnumOptions(false, 0)]
     public FailoverMode Mode { get; set; } = FailoverMode.Hot;
 
-    /// <summary>
-    /// Gets or sets whether hot failover trimming uses the acceptance watermark instead of the legacy hand-off timestamp.
-    /// </summary>
-    /// <remarks>
-    /// Defaults to false. Both nodes in a failover pair must use the same value. Hot failover awaitable scopes require
-    /// this setting to be true on both nodes.
-    /// </remarks>
-    [Description("Use the acceptance watermark for hot failover trimming instead of the legacy hand-off timestamp. Defaults to false. Both nodes must use the same value; hot failover awaitable scopes require true on both nodes.")]
-    public bool EnableAcceptanceTrimWatermark { get; set; }
-
     [JsonIgnore]
     public override string Id { get; set; }
 
@@ -74,7 +64,6 @@ public class ClientFailoverConfiguration : EndpointConfigurationBase, IEquatable
                Description == other.Description &&
                FailoverTimeout == other.FailoverTimeout &&
                Mode == other.Mode &&
-               EnableAcceptanceTrimWatermark == other.EnableAcceptanceTrimWatermark &&
                base.Equals(other);
     }
 
@@ -89,7 +78,7 @@ public class ClientFailoverConfiguration : EndpointConfigurationBase, IEquatable
 
     public override int GetHashCode()
     {
-        return HashCode.Combine(FailoverGroupId, Name, Description, FailoverTimeout, Mode, EnableAcceptanceTrimWatermark, base.GetHashCode());
+        return HashCode.Combine(FailoverGroupId, Name, Description, FailoverTimeout, Mode, base.GetHashCode());
     }
 
     public override IEnumerable<ValidationResult> Validate()

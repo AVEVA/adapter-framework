@@ -23,6 +23,10 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// </summary>
 /// <remarks>
 /// Waiting, timing out, or disposing a scope never cancels delivery. Scopes are in-process and don't survive restart or failover.
+/// Hot failover rejects new scopes and permanently completes unfinished scopes as discarded with
+/// <see cref="OmfReasonCode.AcceptanceTrackingDisabled"/>. Existing completed outcomes are unchanged.
+/// Later writes through an old unsealed scope may still be delivered, but its discarded observation cannot become successful,
+/// even after returning to warm or cold mode. A discarded observation does not cancel data delivery.
 /// </remarks>
 public interface IAwaitableScope : IAsyncDisposable
 {

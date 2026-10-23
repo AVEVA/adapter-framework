@@ -53,28 +53,8 @@ public interface IFailoverDataMessageProcessor : IDisposable
     void UpdateState(FailoverRole role, DateTime lastDataProcessedTime);
 
     /// <summary>
-    /// Update the failover mode and disable acceptance-based trimming.
+    /// Update the failover mode. Hot mode does not support awaitable scopes.
     /// </summary>
     /// <param name="newFailoverMode">The failover mode to update.</param>
     void UpdateMode(FailoverMode newFailoverMode);
-
-    /// <summary>
-    /// Update the failover mode and acceptance-based trimming setting atomically.
-    /// </summary>
-    /// <param name="newFailoverMode">The failover mode to update.</param>
-    /// <param name="enableAcceptanceTrimWatermark">Whether to use the acceptance watermark for hot failover trimming.</param>
-    /// <remarks>
-    /// Both nodes must use the same setting. Hot failover awaitable scopes require true on both nodes.
-    /// Implementations must override this overload to support acceptance-based trimming.
-    /// </remarks>
-    /// <exception cref="NotSupportedException">Acceptance-based trimming is requested from an implementation that does not support it.</exception>
-    void UpdateMode(FailoverMode newFailoverMode, bool enableAcceptanceTrimWatermark)
-    {
-        if (enableAcceptanceTrimWatermark)
-        {
-            throw new NotSupportedException("This failover data message processor does not support acceptance-based trimming.");
-        }
-
-        UpdateMode(newFailoverMode);
-    }
 }

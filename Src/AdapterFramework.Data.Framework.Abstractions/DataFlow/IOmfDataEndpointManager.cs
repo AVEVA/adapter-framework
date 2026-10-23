@@ -20,13 +20,6 @@ namespace AdapterFramework.Data.Framework.Abstractions.DataFlow;
 public interface IOmfDataEndpointManager : IOmfEndpointManager
 {
     /// <summary>
-    /// Gets the inclusive acceptance boundary shared by all data endpoints, or <see cref="DateTime.MinValue"/>
-    /// when acceptance tracking is unsupported or no endpoints are configured.
-    /// </summary>
-    /// <returns>The conservative process-time watermark safe for peer trimming.</returns>
-    DateTime GetAcceptanceWatermark() => DateTime.MinValue;
-
-    /// <summary>
     /// Sets the action to occur when there is a device status update.
     /// </summary>
     /// <param name="deviceStatusHandler">The new device status.</param>

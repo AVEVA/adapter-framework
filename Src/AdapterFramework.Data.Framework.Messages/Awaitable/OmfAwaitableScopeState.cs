@@ -25,6 +25,8 @@ namespace AdapterFramework.Data.Framework.Messages.Awaitable;
 /// </summary>
 /// <remarks>
 /// Framework infrastructure. Scopes that expose write methods wrap each write in <see cref="EnterWrite"/> and <see cref="ExitWrite"/>.
+/// Entering Hot failover permanently discards unfinished acceptance observations without sealing scopes or cancelling delivery.
+/// Later writes through an old unsealed scope can still be delivered, but cannot restore acceptance tracking or success.
 /// </remarks>
 public sealed class OmfAwaitableScopeState : ScopeToken, IAwaitableScope
 {

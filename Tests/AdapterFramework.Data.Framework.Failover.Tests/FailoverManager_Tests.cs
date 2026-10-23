@@ -67,63 +67,41 @@ public class FailoverManager_Tests
     #region Tests
 
     /// <summary>
-    /// Verifies that a legacy processor receives disabled requests through its original overload but cannot silently accept opt-in requests.
+    /// Verifies that existing processor implementations remain usable through the single-parameter interface.
     /// </summary>
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void UpdateMode_WhenLegacyProcessorUsesDefaultOverload_RejectsUnsupportedOptIn(bool enabled)
+    [Fact]
+    public void UpdateMode_WhenLegacyProcessorImplementsInterface_AppliesMode()
     {
         using var legacyProcessor = new LegacyFailoverDataMessageProcessor();
         var processor = (IFailoverDataMessageProcessor)legacyProcessor;
 
-        if (enabled)
-        {
-            Assert.Throws<NotSupportedException>(() => processor.UpdateMode(FailoverMode.Hot, true));
-            Assert.Equal(FailoverMode.NotConfigured, processor.CurrentFailoverMode);
-        }
-        else
-        {
-            processor.UpdateMode(FailoverMode.Hot, false);
-            Assert.Equal(FailoverMode.Hot, processor.CurrentFailoverMode);
-        }
+        processor.UpdateMode(FailoverMode.Hot);
+        Assert.Equal(FailoverMode.Hot, processor.CurrentFailoverMode);
     }
 
     /// <summary>
-    /// Verifies that startup commits the mode and watermark setting after initial endpoint activity and health links,
+    /// Verifies that startup commits the mode after initial endpoint activity and health links,
     /// then invokes callbacks without awaiting them before the final endpoint start observes the committed state.
     /// </summary>
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task StartAsync_WhenWatermarkSettingConfigured_AppliesAfterInitialEndpointActivity(bool enabled)
+    [Fact]
+    public async Task StartAsync_WhenModeConfigured_AppliesAfterInitialEndpointActivity()
     {
         var configuration = new ClientFailoverConfiguration
         {
             FailoverGroupId = "TestGroup",
             Mode = FailoverMode.Hot,
-            EnableAcceptanceTrimWatermark = enabled,
         };
         ICollection<string> errors = null;
         _mockConfigurationProvider.Setup(x => x.TryGetConfiguration(EdgeSystemConstants.SystemComponentId,
             EdgeSystemConstants.ClientFailoverFacetName, out configuration, out errors)).Returns(true);
 
         var currentMode = FailoverMode.NotConfigured;
-        var currentEnabled = !enabled;
         var calls = new List<string>();
         _mockFailoverDataMessageProcessor.SetupGet(x => x.CurrentFailoverMode).Returns(() => currentMode);
         _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>()))
             .Callback((FailoverMode mode) =>
             {
                 currentMode = mode;
-                currentEnabled = false;
-                calls.Add("processorUpdate");
-            });
-        _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>(), true))
-            .Callback((FailoverMode mode, bool acceptanceEnabled) =>
-            {
-                currentMode = mode;
-                currentEnabled = acceptanceEnabled;
                 calls.Add("processorUpdate");
             });
 
@@ -133,18 +111,18 @@ public class FailoverManager_Tests
             .Callback((Action<FailoverRole, FailoverRole> callback, Func<float> _, Action<DeviceStatus> _) => roleChanged = callback);
         _mockHealthProcessor.Setup(x => x.WriteHealthValue(Tokens.Link, Classification.Static, It.IsAny<It.IsAnyType>(), It.IsAny<MessageAction>()))
             .Callback(() => calls.Add("healthLink"));
-        var endpointSnapshots = new List<(FailoverMode Mode, bool Enabled)>();
+        var endpointSnapshots = new List<FailoverMode>();
         _mockFailoverEndpointManager.Setup(x => x.StartAsync(It.IsAny<CancellationToken>()))
             .Callback(() =>
             {
                 calls.Add("endpointStart");
-                endpointSnapshots.Add((currentMode, currentEnabled));
+                endpointSnapshots.Add(currentMode);
             }).Returns(Task.CompletedTask);
         _mockFailoverEndpointManager.Setup(x => x.UpdateConfigurationAsync(It.IsAny<ConfigurationChangedEventArgs>(), It.IsAny<CancellationToken>()))
             .Callback(() =>
             {
                 calls.Add("endpointUpdate");
-                endpointSnapshots.Add((currentMode, currentEnabled));
+                endpointSnapshots.Add(currentMode);
                 roleChanged(FailoverRole.Secondary, FailoverRole.Primary);
             }).Returns(Task.CompletedTask);
 
@@ -152,18 +130,18 @@ public class FailoverManager_Tests
             _mockDiagnosticsProcessor.Object, _mockHealthProcessor.Object, _mockFailoverDataMessageProcessor.Object, _mockFailoverEndpointManager.Object);
         manager.Initialize(FailoverMode.Hot);
         var callbackCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var modeSnapshots = new List<(FailoverMode Mode, bool Enabled)>();
-        var roleSnapshots = new List<(FailoverMode Mode, bool Enabled)>();
-        manager.RegisterFailoverModeChangeCallback("WatermarkTest", (_, _) =>
+        var modeSnapshots = new List<FailoverMode>();
+        var roleSnapshots = new List<FailoverMode>();
+        manager.RegisterFailoverModeChangeCallback("ModeTest", (_, _) =>
         {
             calls.Add("modeCallback");
-            modeSnapshots.Add((currentMode, currentEnabled));
+            modeSnapshots.Add(currentMode);
             return callbackCompletion.Task;
         });
-        manager.RegisterFailoverRoleChangeCallback("WatermarkTest", (_, _) =>
+        manager.RegisterFailoverRoleChangeCallback("ModeTest", (_, _) =>
         {
             calls.Add("roleCallback");
-            roleSnapshots.Add((currentMode, currentEnabled));
+            roleSnapshots.Add(currentMode);
             return callbackCompletion.Task;
         });
 
@@ -173,56 +151,42 @@ public class FailoverManager_Tests
             calls.FindAll(call => call != "healthLink"));
         Assert.True(calls.IndexOf("healthLink") >= 0);
         Assert.True(calls.LastIndexOf("healthLink") < calls.IndexOf("processorUpdate"));
-        Assert.Equal(new[] { (FailoverMode.NotConfigured, !enabled), (FailoverMode.NotConfigured, !enabled), (FailoverMode.Hot, enabled) }, endpointSnapshots);
-        Assert.Equal((FailoverMode.Hot, enabled), Assert.Single(modeSnapshots));
-        Assert.Equal((FailoverMode.NotConfigured, !enabled), Assert.Single(roleSnapshots));
+        Assert.Equal(new[] { FailoverMode.NotConfigured, FailoverMode.NotConfigured, FailoverMode.Hot }, endpointSnapshots);
+        Assert.Equal(FailoverMode.Hot, Assert.Single(modeSnapshots));
+        Assert.Equal(FailoverMode.NotConfigured, Assert.Single(roleSnapshots));
         Assert.False(callbackCompletion.Task.IsCompleted);
-        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(FailoverMode.Hot, true), enabled ? Times.Once() : Times.Never());
-        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(FailoverMode.Hot), enabled ? Times.Never() : Times.Once());
+        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(FailoverMode.Hot), Times.Once());
         await manager.StopAsync(CancellationToken.None);
         callbackCompletion.SetResult();
     }
 
     /// <summary>
-    /// Verifies that ordinary mode and watermark updates commit only after endpoint updates and health links succeed,
-    /// while removal commits and notifies before endpoint removal. Setting-only changes do not notify mode callbacks.
+    /// Verifies that mode updates commit after endpoint updates and health links succeed, while removal commits
+    /// before endpoint removal. Reapplying the same mode does not notify mode callbacks.
     /// </summary>
     [Theory]
-    [InlineData(false, true, false, false)]
-    [InlineData(true, false, false, false)]
-    [InlineData(false, true, false, true)]
-    [InlineData(true, false, false, true)]
-    [InlineData(false, false, true, false)]
-    [InlineData(true, false, true, false)]
-    public async Task UpdateFailoverConfiguration_WhenWatermarkChangesOrConfigurationRemoved_PropagatesSetting(
-        bool initiallyEnabled, bool enabled, bool removeConfiguration, bool changeMode)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task UpdateFailoverConfiguration_WhenModeChangesOrConfigurationRemoved_PropagatesMode(
+        bool removeConfiguration, bool changeMode)
     {
         var configuration = new ClientFailoverConfiguration
         {
             FailoverGroupId = "TestGroup",
             Mode = FailoverMode.Hot,
-            EnableAcceptanceTrimWatermark = initiallyEnabled,
         };
         ICollection<string> errors = null;
         _mockConfigurationProvider.Setup(x => x.TryGetConfiguration(EdgeSystemConstants.SystemComponentId,
             EdgeSystemConstants.ClientFailoverFacetName, out configuration, out errors)).Returns(true);
 
         var currentMode = FailoverMode.NotConfigured;
-        var currentEnabled = false;
         var calls = new List<string>();
         _mockFailoverDataMessageProcessor.SetupGet(x => x.CurrentFailoverMode).Returns(() => currentMode);
         _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>()))
             .Callback((FailoverMode mode) =>
             {
                 currentMode = mode;
-                currentEnabled = false;
-                calls.Add("processorUpdate");
-            });
-        _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>(), true))
-            .Callback((FailoverMode mode, bool acceptanceEnabled) =>
-            {
-                currentMode = mode;
-                currentEnabled = acceptanceEnabled;
                 calls.Add("processorUpdate");
             });
 
@@ -232,13 +196,13 @@ public class FailoverManager_Tests
         await manager.StartAsync(CancellationToken.None);
 
         var callbackCount = 0;
-        var callbackSnapshots = new List<(FailoverMode Mode, bool Enabled)>();
+        var callbackSnapshots = new List<FailoverMode>();
         var callbackCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        manager.RegisterFailoverModeChangeCallback("WatermarkTest", (_, _) =>
+        manager.RegisterFailoverModeChangeCallback("ModeTest", (_, _) =>
         {
             Interlocked.Increment(ref callbackCount);
             calls.Add("modeCallback");
-            callbackSnapshots.Add((currentMode, currentEnabled));
+            callbackSnapshots.Add(currentMode);
             return callbackCompletion.Task;
         });
         callbackCount = 0;
@@ -249,19 +213,18 @@ public class FailoverManager_Tests
         _mockHealthProcessor.Setup(x => x.WriteHealthValue(Tokens.Link, Classification.Static, It.IsAny<It.IsAnyType>(), It.IsAny<MessageAction>()))
             .Callback(() => calls.Add("healthLink"));
         var releaseEndpointUpdate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var endpointUpdated = new TaskCompletionSource<(FailoverMode Mode, bool Enabled)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var endpointUpdated = new TaskCompletionSource<FailoverMode>(TaskCreationOptions.RunContinuationsAsynchronously);
         _mockFailoverEndpointManager.Setup(x => x.UpdateConfigurationAsync(It.IsAny<ConfigurationChangedEventArgs>(), It.IsAny<CancellationToken>()))
             .Callback(() =>
             {
                 calls.Add("endpointUpdate");
-                endpointUpdated.TrySetResult((currentMode, currentEnabled));
+                endpointUpdated.TrySetResult(currentMode);
             }).Returns(releaseEndpointUpdate.Task);
         var expectedMode = removeConfiguration ? FailoverMode.NotConfigured : changeMode ? FailoverMode.Warm : FailoverMode.Hot;
         var updatedConfiguration = removeConfiguration ? null : new ClientFailoverConfiguration
         {
             FailoverGroupId = configuration.FailoverGroupId,
             Mode = expectedMode,
-            EnableAcceptanceTrimWatermark = enabled,
         };
 
         manager.UpdateFailoverConfiguration(new ConfigurationChangedEventArgs(configuration, updatedConfiguration));
@@ -269,7 +232,7 @@ public class FailoverManager_Tests
         try
         {
             var snapshot = await endpointUpdated.Task.WaitAsync(TimeSpan.FromMilliseconds(Timeout));
-            Assert.Equal(removeConfiguration ? (FailoverMode.NotConfigured, false) : (FailoverMode.Hot, initiallyEnabled), snapshot);
+            Assert.Equal(removeConfiguration ? FailoverMode.NotConfigured : FailoverMode.Hot, snapshot);
             Assert.Equal(removeConfiguration ? new[] { "processorUpdate", "modeCallback", "endpointUpdate" } : new[] { "endpointUpdate" }, calls);
         }
         finally
@@ -278,9 +241,9 @@ public class FailoverManager_Tests
             await manager.StopAsync(CancellationToken.None);
         }
 
-        Assert.Equal((expectedMode, enabled), (currentMode, currentEnabled));
+        Assert.Equal(expectedMode, currentMode);
         Assert.Equal(removeConfiguration || changeMode ? 1 : 0, callbackCount);
-        Assert.All(callbackSnapshots, snapshot => Assert.Equal((expectedMode, enabled), snapshot));
+        Assert.All(callbackSnapshots, snapshot => Assert.Equal(expectedMode, snapshot));
         Assert.Equal(removeConfiguration ? new[] { "processorUpdate", "modeCallback", "endpointUpdate" }
             : changeMode ? new[] { "endpointUpdate", "processorUpdate", "modeCallback" } : new[] { "endpointUpdate", "processorUpdate" },
             calls.FindAll(call => call != "healthLink"));
@@ -292,45 +255,33 @@ public class FailoverManager_Tests
 
         Assert.False(callbackCompletion.Task.IsCompleted);
         callbackCompletion.SetResult();
-        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(expectedMode, true), enabled ? Times.Once() : Times.Never());
-        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(expectedMode), enabled ? Times.Never() : Times.Once());
+        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(expectedMode), Times.Once());
     }
 
     /// <summary>
-    /// Verifies that a failed or canceled endpoint update cannot commit a new mode or either watermark setting,
+    /// Verifies that a failed or canceled endpoint update cannot commit a new mode,
     /// and cannot notify components of a mode change that did not commit.
     /// </summary>
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task UpdateFailoverConfiguration_WhenEndpointUpdateFailsOrIsCanceled_PreservesProcessorState(bool enabled, bool canceled)
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UpdateFailoverConfiguration_WhenEndpointUpdateFailsOrIsCanceled_PreservesProcessorState(bool canceled)
     {
         var configuration = new ClientFailoverConfiguration
         {
             FailoverGroupId = "TestGroup",
             Mode = FailoverMode.Hot,
-            EnableAcceptanceTrimWatermark = !enabled,
         };
         ICollection<string> errors = null;
         _mockConfigurationProvider.Setup(x => x.TryGetConfiguration(EdgeSystemConstants.SystemComponentId,
             EdgeSystemConstants.ClientFailoverFacetName, out configuration, out errors)).Returns(true);
 
         var currentMode = FailoverMode.NotConfigured;
-        var currentEnabled = false;
         _mockFailoverDataMessageProcessor.SetupGet(x => x.CurrentFailoverMode).Returns(() => currentMode);
         _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>()))
             .Callback((FailoverMode mode) =>
             {
                 currentMode = mode;
-                currentEnabled = false;
-            });
-        _mockFailoverDataMessageProcessor.Setup(x => x.UpdateMode(It.IsAny<FailoverMode>(), true))
-            .Callback((FailoverMode mode, bool acceptanceEnabled) =>
-            {
-                currentMode = mode;
-                currentEnabled = acceptanceEnabled;
             });
 
         using var manager = new FailoverManager(_mockLogger.Object, _mockApplicationManifest.Object, _mockConfigurationProvider.Object,
@@ -339,7 +290,7 @@ public class FailoverManager_Tests
         await manager.StartAsync(CancellationToken.None);
 
         var callbackCount = 0;
-        manager.RegisterFailoverModeChangeCallback("WatermarkTest", (_, _) =>
+        manager.RegisterFailoverModeChangeCallback("ModeTest", (_, _) =>
         {
             Interlocked.Increment(ref callbackCount);
             return Task.CompletedTask;
@@ -362,7 +313,6 @@ public class FailoverManager_Tests
         {
             FailoverGroupId = configuration.FailoverGroupId,
             Mode = FailoverMode.Warm,
-            EnableAcceptanceTrimWatermark = enabled,
         };
 
         manager.UpdateFailoverConfiguration(new ConfigurationChangedEventArgs(configuration, updatedConfiguration));
@@ -370,7 +320,7 @@ public class FailoverManager_Tests
         try
         {
             await endpointEntered.Task.WaitAsync(TimeSpan.FromMilliseconds(Timeout));
-            Assert.Equal((FailoverMode.Hot, !enabled), (currentMode, currentEnabled));
+            Assert.Equal(FailoverMode.Hot, currentMode);
         }
         finally
         {
@@ -383,10 +333,9 @@ public class FailoverManager_Tests
             await manager.StopAsync(CancellationToken.None);
         }
 
-        Assert.Equal((FailoverMode.Hot, !enabled), (currentMode, currentEnabled));
+        Assert.Equal(FailoverMode.Hot, currentMode);
         Assert.Equal(0, callbackCount);
         _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(It.IsAny<FailoverMode>()), Times.Never());
-        _mockFailoverDataMessageProcessor.Verify(x => x.UpdateMode(It.IsAny<FailoverMode>(), It.IsAny<bool>()), Times.Never());
         _mockFailoverEndpointManager.Verify(x => x.UpdateConfigurationAsync(It.IsAny<ConfigurationChangedEventArgs>(), It.IsAny<CancellationToken>()), Times.Once());
         _mockLogger.Verify(x => x.Log(LogLevel.Error, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(), endpointFailure,
             It.IsAny<Func<It.IsAnyType, Exception, string>>()), canceled ? Times.Never() : Times.Once());

@@ -27,6 +27,6 @@ public interface IAwaitableMessageProcessor : IMessageProcessor
     /// <param name="options">The scope options.</param>
     /// <param name="scope">The created scope, or null when the active-scope limit is reached.</param>
     /// <returns><c>true</c> if the scope was created; <c>false</c> when the active-scope limit is reached.</returns>
-    /// <exception cref="NotSupportedException">OMF 1.2, a processor chain without scope support, or hot failover without acceptance-trimming opt-in is configured.</exception>
+    /// <exception cref="NotSupportedException">OMF 1.2, a processor chain without scope support, or hot failover is configured.</exception>
     bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableMessageScope scope);
 }

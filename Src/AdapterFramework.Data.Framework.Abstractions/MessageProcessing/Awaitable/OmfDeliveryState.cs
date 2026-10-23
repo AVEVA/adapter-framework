@@ -40,7 +40,7 @@ public enum OmfDeliveryState
     Discarded,
 
     /// <summary>
-    /// The hot-failover peer's acceptance watermark covers the body.
+    /// Compatibility value for explicit peer-covered dispositions. Runtime failover buffering does not produce this state.
     /// </summary>
     PeerCovered,
 }

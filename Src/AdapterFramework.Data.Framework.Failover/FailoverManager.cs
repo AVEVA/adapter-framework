@@ -401,7 +401,7 @@ public class FailoverManager : IFailoverManager
                 _failoverDiagnosticsService.ResendLinks();
             }
 
-            UpdateFailoverMode(_currentConfiguration.Mode, _currentConfiguration.EnableAcceptanceTrimWatermark);
+            UpdateFailoverMode(_currentConfiguration.Mode);
         }
         catch (OperationCanceledException)
         {
@@ -414,22 +414,13 @@ public class FailoverManager : IFailoverManager
     }
 
     /// <summary>
-    /// Applies the mode and watermark setting at the existing configuration commit point, then notifies components.
+    /// Applies the mode at the existing configuration commit point, then notifies components.
     /// </summary>
     /// <param name="newMode">The configured failover mode.</param>
-    /// <param name="enableAcceptanceTrimWatermark">Whether acceptance-based trimming is enabled.</param>
-    private void UpdateFailoverMode(FailoverMode newMode, bool enableAcceptanceTrimWatermark = false)
+    private void UpdateFailoverMode(FailoverMode newMode)
     {
         var oldFailoverMode = _failoverDataMessageProcessor.CurrentFailoverMode;
-        if (enableAcceptanceTrimWatermark)
-        {
-            _failoverDataMessageProcessor.UpdateMode(newMode, true);
-        }
-        else
-        {
-            // The legacy overload also resets acceptance-based trimming to false.
-            _failoverDataMessageProcessor.UpdateMode(newMode);
-        }
+        _failoverDataMessageProcessor.UpdateMode(newMode);
 
         if (oldFailoverMode != newMode)
         {
