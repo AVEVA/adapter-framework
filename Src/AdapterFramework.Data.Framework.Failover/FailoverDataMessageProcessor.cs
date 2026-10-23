@@ -80,7 +80,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             lock (_lockObject)
             {
                 var ticks = CurrentFailoverMode == FailoverMode.Hot
-                    ? _lastDispatchedTimeTicks : _nonHotProcessedTimeTicks;
+                    ? Interlocked.Read(ref _lastDispatchedTimeTicks) : _nonHotProcessedTimeTicks;
                 return new DateTime(ticks, DateTimeKind.Utc);
             }
         }
@@ -325,46 +325,30 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         {
             while (!_internalDataQueueConsumerCts.IsCancellationRequested)
             {
-                var consumed = false;
-                // Mode changes hold this lock while cancelling and joining this task. Never block
-                // acquiring it here, otherwise demotion could deadlock with its own consumer.
-                if (Monitor.TryEnter(_lockObject))
+                if (_internalBackedUpMessageQueue.TryDequeue(out var message))
                 {
                     try
                     {
-                        if (!_internalDataQueueConsumerCts.IsCancellationRequested
-                            && _internalBackedUpMessageQueue.TryDequeue(out var message))
-                        {
-                            consumed = true;
-                            try
-                            {
-                                // Failover records always need process ticks for local trimming. Legacy
-                                // endpoint-writer records do not: retain their original V3 format for
-                                // unscoped writes rather than forcing timestamp-bearing V5 records.
-                                var dispatched = new SerializedOmfMessage(message.MessageType, message.MessageBody,
-                                    message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
-                                _dataEndpointManager.SendMessage(dispatched);
-                                _lastDispatchedTimeTicks = message.ProcessTimeTicks;
-                            }
-                            catch (Exception ex)
-                            {
-                                if (message.SerializedMessageId is { } id)
-                                {
-                                    _awaitableCoordinator?.RecordFailoverDiscarded(id,
-                                        new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
-                                }
-
-                                _logger.LogError(ex, "Failed to dispatch a body from the failover buffer.");
-                            }
-                        }
+                        // Failover records always need process ticks for local trimming. Legacy
+                        // endpoint-writer records do not: retain their original V3 format for
+                        // unscoped writes rather than forcing timestamp-bearing V5 records.
+                        var dispatched = new SerializedOmfMessage(message.MessageType, message.MessageBody,
+                            message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey);
+                        _dataEndpointManager.SendMessage(dispatched);
+                        Interlocked.Exchange(ref _lastDispatchedTimeTicks, message.ProcessTimeTicks);
                     }
-                    finally
+                    catch (Exception ex)
                     {
-                        Monitor.Exit(_lockObject);
+                        if (message.SerializedMessageId is { } id)
+                        {
+                            _awaitableCoordinator?.RecordFailoverDiscarded(id,
+                                new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                        }
+
+                        _logger.LogError(ex, "Failed to dispatch a body from the failover buffer.");
                     }
                 }
-
-                if (!consumed)
+                else
                 {
                     await Task.Delay(BufferingConstants.BufferRetryInterval, _internalDataQueueConsumerCts.Token);
                 }

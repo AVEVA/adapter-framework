@@ -615,6 +615,38 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(new DateTime(secondTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
     }
 
+    /// <summary>
+    /// Verifies that the hot primary's buffer consumer keeps dispatching while another thread holds
+    /// the processor lock, so incoming writes cannot stall delivery of buffered bodies.
+    /// </summary>
+    [Fact]
+    public void ConsumeInternalDataQueue_HotPrimaryWhileProcessorLockHeld_StillDispatches()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(ConsumeInternalDataQueue_HotPrimaryWhileProcessorLockHeld_StillDispatches)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.UpdateState(FailoverRole.Primary, default);
+        var processorLock = TestUtilities.GetFieldValueFromObject("_lockObject", processor);
+        var queue = (FailoverBackedUpOmfMessageQueue)TestUtilities.GetFieldValueFromObject("_internalBackedUpMessageQueue", processor);
+
+        Monitor.Enter(processorLock);
+        try
+        {
+            queue.Enqueue(new FailoverSerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default) { ProcessTimeTicks = 42 });
+
+            Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            Monitor.Exit(processorLock);
+        }
+
+        Assert.Equal(new DateTime(42, DateTimeKind.Utc), processor.LastDataProcessedTime);
+    }
+
     public void Dispose()
     {
         Dispose(true);
