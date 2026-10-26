@@ -339,7 +339,12 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
     private bool IsSpillRequired(DateTime now)
     {
-        if (_currentVolatileQueueSize > _maxVolatileQueueSize)
+        // Without persistent storage a leased message cannot be dropped, so it must not push newer messages out.
+        var volatileQueueSize = _persistentQueue == null && _leasedItem?.VolatileMessage != null
+            ? _currentVolatileQueueSize - _leasedItem.Message.GetMessageSizeInBytes()
+            : _currentVolatileQueueSize;
+
+        if (volatileQueueSize > _maxVolatileQueueSize)
         {
             return true;
         }

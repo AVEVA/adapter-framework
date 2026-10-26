@@ -151,6 +151,7 @@ public class BackedUpOmfMessageQueue_Lease_Tests : IDisposable
 
         Assert.True(queue.TryLease(out var lease));
         queue.Enqueue(CreateMessage(3, bodySize));
+        queue.Enqueue(CreateMessage(4, bodySize));
 
         Assert.True(_testLogger.ContainsMessage(BackedUpOmfMessageQueue.MaxBufferSizeReachedMessage));
         Assert.True(queue.Complete(lease));
@@ -158,7 +159,27 @@ public class BackedUpOmfMessageQueue_Lease_Tests : IDisposable
         Assert.True(queue.TryLease(out lease));
         AssertMarker(3, lease.Message);
         Assert.True(queue.Complete(lease));
+        Assert.True(queue.TryLease(out lease));
+        AssertMarker(4, lease.Message);
+        Assert.True(queue.Complete(lease));
         Assert.False(queue.TryLease(out _));
+    }
+
+    [Fact]
+    public void BackedUpOmfMessageQueue_MemoryOnly_LeasedMessageNotCountedTowardSizeLimit()
+    {
+        using var queue = new BackedUpOmfMessageQueue(OneMb, _messageExpirationTime, null, _testLogger);
+        queue.Enqueue(CreateMessage(1, 600_000));
+
+        Assert.True(queue.TryLease(out var lease));
+        queue.Enqueue(CreateMessage(2, 300_000));
+        queue.Enqueue(CreateMessage(3, 300_000));
+
+        Assert.False(_testLogger.ContainsMessage(BackedUpOmfMessageQueue.MaxBufferSizeReachedMessage));
+        Assert.True(queue.Complete(lease));
+
+        Assert.True(queue.TryLease(out lease));
+        AssertMarker(2, lease.Message);
     }
 
     [Fact]
