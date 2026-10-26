@@ -140,6 +140,21 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     }
 
     /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataSelectionItem, nameof(dataSelectionItem));
+        ThrowHelper.ThrowIfArgumentNull(range, nameof(range));
+        ThrowIfInvalidPartitionKey(partitionKey);
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Range deletes require OMF 2.0.");
+        }
+
+        _messageProcessor.DeleteDynamicValuesInRange(dataSelectionItem.StreamId, range, partitionKey);
+        dataSelectionItem.DataFilterCache = null;
+    }
+
+    /// <inheritdoc/>
     public virtual void WriteDynamicValue<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(dataSelectionItem, nameof(dataSelectionItem));

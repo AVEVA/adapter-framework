@@ -961,6 +961,27 @@ public class OmfWriter_Tests : IDisposable
         return messageType;
     }
 
+    [Fact]
+    public void OmfWriter_RangeDelete_RetryPreservesPayloadAndHeaders()
+    {
+        const string body = "{\"streamingdata\":[{\"id\":\"Stream\",\"range\":{\"starttime\":\"2026-01-01T00:00:00Z\",\"endtime\":\"2026-01-01T01:00:00Z\"}}]}";
+        _testEndpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _testEndpoint.StartListening();
+        _omfWriterBuffered.SendMessage(new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(body),
+            MessageAction.Delete, 0, OmfVersion.Omf20, PartitionKey.Key7));
+        var headers = new Dictionary<string, string>
+        {
+            ["messagetype"] = "instance",
+            ["omfversion"] = "2.0",
+            ["action"] = "delete",
+            ["partitionkey"] = "7_",
+        };
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(body) >= 2, TimeToWaitForBufferedRetry));
+        Assert.True(_testEndpoint.VerifyMessageReceived(body, headers));
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(body) >= 3, TimeToWaitForBufferedRetry));
+    }
+
     private static string GetBasicAuthString(string username = UserName, string password = Password)
     {
         return EndpointManagerConstants.BasicAuthorizationType + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));

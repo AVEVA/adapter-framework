@@ -28,6 +28,32 @@ public class FailoverPersistentOmfMessageQueue_Tests
 {
     private const string TestTargetIdentifier = "http://localhost:5590/omf";
 
+    [Theory]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf12, null, DataItemVersion.V2)]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf20, PartitionKey.Key7, DataItemVersion.V3)]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf20, null, DataItemVersion.V3)]
+    public void RangeDelete_PreservesFailoverBufferMetadata(AdapterFramework.Data.DataModel.OmfVersion version, PartitionKey? partitionKey, DataItemVersion recordVersion)
+    {
+        var original = new AdapterFramework.Data.Framework.Messages.SerializedOmfMessage(
+            MessageType.Instance, "{\"streamingdata\":[]}"u8.ToArray(), MessageAction.Delete, 0, version, partitionKey);
+        var message = new FailoverSerializedOmfMessage(original) { ProcessTimeTicks = 123456789 };
+        DataItem stored = null;
+        var queue = new Mock<IPersistentQueue>();
+        queue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback<DataItem>(item => stored = item);
+        queue.Setup(q => q.Dequeue()).Returns(() => stored);
+        using var buffer = new FailoverPersistentOmfMessageQueue(TestTargetIdentifier, queue.Object, null);
+        buffer.Enqueue(message);
+        Assert.Equal(recordVersion, stored.Version);
+        Assert.Equal(message.GetMessageSizeInBytes(), stored.Data.Length);
+        Assert.True(buffer.TryDequeue(out var restored));
+        Assert.Equal(original.MessageBody, restored.MessageBody);
+        Assert.Equal(original.MessageAction, restored.MessageAction);
+        Assert.Equal(version, restored.OmfVersion);
+        Assert.Equal(partitionKey, restored.PartitionKey);
+        Assert.Equal(message.ProcessTimeTicks, restored.ProcessTimeTicks);
+        Assert.Equal(0, restored.ItemCount);
+    }
+
     [Fact]
     public void FailoverPersistentOmfMessageQueue_TryPeek_Test()
     {

@@ -64,9 +64,16 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length,
             ProcessTimeTicksLength);
 
-        dataBuffer[^1] = (byte)message.MessageAction;
+        if (message.OmfVersion == OmfVersion.Omf12 && message.PartitionKey == null)
+        {
+            dataBuffer[^1] = (byte)message.MessageAction;
+            return new DataItem(DataItemVersion.V2, dataBuffer);
+        }
 
-        return new DataItem(DataItemVersion.V2, dataBuffer);
+        dataBuffer[^3] = (byte)message.MessageAction;
+        dataBuffer[^2] = (byte)message.OmfVersion;
+        dataBuffer[^1] = (byte)(message.PartitionKey ?? 0);
+        return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
@@ -77,16 +84,20 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 
+        var hasMetadata = dataItem.Version == DataItemVersion.V3;
+        var metadataSize = hasMetadata ? OmfVersionEnumSize + PartitionKeyEnumSize : 0;
         var messageType = (MessageType)serializedWithType[0];
-        var messageAction = (MessageAction)dataItem.Data[^1];
+        var messageAction = (MessageAction)serializedWithType[^(1 + metadataSize)];
+        var omfVersion = hasMetadata ? (OmfVersion)serializedWithType[^2] : OmfVersion.Omf12;
+        PartitionKey? partitionKey = hasMetadata && serializedWithType[^1] != 0 ? (PartitionKey)serializedWithType[^1] : null;
         var valueCount = BitConverter.ToInt32(serializedWithType, MessageTypeEnumSize);
 
-        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize];
+        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize - metadataSize];
         Buffer.BlockCopy(serializedWithType, MessageTypeEnumSize + ValueCountSize, messageBody, 0, messageBody.Length);
 
         var processTimeTicks = BitConverter.ToInt64(serializedWithType, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
 
-        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount)
+        var serializedOmfMessage = new FailoverSerializedOmfMessage(new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey))
         {
             ProcessTimeTicks = processTimeTicks,
         };

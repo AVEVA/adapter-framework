@@ -33,6 +33,9 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 public class SerializationBlock : BaseBlock<Message>
 {
     private const int EmptyMessageLength = 2;
+    private static readonly Action<ILogger, int, int, Exception> _rangeDeleteTooLarge = LoggerMessage.Define<int, int>(
+        LogLevel.Error, new EventId(0, nameof(ProcessRangeDelete)),
+        "A range delete cannot be split. Final byte size {ByteCount}, max {MaxByteCount}.");
     private readonly BatchingStrategyOptimizer _dataBatchingStrategyOptimizer;
     private readonly BatchingStrategyOptimizer _streamsBatchingStrategyOptimizer;
     private readonly Action<ISerializedOmfMessage> _flushAction;
@@ -85,6 +88,9 @@ public class SerializationBlock : BaseBlock<Message>
     {
         switch (message)
         {
+            case RangeDeleteMessage rangeDelete:
+                ProcessRangeDelete(rangeDelete);
+                break;
             case InstanceMessage instanceMessage:
                 using (instanceMessage)
                 {
@@ -172,6 +178,27 @@ public class SerializationBlock : BaseBlock<Message>
         }
 
         return numItems;
+    }
+
+    private void ProcessRangeDelete(RangeDeleteMessage message)
+    {
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Range deletes require OMF 2.0.");
+        }
+
+        var bytes = SerializeWithWrapper(new Dictionary<string, RangeDeleteMessage[]>
+        {
+            ["streamingdata"] = [message],
+        });
+        if (bytes.Length > _maxByteCount)
+        {
+            _rangeDeleteTooLarge(_logger, bytes.Length, _maxByteCount, null);
+            return;
+        }
+
+        // The number of values removed is unknown; do not report the range as an inserted value.
+        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey);
     }
 
     private void ProcessInstance(InstanceMessage message)

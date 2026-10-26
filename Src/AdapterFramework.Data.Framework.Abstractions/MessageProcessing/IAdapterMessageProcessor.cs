@@ -23,6 +23,20 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 public interface IAdapterMessageProcessor
 {
     /// <summary>
+    /// Deletes a time interval of streaming data using OMF 2.0.
+    /// </summary>
+    /// <param name="dataSelectionItem">The data selection identifying the stream.</param>
+    /// <param name="range">The bounded time interval to delete.</param>
+    /// <param name="partitionKey">The partition used for delivery.</param>
+    /// <remarks>
+    /// Acceptance is not confirmation of server completion. Callers must coordinate completion
+    /// before submitting replacement values when the destination processes requests asynchronously.
+    /// Range deletes bypass data filters and do not count as written values.
+    /// </remarks>
+    void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null)
+        => throw new NotSupportedException("This message processor does not support range deletes.");
+
+    /// <summary>
     /// Gets the target OMF protocol version.
     /// </summary>
     OmfVersion OmfVersion { get; }

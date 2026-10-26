@@ -64,6 +64,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     private readonly TypesStreamsGroupingBlock _typesStreamsGroupingBlock;
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
+    private readonly OmfVersion _omfVersion;
     private bool _disposed;
 
     #endregion
@@ -96,6 +97,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+        _omfVersion = omfVersion;
         var tuningParameters = omfVersion == OmfVersion.Omf20
             ? new TuningParameters
             {
@@ -200,6 +202,17 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
 
         _dataGroupingBlock?.Post(new DataMessage(id, classification, instance, messageAction));
         _instanceGroupingBlock?.Post(new DataMessage(id, classification, instance, messageAction));
+    }
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    {
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Range deletes require OMF 2.0.");
+        }
+
+        _instanceGroupingBlock.Post(new RangeDeleteMessage(id, range, partitionKey));
     }
 
     /// <inheritdoc/>

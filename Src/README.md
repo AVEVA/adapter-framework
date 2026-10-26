@@ -69,6 +69,34 @@ All packages share the `AdapterFramework.Data` prefix and can be installed with 
 | **AdapterFramework.Data.Framework.DataProtector** | Encryption and decryption of sensitive configuration values using ASP.NET Core Data Protection. |
 | **AdapterFramework.Data.Framework.Extensions** | Low-level utility and extension methods with unsafe code support. |
 
+## Deleting a time range of streaming data
+
+Adapters targeting OMF 2.0 can enqueue a bounded range delete for a time-indexed stream:
+
+```csharp
+messageProcessor.DeleteDynamicValuesInRange(
+    dataSelectionItem,
+    new StreamingDataRange(startTime, endTime),
+    PartitionKey.Key7);
+```
+
+`startTime` and `endTime` are `DateTimeOffset` values, normalized to UTC. Both bounds are
+required, and the end must be greater than or equal to the start. Each call emits a separate
+`instance` message with `action: delete` and a `streamingdata` entry containing `id` and `range`,
+without `values`. The endpoint must support the OMF 2.0 range-delete contract. OMF 1.2 and 1.3
+processors reject this method with `NotSupportedException`.
+
+Deletes bypass data filters, clear the selection's filter cache, and do not increment written-value
+counts because the number of deleted values is unknown. Pending values are flushed before the
+delete. Use the same partition key for related writes and deletes. Returning from this method means
+the request was enqueued, not that the endpoint completed it; coordinate server completion before
+rewriting values when the endpoint processes requests asynchronously.
+
+Range deletes use the existing compression, retry, and persistent buffering paths. Hot failover
+now preserves OMF version and partition key in a V3 buffer record; existing V2 records remain
+readable. Drain hot-failover buffers before downgrading to a framework version that does not read
+this V3 layout. Legacy OMF 1.2 messages without partition keys continue to use V2 records.
+
 ## Target framework
 
 These packages target **.NET 10**.
