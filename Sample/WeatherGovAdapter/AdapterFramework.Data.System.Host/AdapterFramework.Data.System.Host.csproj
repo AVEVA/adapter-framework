@@ -29,7 +29,6 @@ SPDX-License-Identifier: Apache-2.0
   <ItemGroup>
     <PackageReference Include="AdapterFramework.Data.Framework.EgressComponent" Version="2.1.0" />
     <PackageReference Include="AdapterFramework.Data.Framework.Host" Version="2.1.0" />
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>
