@@ -39,6 +39,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConditionalWeakTable<DataStream, string> _preparedStreamIds = [];
+    private readonly ConcurrentDictionary<string, byte> _entityIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, object> _metaDataDictionary;
     private readonly Dictionary<StreamProperties, Action<PropertyDefinitionOverride>> _propertyOverrideActions;
     private readonly string _componentId;
@@ -47,7 +48,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private string _streamIdPrefix;
     private int _streamCount;
     private int _typeCount;
-    private long _eventsCount;
+
+    // Cumulative count of OMF 2.0 events accepted (deletes excluded), published as EventCount.
+    private long _eventCount;
+
+    // Data events since the last GetAndResetEventsCounter() call, published as IORate.
+    private long _ioEventsCount;
     private long _cacheOrderSequence;
 
     #endregion
@@ -222,7 +228,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction);
 
-        IncrementEventsCount();
+        IncrementIoEventsCount();
     }
 
     /// <inheritdoc/>
@@ -230,7 +236,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey);
 
-        IncrementEventsCount();
+        IncrementIoEventsCount();
     }
 
     /// <inheritdoc/>
@@ -240,7 +246,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
         _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction);
 
-        AddToEventsCount(instances.Count);
+        AddToIoEventsCount(instances.Count);
     }
 
     /// <inheritdoc/>
@@ -250,7 +256,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
         _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey);
 
-        AddToEventsCount(instances.Count);
+        AddToIoEventsCount(instances.Count);
     }
 
     /// <inheritdoc/>
@@ -259,33 +265,46 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction);
 
-        IncrementEventsCount();
+        IncrementIoEventsCount();
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        var entityId = id.ToOmfIdentifier();
 
-        IncrementEventsCount();
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+
+        TrackEntityIdentity(entityId, messageAction);
+        IncrementIoEventsCount();
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), id.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction);
+        var entityId = id.ToOmfIdentifier();
 
-        IncrementEventsCount();
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction);
+
+        TrackEntityIdentity(entityId, messageAction);
+        IncrementIoEventsCount();
     }
 
     public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
         IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
         IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
     {
-        _messageProcessor.WriteEvent(id.ToOmfIdentifier(), typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
+        var eventId = id.ToOmfIdentifier();
+
+        _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
             extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
 
-        IncrementEventsCount();
+        if (messageAction != MessageAction.Delete)
+        {
+            Interlocked.Increment(ref _eventCount);
+        }
+
+        IncrementIoEventsCount();
     }
 
     public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default)
@@ -336,9 +355,22 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
+    public int GetAssetCount()
+    {
+        // Counted from the identity set on purpose: a separate counter updated next to the set can drift permanently once there is no lock.
+        return _entityIds.Count;
+    }
+
+    /// <inheritdoc/>
+    public long GetEventCount()
+    {
+        return Interlocked.Read(ref _eventCount);
+    }
+
+    /// <inheritdoc/>
     public long GetAndResetEventsCounter()
     {
-        return Interlocked.Exchange(ref _eventsCount, 0);
+        return Interlocked.Exchange(ref _ioEventsCount, 0);
     }
 
     /// <inheritdoc/>
@@ -346,7 +378,11 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         Interlocked.Exchange(ref _typeCount, 0);
         Interlocked.Exchange(ref _streamCount, 0);
-        Interlocked.Exchange(ref _eventsCount, 0);
+        Interlocked.Exchange(ref _ioEventsCount, 0);
+        Interlocked.Exchange(ref _eventCount, 0);
+
+        // Tracked asset identities are retained on purpose: assets still exist downstream after a stop, so AssetCount must not
+        // fall to zero when an adapter does not re-send its static values on start.
     }
 
     #endregion
@@ -481,6 +517,19 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         return string.Join('|', link.Source?.Id, link.Source?.Property, link.Target?.Id, link.Target?.Property);
     }
 
+    // Tracks unique entity identities so GetAssetCount() reports a current-state gauge, mirroring the stream/type caches.
+    private void TrackEntityIdentity(string entityId, MessageAction messageAction)
+    {
+        if (messageAction == MessageAction.Delete)
+        {
+            _entityIds.TryRemove(entityId, out _);
+        }
+        else
+        {
+            _entityIds.TryAdd(entityId, 0);
+        }
+    }
+
     private string GetPrefixedOrSanitizedIdentifier(string id, Classification classification)
     {
         return classification == Classification.Static
@@ -506,14 +555,14 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         }, (_, existing) => (dataStream, messageAction, existing.Targets.Merge(targets), existing.Sequence));
     }
 
-    private void IncrementEventsCount()
+    private void IncrementIoEventsCount()
     {
-        Interlocked.Increment(ref _eventsCount);
+        Interlocked.Increment(ref _ioEventsCount);
     }
 
-    private void AddToEventsCount(int count)
+    private void AddToIoEventsCount(int count)
     {
-        Interlocked.Add(ref _eventsCount, count);
+        Interlocked.Add(ref _ioEventsCount, count);
     }
 
     private void AddMetadataValues(DataStream dataStream)

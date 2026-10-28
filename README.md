@@ -34,7 +34,7 @@ The Adapter Framework reduces the time and effort required to build custom adapt
 
 The Adapter Framework can be used in two ways. The recommended method is to reference the pre-compiled Adapter Framework packages on NuGet.org to make use of the features that are available in other Adapter Framework based products, such as AVEVA Adapters. See [Src/README.md](Src/README.md) for a full list of available packages.
 
-If you want to change the framework to fit your needs, you can fork a branch of the Adapter Framework's source code and build your own packages to use however you like. See 
+If you wish to modify the framework to fit your requirements, you can fork a branch of [the Adapter Framework's source code](https://github.com/AVEVA/adapter-framework/tree/main/Src) on GitHub and build your own packages to use as you prefer.
 
 ## Dependencies
 
