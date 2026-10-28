@@ -123,9 +123,9 @@ internal static class Services
             // 1. DLLs matching the current dllNameBase prefix (e.g. AdapterFramework.Data.Adapter.*)
             var matchesKnownPrefix = assemblyFileName.StartsWith(dllNameBase, StringComparison.InvariantCultureIgnoreCase);
 
-            // 2. Type-scan fallback: legacy adapters are scanned for IEdgeAdapter implementations
+            // 2. Type-scan fallback: legacy adapters are scanned for IEdgeAdapter, IEdgeService, and IFailoverServiceProvider implementations
             var isLegacyAdapterCandidate = !matchesKnownPrefix &&
-                typeof(T) == typeof(IEdgeAdapter);
+                (typeof(T) == typeof(IEdgeAdapter) || typeof(T) == typeof(IEdgeService) || typeof(T) == typeof(IFailoverServiceProvider));
 
             if (!matchesKnownPrefix && !isLegacyAdapterCandidate)
             {
