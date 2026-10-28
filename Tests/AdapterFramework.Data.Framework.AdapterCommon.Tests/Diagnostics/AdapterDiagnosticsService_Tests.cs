@@ -14,6 +14,8 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Moq;
@@ -21,6 +23,7 @@ using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 using AdapterFramework.Data.Framework.AdapterCommon.Diagnostics;
+using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
 
@@ -28,8 +31,8 @@ namespace AdapterFramework.Data.Framework.AdapterCommon.Tests.Diagnostics;
 
 public class AdapterDiagnosticsService_Tests
 {
-    private const int ExpectedTypeCount = 3;
-    private const int ExpectedContainerCount = 3;
+    private const int ExpectedTypeCount = 5;
+    private const int ExpectedContainerCount = 5;
     private const int DiagnosticsShutdownDelayMsecs = 1000;
     private const int DiagnosticsMessagesRunoutDelayMSecs = 2000;
     private const string UnitTestComponentId = "UnitTest";
@@ -38,7 +41,7 @@ public class AdapterDiagnosticsService_Tests
     private readonly List<DataType> _diagnosticTypes;
     private readonly List<DataStream> _diagnosticContainers;
     private readonly List<string> _diagnosticData;
-    private readonly IDiagnosticsMessageProcessor _fakeDiagnosticsMessageProcessor;
+    private readonly FakeDiagnosticsMessageProcessor _fakeDiagnosticsMessageProcessor;
     private readonly LinkNode _elementNode = new DataTypeLinkNode("abc", "def");
 
     public AdapterDiagnosticsService_Tests()
@@ -55,6 +58,11 @@ public class AdapterDiagnosticsService_Tests
         _fakeDiagnosticsMessageProcessor = new FakeDiagnosticsMessageProcessor(_diagnosticTypes, _diagnosticContainers, _diagnosticData, "machine.service");
     }
 
+    private int GetDiagnosticDataCount()
+    {
+        return _fakeDiagnosticsMessageProcessor.GetDataCount();
+    }
+
     [Fact]
     public void Constructor_InvalidInput_Test()
     {
@@ -62,15 +70,15 @@ public class AdapterDiagnosticsService_Tests
         var mockDiagnosticsMessageProcessor = new Mock<IDiagnosticsMessageProcessor>();
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
 
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(null, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, null, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, null, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, null, _elementNode, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, null, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, null));
-        
-        Assert.Throws<ArgumentOutOfRangeException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, string.Empty, string.Empty, _elementNode, instrumentedMessageProcessor.Object));
-        Assert.Throws<ArgumentException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, "  ", "  ", _elementNode, instrumentedMessageProcessor.Object));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(null, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, null, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, null, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, null, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, null, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentNullException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, null, OmfVersion.Omf20));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, string.Empty, string.Empty, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
+        Assert.Throws<ArgumentException>(() => new AdapterDiagnosticsService(mockDiagnosticsMessageProcessor.Object, mockLogger.Object, "  ", "  ", _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20));
     }
 
     [Fact]
@@ -79,7 +87,7 @@ public class AdapterDiagnosticsService_Tests
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
-        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
         await adapterDiagnosticsService.InitializeAsync();
 
@@ -92,13 +100,14 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataCount = 3;
+        var expectedDataCount = 5;
 
-        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
         await adapterDiagnosticsService.StartAsync();
 
-        SpinWait.SpinUntil(() => _diagnosticData.Count.Equals(expectedDataCount), DiagnosticsMessagesRunoutDelayMSecs);
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount().Equals(expectedDataCount), DiagnosticsMessagesRunoutDelayMSecs);
+        Assert.Equal(expectedDataCount, GetDiagnosticDataCount());
         Assert.Empty(_diagnosticTypes);
         Assert.Empty(_diagnosticContainers);
     }
@@ -108,10 +117,10 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataMessageCount = 4;
+        var expectedDataMessageCount = 8;
         var expectedStreamSuffix = ".StreamCount";
 
-        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object);
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
         adapterDiagnosticsService.ResendTypesAndStreams();
 
@@ -120,7 +129,27 @@ public class AdapterDiagnosticsService_Tests
         Assert.Equal(ExpectedTypeCount, _diagnosticTypes.Count);
         Assert.Equal(ExpectedContainerCount, _diagnosticContainers.Count);
         Assert.Equal(expectedDataMessageCount, _diagnosticData.Count);
-        Assert.EndsWith(expectedStreamSuffix, _diagnosticData[3]);
+        Assert.Contains(_diagnosticData, x => x.EndsWith(expectedStreamSuffix, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResendTypesAndStreams_EventCount_Updated_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+        var expectedDataMessageCount = 8;
+        var expectedStreamSuffix = ".EventCount";
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        SpinWait.SpinUntil(() => _diagnosticData.Count.Equals(expectedDataMessageCount), DiagnosticsMessagesRunoutDelayMSecs);
+
+        Assert.Equal(ExpectedTypeCount, _diagnosticTypes.Count);
+        Assert.Equal(ExpectedContainerCount, _diagnosticContainers.Count);
+        Assert.Equal(expectedDataMessageCount, _diagnosticData.Count);
+        Assert.Contains(_diagnosticData, x => x.EndsWith(expectedStreamSuffix, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -138,7 +167,7 @@ public class AdapterDiagnosticsService_Tests
         instrumentedLogger.Setup(il => il.GetAndResetErrorCount()).Returns(0)
             .Callback(() => getAndResetCalled = true);
 
-        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, componentId, componentType, _elementNode, instrumentedMessageProcessor.Object);
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, componentId, componentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
         await adapterDiagnosticsService.StopAsync();
 
@@ -149,5 +178,249 @@ public class AdapterDiagnosticsService_Tests
         Assert.Empty(_diagnosticData);
         Assert.True(clearCountersCalled);
         Assert.True(getAndResetCalled);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_Omf12_AssetAndEventCountNotCreated_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf12);
+
+        await adapterDiagnosticsService.InitializeAsync();
+
+        // ErrorRate, StreamCount and IORate only.
+        Assert.Equal(3, _diagnosticTypes.Count);
+        Assert.Equal(3, _diagnosticContainers.Count);
+        Assert.DoesNotContain(_diagnosticContainers, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticContainers, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StartAsync_Omf12_AssetAndEventCountNotPublished_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf12);
+
+        await adapterDiagnosticsService.StartAsync();
+
+        // ErrorRate, IORate and StreamCount only.
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 3, DiagnosticsMessagesRunoutDelayMSecs);
+
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StartAsync_AssetAndEventCount_ValuesPublished_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        await adapterDiagnosticsService.StartAsync();
+
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 5, DiagnosticsMessagesRunoutDelayMSecs);
+
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+
+        var assetCountEvent = Assert.IsType<AssetCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance);
+        var eventCountEvent = Assert.IsType<EventCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance);
+
+        Assert.Equal(7, assetCountEvent.AssetCount);
+        Assert.Equal(9, eventCountEvent.EventCount);
+    }
+
+    [Theory]
+    [InlineData(7, 9, 1, 1)]
+    [InlineData(8, 9, 2, 1)]
+    [InlineData(7, 10, 1, 2)]
+    public void CollectMessageProcessorStatistics_AssetAndEventCount_PublishedOnlyWhenChangedAtReportingBoundary_Test(
+        int nextAssetCount, long nextEventCount, int expectedAssetWrites, int expectedEventWrites)
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        // Drive the real timer callback without starting background timers or waiting for wall-clock time.
+        var collectStatisticsMethod = typeof(AdapterDiagnosticsService).GetMethod("CollectMessageProcessorStatistics", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(collectStatisticsMethod);
+        var collectStatistics = collectStatisticsMethod.CreateDelegate<Action<object>>(adapterDiagnosticsService);
+
+        collectStatistics(null);
+
+        var initialValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        Assert.Equal(7, Assert.IsType<AssetCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance).AssetCount);
+        Assert.Equal(9, Assert.IsType<EventCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance).EventCount);
+
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(nextAssetCount);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(nextEventCount);
+
+        for (var tick = 0; tick < 59; tick++)
+        {
+            collectStatistics(null);
+        }
+
+        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Once);
+        instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Once);
+        var beforeBoundaryValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
+
+        // The initial callback publishes immediately; callback 61 reaches the next 60-tick reporting boundary.
+        collectStatistics(null);
+
+        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Exactly(2));
+        instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Exactly(2));
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        var assetValues = writtenValues.Where(x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).ToArray();
+        var eventValues = writtenValues.Where(x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(expectedAssetWrites, assetValues.Length);
+        Assert.Equal(expectedEventWrites, eventValues.Length);
+        Assert.Equal(nextAssetCount, Assert.IsType<AssetCountEvent>(assetValues[^1].Instance).AssetCount);
+        Assert.Equal(nextEventCount, Assert.IsType<EventCountEvent>(eventValues[^1].Instance).EventCount);
+    }
+
+    [Fact]
+    public void ResendTypesAndStreams_NothingSentYet_FallsBackToLiveCounts_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+
+        var assetCountEvent = Assert.IsType<AssetCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance);
+        var eventCountEvent = Assert.IsType<EventCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance);
+
+        Assert.Equal(7, assetCountEvent.AssetCount);
+        Assert.Equal(9, eventCountEvent.EventCount);
+    }
+
+    [Fact]
+    public async Task ResendTypesAndStreams_FallbackCounts_AreNotPublishedAgainByNextTimerTick_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        // Nothing has been sent yet, so the resend publishes the live counts and must record them as sent.
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        await adapterDiagnosticsService.StartAsync();
+
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 7, DiagnosticsMessagesRunoutDelayMSecs);
+        await Task.Delay(DiagnosticsMessagesRunoutDelayMSecs);
+
+        Assert.Single(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Single(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ResendTypesAndStreams_AssetCountAlreadyFailed_DoesNotResendAssetCount_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        // The timer path fails to publish AssetCount and stops that metric for the rest of the run.
+        await adapterDiagnosticsService.StartAsync();
+
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
+
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ResendTypesAndStreams_SendFailure_StopsAssetCountLikeTheTimerPath_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        // A failed send stops that metric for the rest of the run, the same as on the timer path and for IORate and StreamCount.
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+        adapterDiagnosticsService.ResendTypesAndStreams();
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
+
+        await adapterDiagnosticsService.StartAsync();
+
+        await Task.Delay(DiagnosticsMessagesRunoutDelayMSecs);
+
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+
+        Assert.DoesNotContain(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Contains(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ResendTypesAndStreams_TypesCreationFailed_DoesNotSendAssetOrEventCount_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        _fakeDiagnosticsMessageProcessor.FailWritingTypes = true;
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        adapterDiagnosticsService.ResendTypesAndStreams();
+
+        // Without the diagnostics types the new streams can't exist downstream, so nothing is sent for them.
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StartAsync_AssetCountFailure_DoesNotStopIoRateAndStreamCount_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+
+        await adapterDiagnosticsService.StartAsync();
+
+        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
+
+        // The AssetCount failure must only disable AssetCount, leaving IORate, StreamCount and EventCount healthy.
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Contains(_diagnosticData, x => x.EndsWith(".IORate", StringComparison.Ordinal));
+        Assert.Contains(_diagnosticData, x => x.EndsWith(".StreamCount", StringComparison.Ordinal));
+        Assert.Contains(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 }
