@@ -366,7 +366,7 @@ public class OmfWriter : IOmfWriter
             {
                 if (_metadataQueue.TryLease(out var lease))
                 {
-                    await ProcessMessageAsync(lease, _metadataQueue);F
+                    await ProcessMessageAsync(lease, _metadataQueue);
                 }
                 else if (_dataQueue.TryLease(out lease))
                 {
