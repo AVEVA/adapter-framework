@@ -11,7 +11,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
     <!-- Override transitive System.Diagnostics.EventLog 6.0.0 (pulled in by Castle.Core) with the current version -->
-    <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.13" />
+    <PackageReference Include="System.Diagnostics.EventLog" Version="10.0.14" />
   </ItemGroup>
   <Import Project="CodeAnalysis.props" />
 </Project>
