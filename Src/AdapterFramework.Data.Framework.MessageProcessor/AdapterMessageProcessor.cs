@@ -16,6 +16,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFilters;
@@ -33,6 +34,7 @@ public class AdapterMessageProcessor : IAwaitableAdapterMessageProcessor
     #region Private Fields
 
     private const double PercentToDecimalConversion = 100.0;
+    private static readonly ConcurrentDictionary<Type, bool> _overridesUnscopedDynamicWrites = new();
     private readonly IScopedMessageProcessor _messageProcessor;
     private readonly ConcurrentDictionary<string, IDataFilter> _dataFilters;
     private readonly OmfVersion _omfVersion;
@@ -120,6 +122,14 @@ public class AdapterMessageProcessor : IAwaitableAdapterMessageProcessor
     /// <inheritdoc/>
     public bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableAdapterMessageScope scope)
     {
+        var type = GetType();
+        if (_overridesUnscopedDynamicWrites.GetOrAdd(type, OverridesUnscopedDynamicWrites))
+        {
+            throw new NotSupportedException(
+                $"'{type.Name}' overrides {nameof(WriteDynamicValue)} or {nameof(WriteDynamicValues)}, which scoped writes don't call. " +
+                $"Move that logic to {nameof(WriteDynamicValueCore)} and {nameof(WriteDynamicValuesCore)} to use awaitable scopes.");
+        }
+
         if (!_messageProcessor.TryCreateScope(options, out var token))
         {
             scope = null;
@@ -341,6 +351,16 @@ public class AdapterMessageProcessor : IAwaitableAdapterMessageProcessor
 
         _messageProcessor.WriteEvent(id, typeId, name, description, null, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
     }
+
+    #endregion
+
+    #region Private Methods
+
+    private static bool OverridesUnscopedDynamicWrites(Type type) =>
+        type.GetMethods(BindingFlags.Public | BindingFlags.Instance).Any(method =>
+            method.Name is nameof(WriteDynamicValue) or nameof(WriteDynamicValues)
+            && method.DeclaringType != typeof(AdapterMessageProcessor)
+            && method.GetBaseDefinition().DeclaringType == typeof(AdapterMessageProcessor));
 
     #endregion
 }

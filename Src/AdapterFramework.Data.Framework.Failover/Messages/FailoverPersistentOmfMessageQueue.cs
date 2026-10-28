@@ -39,6 +39,11 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
     /// <summary>
     /// Writes the V3 failover layout, which adds the partition key and OMF version to the V2 layout.
     /// </summary>
+    /// <remarks>
+    /// Known rollback limitation, accepted by design: earlier releases don't check the record version and misread V3 records
+    /// as V2 (wrong message action and process time, two extra bytes in the body). The release notes require failover
+    /// buffers to drain fully before rolling back to an earlier adapter version.
+    /// </remarks>
     protected override DataItem CreateDataItem(IFailoverSerializedOmfMessage message)
     {
         if (message == null)

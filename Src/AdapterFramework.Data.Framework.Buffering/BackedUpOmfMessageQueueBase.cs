@@ -111,7 +111,15 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
             if (_currentVolatileQueueSize > _maxVolatileQueueSize)
             {
-                ConsolidateQueues();
+                try
+                {
+                    ConsolidateQueues();
+                }
+                catch (Exception ex)
+                {
+                    // The message is queued; only moving older messages to the persistent queue failed, and that queue reports any it lost.
+                    _logger?.LogError(ex, "Failed to move buffered messages to the persistent queue.");
+                }
             }
         }
     }
@@ -237,20 +245,7 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                 if (_volatileQueue.TryDequeue(out timestampedMessage))
                 {
                     _currentVolatileQueueSize -= timestampedMessage.SerializedOmfMessage.GetMessageSizeInBytes();
-                    try
-                    {
-                        _persistentQueue?.Enqueue(timestampedMessage.SerializedOmfMessage);
-                    }
-                    catch
-                    {
-                        if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } lostId)
-                        {
-                            SerializedBodiesDiscarded?.Invoke(this,
-                                new SerializedBodiesEventArgs(new[] { lostId }, OmfReasonCode.EnqueueFailed));
-                        }
-
-                        throw;
-                    }
+                    _persistentQueue?.Enqueue(timestampedMessage.SerializedOmfMessage);
                     if (_persistentQueue == null)
                     {
                         _logger.LogDebug(MaxBufferSizeReachedMessage);

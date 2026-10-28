@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -22,6 +23,8 @@ using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
+using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
 
@@ -354,5 +357,31 @@ public class BackedUpOmfMessageQueue_Tests
         Assert.Equal(1, raisedCount);
         Assert.Equal(OmfReasonCode.BufferFull, raised.Reason);
         Assert.Equal(new[] { id }, raised.SerializedMessageIds);
+    }
+
+    /// <summary>
+    /// When moving a body to the persistent queue fails, Enqueue doesn't throw for the body it just queued, and only the persistent
+    /// queue reports the body it couldn't accept, so the caller doesn't mistake the newly queued body for a lost one.
+    /// </summary>
+    [Fact]
+    public void BackedUpOmfMessageQueue_PersistentQueueRejectsBody_OnlyPersistentQueueReportsIt()
+    {
+        var id = Guid.NewGuid();
+        var backedUpReports = new List<SerializedBodiesEventArgs>();
+        var persistentReports = new List<SerializedBodiesEventArgs>();
+        var mockFileQueue = new Mock<IPersistentQueue>();
+        mockFileQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Throws(new InvalidOperationException("UnitTest"));
+
+        using var persistentQueue = new PersistentOmfMessageQueue("http://localhost:5590/omf", mockFileQueue.Object, null);
+        using var backedUpMessageQueue = new BackedUpOmfMessageQueue(0, _messageExpirationTime, persistentQueue, new TestLogger());
+        backedUpMessageQueue.SerializedBodiesDiscarded += (_, e) => backedUpReports.Add(e);
+        persistentQueue.SerializedBodiesDiscarded += (_, e) => persistentReports.Add(e);
+
+        backedUpMessageQueue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id });
+
+        Assert.Empty(backedUpReports);
+        var report = Assert.Single(persistentReports);
+        Assert.Equal(OmfReasonCode.EnqueueFailed, report.Reason);
+        Assert.Equal(new[] { id }, report.SerializedMessageIds);
     }
 }

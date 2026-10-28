@@ -16,6 +16,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
@@ -73,5 +74,68 @@ public class AwaitableAdapterMessageScope_Tests
         Assert.Throws<InvalidOperationException>(() => scope.WriteType(dataType));
         await scope.DisposeAsync();
         await state.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a processor overriding the public <c>WriteDynamicValues</c>, which scoped writes bypass, can't create a scope:
+    /// creation throws <see cref="NotSupportedException"/> before any scope token is requested from the chain.
+    /// </summary>
+    [Fact]
+    public void TryCreateAwaitableScope_WhenPublicDynamicWriteOverridden_ThrowsNotSupported()
+    {
+        var mockProcessor = new Mock<IMessageProcessor>();
+        var mockScopedProcessor = mockProcessor.As<IScopedMessageProcessor>();
+        var processor = new PublicOverrideProcessor(mockProcessor.Object);
+
+        var exception = Assert.Throws<NotSupportedException>(() => processor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out _));
+
+        Assert.Contains(nameof(PublicOverrideProcessor), exception.Message, StringComparison.Ordinal);
+        mockScopedProcessor.Verify(p => p.TryCreateScope(It.IsAny<OmfAwaitableScopeOptions>(), out It.Ref<ScopeToken>.IsAny), Times.Never);
+    }
+
+    /// <summary>
+    /// Verifies that a processor customizing writes through the <c>Core</c> methods, which both scoped and unscoped writes call,
+    /// can still create a scope.
+    /// </summary>
+    [Fact]
+    public async Task TryCreateAwaitableScope_WhenOnlyCoreDynamicWriteOverridden_CreatesScope()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        coordinator.SetOmfVersion(OmfVersion.Omf20);
+        Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var state));
+        ScopeToken token = state;
+        var mockProcessor = new Mock<IMessageProcessor>();
+        mockProcessor.As<IScopedMessageProcessor>()
+            .Setup(processor => processor.TryCreateScope(It.IsAny<OmfAwaitableScopeOptions>(), out token)).Returns(true);
+        var processor = new CoreOverrideProcessor(mockProcessor.Object);
+
+        Assert.True(processor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out var scope));
+
+        await scope.DisposeAsync();
+        await state.DisposeAsync();
+    }
+
+    private sealed class PublicOverrideProcessor : AdapterMessageProcessor
+    {
+        public PublicOverrideProcessor(IMessageProcessor messageProcessor)
+            : base(messageProcessor, OmfVersion.Omf20)
+        {
+        }
+
+        public override void WriteDynamicValues<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction,
+            PartitionKey? partitionKey = null) =>
+            base.WriteDynamicValues(dataSelectionItem, instances, messageAction, partitionKey);
+    }
+
+    private sealed class CoreOverrideProcessor : AdapterMessageProcessor
+    {
+        public CoreOverrideProcessor(IMessageProcessor messageProcessor)
+            : base(messageProcessor, OmfVersion.Omf20)
+        {
+        }
+
+        protected override void WriteDynamicValuesCore<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction,
+            PartitionKey? partitionKey, ScopeToken scope) =>
+            base.WriteDynamicValuesCore(dataSelectionItem, instances, messageAction, partitionKey, scope);
     }
 }

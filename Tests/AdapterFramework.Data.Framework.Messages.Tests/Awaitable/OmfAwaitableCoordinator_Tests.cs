@@ -356,6 +356,25 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfDeliveryState.Accepted, result.Deliveries.Single(delivery => delivery.EndpointId == EndpointA).State);
     }
 
+    /// <summary>
+    /// Verifies that a delivery is reported as pending only while a scope tracks it: not for an unknown body or another
+    /// endpoint, and no longer once its final disposition is recorded.
+    /// </summary>
+    [Fact]
+    public async Task IsDeliveryPending_TracksOnlyUnfinishedDeliveriesOfKnownBodies()
+    {
+        await using var scope = CreateScope();
+        var bodyId = SimulateWriteAndDispatch(scope, 1, TargetA);
+
+        Assert.True(_coordinator.IsDeliveryPending(bodyId, EndpointA));
+        Assert.False(_coordinator.IsDeliveryPending(bodyId, EndpointB));
+        Assert.False(_coordinator.IsDeliveryPending(Guid.NewGuid(), EndpointA));
+
+        _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
+
+        Assert.False(_coordinator.IsDeliveryPending(bodyId, EndpointA));
+    }
+
     [Fact]
     public async Task Wait_FirstDispositionWins()
     {

@@ -106,4 +106,9 @@ public enum OmfReasonCode
     /// Hot failover permanently ended an unfinished scope's acceptance observation without cancelling data delivery.
     /// </summary>
     AcceptanceTrackingDisabled = 16,
+
+    /// <summary>
+    /// The writer didn't send the body, because an earlier data body got 404 Not Found and no type or container was sent since.
+    /// </summary>
+    SkippedAfterNotFound = 17,
 }

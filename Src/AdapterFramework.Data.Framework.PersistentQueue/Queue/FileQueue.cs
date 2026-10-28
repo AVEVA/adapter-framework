@@ -514,6 +514,10 @@ public class FileQueue : IPersistentQueue
             _logger?.LogError("Out of disk. Attempting to make room by deleting the oldest data file.");
             TryDeleteOldestQueueFile();
 
+            // The failed attempt may have left a partial record, so the retry's record starts at the current position.
+            UntrackItem(item);
+            TrackItem(item, _writeStream.Position);
+
             try
             {
                 _serializer.SerializeDataItem(_writeStream, item);

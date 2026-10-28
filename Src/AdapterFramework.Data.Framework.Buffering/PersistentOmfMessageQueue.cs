@@ -34,6 +34,11 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
     /// <summary>
     /// Creates a V3 record, or a V4 record that appends the serialized message ID of a scoped body.
     /// </summary>
+    /// <remarks>
+    /// Known rollback limitation, accepted by design: earlier releases don't recognize V4 records and skip them as corrupt,
+    /// so scoped bodies still buffered are lost. The release notes require buffers to drain fully before rolling back to an
+    /// earlier adapter version.
+    /// </remarks>
     protected override DataItem CreateDataItem(ISerializedOmfMessage message)
     {
         if (message == null)

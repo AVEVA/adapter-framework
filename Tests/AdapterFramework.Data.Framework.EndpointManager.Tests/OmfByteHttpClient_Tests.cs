@@ -165,21 +165,23 @@ public class OmfByteHttpClient_Tests : IDisposable
     }
 
     /// <summary>
-    /// Verifies that the client parses an ingress receipt only from a 202 Accepted response,
-    /// and ignores the same receipt body on any other successful status.
+    /// Verifies that the client parses an ingress receipt only when the caller asks for one and the response is 202 Accepted.
+    /// The same receipt body is ignored for an untracked send and for any other successful status.
     /// </summary>
     [Theory]
-    [InlineData(HttpStatusCode.Accepted, true)]
-    [InlineData(HttpStatusCode.OK, false)]
-    [InlineData(HttpStatusCode.Created, false)]
-    public async Task OmfByteHttpClient_SendMessageAsync_ParsesReceiptOnlyFor202(HttpStatusCode statusCode, bool expectReceipt)
+    [InlineData(HttpStatusCode.Accepted, true, true)]
+    [InlineData(HttpStatusCode.Accepted, false, false)]
+    [InlineData(HttpStatusCode.OK, true, false)]
+    [InlineData(HttpStatusCode.Created, true, false)]
+    public async Task OmfByteHttpClient_SendMessageAsync_ParsesReceiptOnlyForRequested202(HttpStatusCode statusCode, bool readReceipt, bool expectReceipt)
     {
         var operationId = Guid.NewGuid();
         _testEndpoint.SetPostResponseBody($"{{\"Operation-Id\":\"{operationId}\",\"ErrorCount\":0,\"QueueAge\":\"00:00:01\"}}");
         _testEndpoint.SetHttpResponse(statusCode);
         _testEndpoint.StartListening();
 
-        var response = await _omfByteHttpClient.SendMessageAsync(MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, CancellationToken.None);
+        var response = await _omfByteHttpClient.SendMessageAsync(
+            MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, null, readReceipt, CancellationToken.None);
 
         Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
         if (expectReceipt)
@@ -190,6 +192,25 @@ public class OmfByteHttpClient_Tests : IDisposable
         {
             Assert.Null(response.Receipt);
         }
+    }
+
+    /// <summary>
+    /// Verifies that a 202 body larger than the read limit is cut off rather than read whole: the send still succeeds
+    /// with the 202 status, and no receipt is taken from the truncated body.
+    /// </summary>
+    [Fact]
+    public async Task OmfByteHttpClient_SendMessageAsync_OversizedReceiptBody_SucceedsWithoutReceipt()
+    {
+        _testEndpoint.SetPostResponseBody($"{{\"Operation-Id\":\"{Guid.NewGuid()}\",\"Padding\":\"{new string('x', 2 * 1024 * 1024)}\"}}");
+        _testEndpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _testEndpoint.StartListening();
+
+        var response = await _omfByteHttpClient.SendMessageAsync(
+            MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, null, readReceipt: true, CancellationToken.None);
+
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Null(response.Receipt);
     }
 
     [Theory]

@@ -35,7 +35,8 @@ public static class OmfReasonCodeExtensions
         OmfReasonCode.NoEndpoints or OmfReasonCode.EnqueueFailed => OmfPipelineStage.Dispatch,
         OmfReasonCode.Queued or OmfReasonCode.EndpointRemoved or OmfReasonCode.BuffersReset
             or OmfReasonCode.BufferFull or OmfReasonCode.CorruptRecord or OmfReasonCode.DiskError => OmfPipelineStage.Buffering,
-        OmfReasonCode.Retrying or OmfReasonCode.RejectedByEndpoint or OmfReasonCode.NonAcceptedSuccess => OmfPipelineStage.Delivery,
+        OmfReasonCode.Retrying or OmfReasonCode.RejectedByEndpoint or OmfReasonCode.NonAcceptedSuccess
+            or OmfReasonCode.SkippedAfterNotFound => OmfPipelineStage.Delivery,
         OmfReasonCode.AcceptanceTrackingDisabled => OmfPipelineStage.Failover,
         _ => throw new ArgumentOutOfRangeException(nameof(code), code, null),
     };

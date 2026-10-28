@@ -18,12 +18,14 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Moq;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
+using AdapterFramework.Data.Framework.Abstractions.HttpCommunication;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Security;
@@ -85,6 +87,83 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         Assert.Equal(OmfAcceptanceOutcome.Rejected, result.Outcome);
         Assert.Equal(reason, result.Reason.Code);
         Assert.Equal(status, Assert.Single(result.Deliveries).LastStatusCode);
+    }
+
+    /// <summary>
+    /// Each data body that gets 404 is sent once, requeued, and then dropped on its retry; the drop reports the body's own 404, not a skip.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DataBodiesGet404_EachRejectedWithItsOwnStatus()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.NotFound);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        var (first, firstMessage) = RegisterScopedBody(MessageType.Data);
+        var (second, secondMessage) = RegisterScopedBody(MessageType.Data);
+        await using (first)
+        await using (second)
+        {
+            _writer.SendMessage(firstMessage);
+            _writer.SendMessage(secondMessage);
+
+            foreach (var scope in new[] { first, second })
+            {
+                var result = await scope.WaitForAcceptanceAsync(CompletionWait);
+                Assert.Equal(OmfAcceptanceOutcome.Rejected, result.Outcome);
+                Assert.Equal(OmfReasonCode.RejectedByEndpoint, result.Reason.Code);
+                Assert.Equal(HttpStatusCode.NotFound, Assert.Single(result.Deliveries).LastStatusCode);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A data body the writer skips without sending, because the body at the head of the queue changed after another body got 404,
+    /// is discarded as <see cref="OmfReasonCode.SkippedAfterNotFound"/> with no status, instead of taking the other body's 404.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_DataSkippedAfterAnother404_DiscardedWithoutStatus()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+
+        // The state the writer is in after another body got 404 and was then evicted from the queue before its retry.
+        SetWriterField("_shouldRetry404", false);
+        SetWriterField("_messageType", MessageType.Data);
+        SetWriterField("_cachedResponse", new EndpointResponse(ResponseStatusEnum.NotFound) { StatusCode = HttpStatusCode.NotFound });
+        SetWriterField("_cachedResponseBodyId", (Guid?)Guid.NewGuid());
+
+        var (scope, message) = RegisterScopedBody(MessageType.Data);
+        await using (scope)
+        {
+            _writer.SendMessage(message);
+
+            var result = await scope.WaitForAcceptanceAsync(CompletionWait);
+            Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+            Assert.Equal(OmfReasonCode.SkippedAfterNotFound, result.Reason.Code);
+            Assert.Null(Assert.Single(result.Deliveries).LastStatusCode);
+        }
+    }
+
+    /// <summary>
+    /// A scoped type body the types and containers queue drops for exceeding its memory limit is reported as discarded with
+    /// <see cref="OmfReasonCode.BufferFull"/>, instead of leaving the scope to time out.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_TypeBodyOverMemoryLimit_DeliveryDiscardedAsBufferFull()
+    {
+        _endpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _endpoint.StartListening();
+        _writer = CreateWriter(persistentBuffering: false);
+        var (scope, message) = RegisterScopedBody(MessageType.Type, new byte[(BufferingConstants.DefaultVolatileMemorySizeMb + 1) * 1024 * 1024]);
+        await using (scope)
+        {
+            _writer.SendMessage(message);
+
+            var result = await scope.WaitForAcceptanceAsync(CompletionWait);
+            Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+            Assert.Equal(OmfReasonCode.BufferFull, result.Reason.Code);
+        }
     }
 
     /// <summary>A retryable response leaves the delivery pending and exposes its latest status to a timed-out waiter.</summary>
@@ -236,9 +315,11 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
     /// <summary>
     /// Registers a sealed, materialized scope with one body that has one delivery to the writer's endpoint.
     /// </summary>
+    /// <param name="messageType">The body's message type.</param>
+    /// <param name="body">The body bytes, or an empty JSON object when null.</param>
     /// <returns>The scope and its body.</returns>
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The caller disposes the scope.")]
-    private (OmfAwaitableScopeState Scope, SerializedOmfMessage Message) RegisterScopedBody()
+    private (OmfAwaitableScopeState Scope, SerializedOmfMessage Message) RegisterScopedBody(MessageType messageType = MessageType.Instance, byte[] body = null)
     {
         Assert.True(_coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
         var id = Guid.NewGuid();
@@ -247,8 +328,16 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         _coordinator.CloseMaterialization(scope);
         _coordinator.RegisterDeliveries(id, new[] { new OmfDeliveryTarget(EndpointId, _writer?.TargetUri ?? new Uri(_uri)) });
         scope.Seal();
-        return (scope, new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id });
+        return (scope, new SerializedOmfMessage(messageType, body ?? new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id });
     }
+
+    /// <summary>
+    /// Sets a private field on the writer under test.
+    /// </summary>
+    /// <param name="name">The field name.</param>
+    /// <param name="value">The value.</param>
+    private void SetWriterField(string name, object value) =>
+        typeof(OmfWriter).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(_writer, value);
 
     /// <summary>
     /// Creates a data writer that reports to the coordinator.

@@ -472,4 +472,51 @@ public class PersistentOmfMessageQueue_Tests
         Assert.Equal(OmfReasonCode.DiskError, single.Reason);
         Assert.Equal(new[] { id }, single.SerializedMessageIds);
     }
+
+    /// <summary>
+    /// A scoped body the persistent queue can't accept is reported as discarded with <see cref="OmfReasonCode.EnqueueFailed"/>,
+    /// and the exception still reaches the caller.
+    /// </summary>
+    [Fact]
+    public void PersistentOmfMessageQueue_Enqueue_NotAccepted_ReportsDiscardedAndThrows()
+    {
+        var id = Guid.NewGuid();
+        var discarded = new List<SerializedBodiesEventArgs>();
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Throws(new InvalidOperationException("UnitTest"));
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.SerializedBodiesDiscarded += (_, e) => discarded.Add(e);
+
+        Assert.Throws<InvalidOperationException>(() => queue.Enqueue(
+            new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id }));
+
+        var single = Assert.Single(discarded);
+        Assert.Equal(OmfReasonCode.EnqueueFailed, single.Reason);
+        Assert.Equal(new[] { id }, single.SerializedMessageIds);
+    }
+
+    /// <summary>
+    /// A flush that fails with an exception other than <see cref="IOException"/> leaves the accepted body staged for a later flush,
+    /// so it's reported as a failed write rather than a loss, and the exception still reaches the caller.
+    /// </summary>
+    [Fact]
+    public void PersistentOmfMessageQueue_Enqueue_FlushFailsWithOtherException_ReportsWriteFailureNotLoss()
+    {
+        var id = Guid.NewGuid();
+        var discarded = new List<SerializedBodiesEventArgs>();
+        var writeFailed = new List<SerializedBodiesEventArgs>();
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(q => q.FlushEnqueues()).Throws(new UnauthorizedAccessException("UnitTest"));
+
+        using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        queue.SerializedBodiesDiscarded += (_, e) => discarded.Add(e);
+        queue.SerializedBodyWriteFailed += (_, e) => writeFailed.Add(e);
+
+        Assert.Throws<UnauthorizedAccessException>(() => queue.Enqueue(
+            new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20 }, MessageAction.Create, 1, OmfVersion.Omf20) { SerializedMessageId = id }));
+
+        Assert.Empty(discarded);
+        Assert.Equal(new[] { id }, Assert.Single(writeFailed).SerializedMessageIds);
+    }
 }

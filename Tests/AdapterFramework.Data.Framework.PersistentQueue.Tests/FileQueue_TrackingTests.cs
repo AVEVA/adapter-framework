@@ -15,6 +15,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Moq;
+using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using Xunit;
 
@@ -140,6 +142,29 @@ public sealed class FileQueue_TrackingTests : IDisposable
     }
 
     /// <summary>
+    /// When the first write runs out of disk after leaving a partial record, the out-of-disk retry's record is tracked where it was
+    /// actually written, so dequeuing it doesn't report the item as lost.
+    /// </summary>
+    [Fact]
+    public void FlushEnqueues_OutOfDiskRetryAfterPartialRecord_DequeuedItemNotReported()
+    {
+        using var written = new MemoryStream();
+        var fileManager = new Mock<IFileManager>();
+        fileManager.Setup(fm => fm.CreateStateStream()).Returns(() => new MemoryStream());
+        fileManager.Setup(fm => fm.CreateWriterStream(0)).Returns(written);
+        fileManager.Setup(fm => fm.CreateReaderStream(0)).Returns(() => new SharedReadStream(written));
+        fileManager.Setup(fm => fm.AnyPendingFileDeletions()).Returns(true);
+
+        using var queue = new FileQueue(fileManager.Object, new PartialFirstWriteSerializer(), FileSizeMb, 0);
+        queue.TrackedItemsLost += (_, e) => _lost.Add(e);
+        queue.Enqueue(Tracked(Guid.NewGuid(), SmallItemBytes));
+        queue.FlushEnqueues();
+
+        Assert.Equal(SmallItemBytes, queue.Dequeue().Data.Length);
+        Assert.Empty(_lost);
+    }
+
+    /// <summary>
     /// Disposes the queue and deletes its directory.
     /// </summary>
     public void Dispose()
@@ -174,4 +199,80 @@ public sealed class FileQueue_TrackingTests : IDisposable
     /// <param name="size">The data length.</param>
     /// <returns>The item.</returns>
     private static DataItem Untracked(int size) => new(DataItemVersion.V3, new byte[size]);
+
+    /// <summary>
+    /// Reads the bytes written so far to a shared writer stream, like a reader of the same file.
+    /// </summary>
+    private sealed class SharedReadStream : Stream
+    {
+        private readonly MemoryStream _source;
+
+        public SharedReadStream(MemoryStream source) => _source = source;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => true;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _source.Length;
+
+        public override long Position { get; set; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var available = (int)Math.Max(0, Math.Min(count, Length - Position));
+            Array.Copy(_source.GetBuffer(), Position, buffer, offset, available);
+            Position += available;
+            return available;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
+        {
+            SeekOrigin.Begin => offset,
+            SeekOrigin.Current => Position + offset,
+            _ => Length + offset,
+        };
+
+        public override void Flush()
+        {
+        }
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// Uses the real serializer, except that the first item write leaves a partial record and fails with an out-of-disk error.
+    /// </summary>
+    private sealed class PartialFirstWriteSerializer : ISerializer
+    {
+        private readonly Serializer _serializer = new();
+        private bool _failed;
+
+        public void SerializeQueueState(Stream stream, QueueState queueState) => _serializer.SerializeQueueState(stream, queueState);
+
+        public void SerializeReaderState(Stream stream, QueueState queueState) => _serializer.SerializeReaderState(stream, queueState);
+
+        public void SerializeWriterState(Stream stream, QueueState queueState) => _serializer.SerializeWriterState(stream, queueState);
+
+        public QueueState DeserializeQueueState(Stream stream) => new();
+
+        public void SerializeDataItem(Stream stream, DataItem item)
+        {
+            if (!_failed)
+            {
+                _failed = true;
+                stream.Write(new byte[7]);
+                TestHelper.ThrowOutOfDiskException();
+            }
+
+            _serializer.SerializeDataItem(stream, item);
+        }
+
+        public DataItem DeserializeDataItem(Stream stream) => _serializer.DeserializeDataItem(stream);
+
+        public bool TryDeserializeNextValidDataItem(Stream stream, out DataItem dataItem) => _serializer.TryDeserializeNextValidDataItem(stream, out dataItem);
+    }
 }

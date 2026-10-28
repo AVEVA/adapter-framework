@@ -64,8 +64,8 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
     #region Public Events
 
     /// <summary>
-    /// Raised when persisted bodies with a serialized message ID are lost before they are dequeued.
-    /// Handlers run while the persistent queue holds its locks, so they must not call back into the queue.
+    /// Raised when bodies with a serialized message ID can't be added to the queue, or are lost before they are dequeued.
+    /// Loss handlers run while the persistent queue holds its locks, so they must not call back into the queue.
     /// </summary>
     public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
 
@@ -83,9 +83,15 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
     {
         ThrowHelper.ThrowIfArgumentNull(message, nameof(message));
 
-        var dataItem = CreateDataItem(message);
-
-        _persistentQueue.Enqueue(dataItem);
+        try
+        {
+            _persistentQueue.Enqueue(CreateDataItem(message));
+        }
+        catch
+        {
+            RaiseForBody(SerializedBodiesDiscarded, message, OmfReasonCode.EnqueueFailed);
+            throw;
+        }
 
         try
         {
@@ -95,10 +101,13 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         {
             // This should only happen for an out of disk space exception when using FileQueue as the IPersistentQueue
             _logger?.LogError(ex, "Error flushing {MessageType} to disk in buffer for {TargetIdentifier}.", message.MessageType, _targetIdentifier);
-            if (message.SerializedMessageId is { } serializedMessageId)
-            {
-                SerializedBodyWriteFailed?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, OmfReasonCode.DiskError));
-            }
+            RaiseForBody(SerializedBodyWriteFailed, message, OmfReasonCode.DiskError);
+        }
+        catch
+        {
+            // The body is already staged and is written on a later flush, so it isn't lost.
+            RaiseForBody(SerializedBodyWriteFailed, message, OmfReasonCode.DiskError);
+            throw;
         }
     }
 
@@ -171,6 +180,20 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// Raises <paramref name="handler"/> for the body when it has a serialized message ID.
+    /// </summary>
+    /// <param name="handler">The event to raise.</param>
+    /// <param name="message">The body.</param>
+    /// <param name="reason">The reason code.</param>
+    private void RaiseForBody(EventHandler<SerializedBodiesEventArgs> handler, TMessage message, OmfReasonCode reason)
+    {
+        if (message.SerializedMessageId is { } serializedMessageId)
+        {
+            handler?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, reason));
+        }
+    }
 
     /// <summary>
     /// Re-raises lost tracked items as <see cref="SerializedBodiesDiscarded"/> with the matching reason code.

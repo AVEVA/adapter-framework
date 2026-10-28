@@ -367,6 +367,20 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover does not support awaitable acceptance tracking.");
 
     /// <summary>
+    /// Gets whether a delivery of the body to the endpoint is still waiting for its final decision.
+    /// </summary>
+    /// <param name="serializedMessageId">The ID of the serialized body.</param>
+    /// <param name="endpointId">The endpoint ID.</param>
+    /// <returns><c>true</c> if a scope is still tracking the delivery; otherwise <c>false</c>.</returns>
+    public bool IsDeliveryPending(Guid serializedMessageId, string endpointId)
+    {
+        lock (_lock)
+        {
+            return TryGetPendingDelivery(serializedMessageId, endpointId, out _, out _);
+        }
+    }
+
+    /// <summary>
     /// Records a non-final HTTP attempt for a pending delivery, such as a retryable status or a transport error.
     /// </summary>
     /// <param name="serializedMessageId">The ID of the serialized body.</param>
