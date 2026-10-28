@@ -84,6 +84,9 @@ public class OmfWriter : IOmfWriter
     private bool _firstStatusSent;
     private bool _disposed;
     private long _valueCount;
+    private long _streamValueCount;
+    private long _assetCount;
+    private long _eventCount;
     private MessageType _messageType;
     private bool _shouldRetry404 = true;
     private EndpointResponse _cachedResponse;
@@ -205,6 +208,15 @@ public class OmfWriter : IOmfWriter
     public long GetAndResetEgressedValuesCounter()
     {
         return Interlocked.Exchange(ref _valueCount, 0);
+    }
+
+    /// <inheritdoc/>
+    public OmfResourceCounts GetAndResetEgressedResourceCounters()
+    {
+        return new OmfResourceCounts(
+            Interlocked.Exchange(ref _streamValueCount, 0),
+            Interlocked.Exchange(ref _assetCount, 0),
+            Interlocked.Exchange(ref _eventCount, 0));
     }
 
     public void UpdateConfiguration(IEndpointConfiguration configuration)
@@ -387,20 +399,21 @@ public class OmfWriter : IOmfWriter
     private async Task ProcessMessageAsync(MessageLease<ISerializedOmfMessage> lease, BackedUpOmfMessageQueue queue)
     {
         var message = lease.Message;
+        var processed = false;
         var delivered = false;
         try
         {
-            delivered = await SendBufferedMessageAsync(message);
+            (processed, delivered) = await SendBufferedMessageAsync(message);
         }
         finally
         {
-            if (!delivered)
+            if (!processed)
             {
                 queue.Abandon(lease);
             }
         }
 
-        if (!delivered)
+        if (!processed)
         {
             return;
         }
@@ -411,15 +424,44 @@ public class OmfWriter : IOmfWriter
         }
 
         Interlocked.Add(ref _valueCount, message.ItemCount);
+
+        // Resource counters only reflect successful delivery. Counting here, once per processed message,
+        // rather than in HandleResponse keeps retried attempts from being counted more than once.
+        if (delivered)
+        {
+            AddEgressedResourceCounts(message.ResourceCounts);
+        }
     }
 
-    private async Task<bool> SendBufferedMessageAsync(ISerializedOmfMessage serializedMessage)
+    private void AddEgressedResourceCounts(OmfResourceCounts resourceCounts)
+    {
+        if (resourceCounts.IsEmpty)
+        {
+            return;
+        }
+
+        Interlocked.Add(ref _streamValueCount, resourceCounts.StreamValues);
+        Interlocked.Add(ref _assetCount, resourceCounts.Assets);
+        Interlocked.Add(ref _eventCount, resourceCounts.Events);
+    }
+
+    /// <summary>
+    /// Sends a buffered message, retrying as needed.
+    /// </summary>
+    /// <returns>
+    /// Processed is true when the message should be removed from the queue.
+    /// Delivered is true when the endpoint reported that it successfully processed the message.
+    /// </returns>
+    private async Task<(bool Processed, bool Delivered)> SendBufferedMessageAsync(ISerializedOmfMessage serializedMessage)
     {
         if (ShouldNotRetryFailed404Message(serializedMessage))
         {
             HandleResponse(_cachedResponse, serializedMessage);
             _messageType = serializedMessage.MessageType;
-            return true;
+
+            // Dropped without being sent. IORate still counts it (ItemCount), as it did before resource counts
+            // existed, but the resource rates only count messages the endpoint accepted.
+            return (true, false);
         }
 
         _messageType = serializedMessage.MessageType;
@@ -439,21 +481,23 @@ public class OmfWriter : IOmfWriter
         {
             try
             {
-                if (!RequiresRequeue(await policy.ExecuteAsync(ct => SendMessageAndProcessResponseAsync(_messageType, body, serializedMessage, messageAction, omfVersion, ct),
-                    _writerCts.Token)))
+                var response = await policy.ExecuteAsync(ct => SendMessageAndProcessResponseAsync(_messageType, body, serializedMessage, messageAction, omfVersion, ct),
+                    _writerCts.Token);
+
+                if (!RequiresRequeue(response))
                 {
-                    return true;
+                    return (true, response.ResponseStatus == ResponseStatusEnum.Success);
                 }
 
-                return false;
+                return (false, false);
             }
             catch (OperationCanceledException)
             {
-                return false;
+                return (false, false);
             }
         }
 
-        return false;
+        return (false, false);
     }
 
     private bool ShouldNotRetryFailed404Message(ISerializedOmfMessage serializedMessage)
