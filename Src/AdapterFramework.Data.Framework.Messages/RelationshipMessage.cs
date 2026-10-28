@@ -17,10 +17,36 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 
 namespace AdapterFramework.Data.Framework.Messages;
 
-public class RelationshipMessage(Link relationship, MessageAction messageAction) : Message
+public class RelationshipMessage : Message
 {
-    public Link Relationship { get; } = relationship;
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RelationshipMessage"/> class.
+    /// </summary>
+    /// <param name="relationship">The OMF Relationship (Link) definition.</param>
+    /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that describes the intent for this relationship.</param>
+    public RelationshipMessage(Link relationship, MessageAction messageAction)
+        : this(relationship, messageAction, null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RelationshipMessage"/> class with a partition key.
+    /// </summary>
+    /// <param name="relationship">The OMF Relationship (Link) definition.</param>
+    /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that describes the intent for this relationship.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the relationship to the OMFIngress Service.</param>
+    public RelationshipMessage(Link relationship, MessageAction messageAction, PartitionKey? partitionKey)
+    {
+        Relationship = relationship;
+        MessageAction = messageAction;
+        PartitionKey = partitionKey;
+    }
+
+    public Link Relationship { get; }
 
     /// <summary>Gets the <see cref="Abstractions.Messages.MessageAction"/> describing the schema operation.</summary>
-    public MessageAction MessageAction { get; } = messageAction;
+    public MessageAction MessageAction { get; }
+
+    /// <summary>Gets the PartitionKey that will be sent with the relationship to the OMFIngress Service.</summary>
+    public PartitionKey? PartitionKey { get; }
 }

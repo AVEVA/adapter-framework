@@ -16,6 +16,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.DataModel;
@@ -34,9 +35,10 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     #region Private Fields
 
     private readonly IMessageProcessor _messageProcessor;
-    private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConditionalWeakTable<DataStream, string> _preparedStreamIds = [];
     private readonly ConcurrentDictionary<string, byte> _entityIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, object> _metaDataDictionary;
     private readonly Dictionary<StreamProperties, Action<PropertyDefinitionOverride>> _propertyOverrideActions;
@@ -98,9 +100,24 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
 
-        PrepareAndCacheDataType(dataType, messageAction);
+        PrepareDataType(dataType);
 
         _messageProcessor.WriteType(dataType, messageAction);
+
+        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
+    }
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
+
+        PrepareDataType(dataType);
+
+        _messageProcessor.WriteType(dataType, partitionKey, messageAction);
+
+        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
@@ -110,10 +127,34 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
         foreach (var dataType in dataTypes)
         {
-            PrepareAndCacheDataType(dataType, messageAction);
+            PrepareDataType(dataType);
         }
 
         _messageProcessor.WriteTypes(dataTypes, messageAction);
+
+        foreach (var dataType in dataTypes)
+        {
+            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
+        }
+    }
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
+
+        foreach (var dataType in dataTypes)
+        {
+            PrepareDataType(dataType);
+        }
+
+        _messageProcessor.WriteTypes(dataTypes, partitionKey, messageAction);
+
+        foreach (var dataType in dataTypes)
+        {
+            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
+        }
     }
 
     /// <inheritdoc/>
@@ -121,9 +162,24 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
-        PrepareAndCacheDataStream(dataStream, messageAction);
+        PrepareDataStream(dataStream);
 
         _messageProcessor.WriteStream(dataStream, messageAction);
+
+        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
+    }
+
+    /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
+
+        PrepareDataStream(dataStream);
+
+        _messageProcessor.WriteStream(dataStream, partitionKey, messageAction);
+
+        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
@@ -135,10 +191,36 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         {
             ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
 
-            PrepareAndCacheDataStream(dataStream, messageAction);
+            PrepareDataStream(dataStream);
         }
 
         _messageProcessor.WriteStreams(dataStreams, messageAction);
+
+        foreach (var dataStream in dataStreams)
+        {
+            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
+        }
+    }
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
+
+        foreach (var dataStream in dataStreams)
+        {
+            ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+
+            PrepareDataStream(dataStream);
+        }
+
+        _messageProcessor.WriteStreams(dataStreams, partitionKey, messageAction);
+
+        foreach (var dataStream in dataStreams)
+        {
+            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
+        }
     }
 
     /// <inheritdoc/>
@@ -229,9 +311,20 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
 
-        PrepareAndCacheRelationship(link, messageAction);
-
         _messageProcessor.WriteSchemaRelationship(link, messageAction);
+
+        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(null));
+    }
+
+    /// <inheritdoc/>
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    {
+        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
+        AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
+
+        _messageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
+
+        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(partitionKey));
     }
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
@@ -297,20 +390,9 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     /// <inheritdoc/>
     public void ResendTypesAndStreams()
     {
-        foreach (var (dataType, messageAction, _) in _dataTypes.Values.OrderBy(x => x.Sequence))
-        {
-            _messageProcessor.WriteType(dataType, messageAction);
-        }
-
-        foreach (var (dataStream, messageAction, _) in _dataStreams.Values.OrderBy(x => x.Sequence))
-        {
-            _messageProcessor.WriteStream(dataStream, messageAction);
-        }
-
-        foreach (var (link, messageAction, _) in _relationships.Values.OrderBy(x => x.Sequence))
-        {
-            _messageProcessor.WriteSchemaRelationship(link, messageAction);
-        }
+        Resend(_dataTypes.Values, _messageProcessor.WriteType, _messageProcessor.WriteType);
+        Resend(_dataStreams.Values, _messageProcessor.WriteStream, _messageProcessor.WriteStream);
+        Resend(_relationships.Values, _messageProcessor.WriteSchemaRelationship, _messageProcessor.WriteSchemaRelationship);
     }
 
     /// <inheritdoc/>
@@ -368,34 +450,66 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             : typeId.ToOmfIdentifier();
     }
 
-    private void PrepareAndCacheDataType(DataType dataType, MessageAction messageAction)
+    // Writing one key at a time keeps each partition's items in cache order and lets SchemaGroupingBlock batch them.
+    private static void Resend<T>(
+        IEnumerable<(T Item, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> entries,
+        Action<T, MessageAction> writeWithoutKey,
+        Action<T, PartitionKey, MessageAction> writeWithKey)
+    {
+        var ordered = entries.OrderBy(x => x.Sequence).ToList();
+
+        foreach (var (item, messageAction, targets, _) in ordered)
+        {
+            if (targets.IncludeDefaultPartition)
+            {
+                writeWithoutKey(item, messageAction);
+            }
+        }
+
+        foreach (var partitionKey in ordered.SelectMany(x => x.Targets.Keys).Distinct().Order())
+        {
+            foreach (var (item, messageAction, targets, _) in ordered)
+            {
+                if (Array.IndexOf(targets.Keys, partitionKey) >= 0)
+                {
+                    writeWithKey(item, partitionKey, messageAction);
+                }
+            }
+        }
+    }
+
+    private static void PrepareDataType(DataType dataType)
     {
         dataType.Id = dataType.Id.ToOmfIdentifier();
 
         EncodeUnsupportedCharactersInReferences(dataType);
-
-        CacheDataTypeUpdateInstrumentation(dataType, messageAction);
     }
 
-    private void PrepareAndCacheDataStream(DataStream dataStream, MessageAction messageAction)
+    private void PrepareDataStream(DataStream dataStream)
     {
-        dataStream.Id = dataStream.Id.ToPrefixedOmfIdentifier(_streamIdPrefix);
+        // Callers rewrite the same object once per partition key; prefixing it again would change its ID.
+        // Weak-table operations do not make preparation atomic; concurrent writes of the same object are unsupported.
+        if (!_preparedStreamIds.TryGetValue(dataStream, out var preparedId) || !string.Equals(preparedId, dataStream.Id, StringComparison.Ordinal))
+        {
+            dataStream.Id = dataStream.Id.ToPrefixedOmfIdentifier(_streamIdPrefix);
+            _preparedStreamIds.AddOrUpdate(dataStream, dataStream.Id);
+        }
+
         dataStream.TypeId = dataStream.TypeId?.ToOmfIdentifier();
 
         AddMetadataValues(dataStream);
 
         dataStream.DataSource = GetDataSource(dataStream.DataSource, dataStream.Id);
         ExcludeStreamProperties(dataStream);
-        CacheDataStreamUpdateInstrumentation(dataStream, messageAction);
     }
 
-    private void PrepareAndCacheRelationship(Link link, MessageAction messageAction)
+    private void CacheRelationshipUpdateInstrumentation(Link link, MessageAction messageAction, PartitionTargets targets)
     {
         var key = GetRelationshipKey(link);
 
         _relationships.AddOrUpdate(key,
-            _ => (link, messageAction, Interlocked.Increment(ref _cacheOrderSequence)),
-            (_, existing) => (link, messageAction, existing.Sequence));
+            _ => (link, messageAction, targets, Interlocked.Increment(ref _cacheOrderSequence)),
+            (_, existing) => (link, messageAction, existing.Targets.Merge(targets), existing.Sequence));
     }
 
     private static string GetRelationshipKey(Link link)
@@ -423,22 +537,22 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             : id.ToPrefixedOmfIdentifier(_streamIdPrefix);
     }
 
-    private void CacheDataTypeUpdateInstrumentation(DataType dataType, MessageAction messageAction)
+    private void CacheDataTypeUpdateInstrumentation(DataType dataType, MessageAction messageAction, PartitionTargets targets)
     {
         _dataTypes.AddOrUpdate(dataType.Id, _ =>
         {
             Interlocked.Increment(ref _typeCount);
-            return (dataType, messageAction, Interlocked.Increment(ref _cacheOrderSequence));
-        }, (_, existing) => (dataType, messageAction, existing.Sequence));
+            return (dataType, messageAction, targets, Interlocked.Increment(ref _cacheOrderSequence));
+        }, (_, existing) => (dataType, messageAction, existing.Targets.Merge(targets), existing.Sequence));
     }
 
-    private void CacheDataStreamUpdateInstrumentation(DataStream dataStream, MessageAction messageAction)
+    private void CacheDataStreamUpdateInstrumentation(DataStream dataStream, MessageAction messageAction, PartitionTargets targets)
     {
         _dataStreams.AddOrUpdate(dataStream.Id, _ =>
         {
             Interlocked.Increment(ref _streamCount);
-            return (dataStream, messageAction, Interlocked.Increment(ref _cacheOrderSequence));
-        }, (_, existing) => (dataStream, messageAction, existing.Sequence));
+            return (dataStream, messageAction, targets, Interlocked.Increment(ref _cacheOrderSequence));
+        }, (_, existing) => (dataStream, messageAction, existing.Targets.Merge(targets), existing.Sequence));
     }
 
     private void IncrementIoEventsCount()
@@ -459,7 +573,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             {
                 dataStream.Metadata = _metaDataDictionary;
             }
-            else
+            else if (!ReferenceEquals(dataStream.Metadata, _metaDataDictionary))
             {
                 foreach (var (key, value) in _metaDataDictionary)
                 {
@@ -511,6 +625,26 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
                     prop.Value.Invoke(streamPropertyOverride);
                 }
             }
+        }
+    }
+
+    #endregion
+
+    #region Private Types
+
+    // Keys are only ever added: schema must stay ahead of dependent instance data in every partition it has reached.
+    // IncludeDefaultPartition is additive to Keys: it also sends once with no key, which the service routes by client identity.
+    private readonly record struct PartitionTargets(PartitionKey[] Keys, bool IncludeDefaultPartition)
+    {
+        public static PartitionTargets From(PartitionKey? partitionKey)
+        {
+            return partitionKey.HasValue ? new([partitionKey.Value], false) : new([], true);
+        }
+
+        public PartitionTargets Merge(PartitionTargets other)
+        {
+            var keys = other.Keys.Length == 0 ? Keys : [.. Keys.Union(other.Keys).Order()];
+            return new(keys, IncludeDefaultPartition || other.IncludeDefaultPartition);
         }
     }
 

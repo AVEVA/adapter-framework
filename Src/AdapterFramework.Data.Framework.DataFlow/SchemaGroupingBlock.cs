@@ -52,6 +52,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
     private int _maxStreamsBatchCount;
     private List<Link> _relationships;
     private MessageAction _messageAction;
+    private PartitionKey? _partitionKey;
     private int _currentStreamCount;
     private int _currentTypeCount;
     private long _lastFlush;
@@ -120,15 +121,15 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
                 ProcessCommand(command);
                 break;
             case OmfMessage<DataStream> dataStreams:
-                SetMessageActionAndFlushOnChange(dataStreams.MessageAction);
+                SetBatchContextAndFlushOnChange(dataStreams.MessageAction, dataStreams.PartitionKey);
                 ProcessOmfMessage(dataStreams);
                 break;
             case RelationshipMessage relationship:
-                SetMessageActionAndFlushOnChange(relationship.MessageAction);
+                SetBatchContextAndFlushOnChange(relationship.MessageAction, relationship.PartitionKey);
                 ProcessRelationshipMessage(relationship);
                 break;
             case OmfMessage<DataType> dataTypes:
-                SetMessageActionAndFlushOnChange(dataTypes.MessageAction);
+                SetBatchContextAndFlushOnChange(dataTypes.MessageAction, dataTypes.PartitionKey);
                 ProcessOmfMessage(dataTypes);
                 break;
             case StateMessage state:
@@ -293,7 +294,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
         }
 
 #pragma warning disable CA2000 // Dispose objects before losing scope
-        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true));
+        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true, _partitionKey));
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _lastFlush = Environment.TickCount64;
@@ -334,9 +335,9 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
         return Environment.TickCount64 - _lastFlush >= _maxFlushTime && (_currentStreamCount > 0 || _currentTypeCount > 0);
     }
 
-    private void SetMessageActionAndFlushOnChange(MessageAction incomingMessageAction)
+    private void SetBatchContextAndFlushOnChange(MessageAction incomingMessageAction, PartitionKey? incomingPartitionKey)
     {
-        if (_messageAction != incomingMessageAction)
+        if (_messageAction != incomingMessageAction || _partitionKey != incomingPartitionKey)
         {
             if (_currentTypeCount != 0 || _currentStreamCount != 0 || _relationships != null)
             {
@@ -344,6 +345,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
             }
 
             _messageAction = incomingMessageAction;
+            _partitionKey = incomingPartitionKey;
         }
     }
 

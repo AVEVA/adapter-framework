@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Buffering;
-using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using static AdapterFramework.Data.Framework.Buffering.BufferingConstants;
@@ -64,29 +63,43 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length,
             ProcessTimeTicksLength);
 
-        dataBuffer[^1] = (byte)message.MessageAction;
+        // Keep the legacy layout for messages that don't need the new metadata.
+        if (message.OmfVersion == OmfVersion.Omf12 && !message.PartitionKey.HasValue)
+        {
+            dataBuffer[^1] = (byte)message.MessageAction;
+            return new DataItem(DataItemVersion.V2, dataBuffer);
+        }
 
-        return new DataItem(DataItemVersion.V2, dataBuffer);
+        dataBuffer[^3] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^2] = (byte)message.MessageAction;
+        dataBuffer[^1] = (byte)message.OmfVersion;
+
+        return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
-        byte[] serializedWithType = dataItem?.Data;
-        if (serializedWithType == null)
+        var serializedWithType = dataItem?.Data;
+        var metadataSize = dataItem?.Version == DataItemVersion.V3 ? PartitionKeyEnumSize + OmfVersionEnumSize : 0;
+        var overhead = MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + MessageActionEnumSize + metadataSize;
+        if (serializedWithType == null || serializedWithType.Length < overhead
+            || (dataItem.Version != DataItemVersion.V2 && dataItem.Version != DataItemVersion.V3))
         {
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 
         var messageType = (MessageType)serializedWithType[0];
-        var messageAction = (MessageAction)dataItem.Data[^1];
+        var messageAction = (MessageAction)(metadataSize == 0 ? serializedWithType[^1] : serializedWithType[^2]);
+        var omfVersion = metadataSize == 0 ? OmfVersion.Omf12 : (OmfVersion)serializedWithType[^1];
+        PartitionKey? partitionKey = metadataSize == 0 || serializedWithType[^3] == 0 ? null : (PartitionKey)serializedWithType[^3];
         var valueCount = BitConverter.ToInt32(serializedWithType, MessageTypeEnumSize);
 
-        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize];
+        var messageBody = new byte[serializedWithType.Length - overhead];
         Buffer.BlockCopy(serializedWithType, MessageTypeEnumSize + ValueCountSize, messageBody, 0, messageBody.Length);
 
         var processTimeTicks = BitConverter.ToInt64(serializedWithType, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
 
-        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount)
+        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey)
         {
             ProcessTimeTicks = processTimeTicks,
         };

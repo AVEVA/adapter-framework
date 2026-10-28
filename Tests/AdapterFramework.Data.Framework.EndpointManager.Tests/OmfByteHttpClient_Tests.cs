@@ -427,6 +427,75 @@ public class OmfByteHttpClient_Tests : IDisposable
     }
 
     [Theory]
+    [InlineData(MessageType.Schema)]
+    [InlineData(MessageType.Instance)]
+    [InlineData(MessageType.DynamicData)]
+    public async Task OmfByteHttpClient_SendMessageAsync_WithPartitionKey_SetsPartitionKeyHeader(MessageType messageType)
+    {
+        _omfByteHttpClient.Dispose();
+
+        var clientCredentialsConfiguration = new EndpointConfigurationBase
+        {
+            Id = Id,
+            Endpoint = TestUri,
+            ClientId = TestEndpoint.ClientId,
+            ClientSecret = _dataProtector.Protect(TestEndpoint.ClientSecret),
+
+            // The listener only serves TestUri, so OpenID discovery under /Identity/ would not reach it.
+            TokenEndpoint = TestUri + TestEndpoint.Token,
+        };
+
+        _omfByteHttpClient = new OmfByteHttpClient(
+            clientCredentialsConfiguration,
+            _dataProtector,
+            _mockApplicationManifest.Object,
+            new TestLogger(),
+            null,
+            MessageFormat,
+            _debugLogsLocation);
+
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+        _testEndpoint.StartListening();
+
+        var testMessageBytes = Encoding.UTF8.GetBytes(TestMessage);
+
+        var response = await _omfByteHttpClient.SendMessageAsync(messageType, testMessageBytes, MessageAction.Default, OmfVersion.Omf20, CancellationToken.None, PartitionKey.Key2);
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+
+        var expectedHeaders = new Dictionary<string, string>
+        {
+            { EndpointManagerConstants.AuthorizationHeaderName, $"{EndpointManagerConstants.BearerAuthorizationTypeString} {TestEndpoint.Token}" },
+            { EndpointManagerConstants.MessageTypeHeaderKey, ToExpectedMessageType(messageType).ToString() },
+            { EndpointManagerConstants.MessagePartitionKeyHeaderKey, $"{(byte)PartitionKey.Key2}_{TestEndpoint.ClientId}" },
+        };
+
+        Assert.True(_testEndpoint.VerifyMessageReceived(TestMessage, expectedHeaders));
+    }
+
+    [Theory]
+    [InlineData(MessageType.Schema)]
+    [InlineData(MessageType.Instance)]
+    public async Task OmfByteHttpClient_SendMessageAsync_WithoutPartitionKey_OmitsPartitionKeyHeader(MessageType messageType)
+    {
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+        _testEndpoint.StartListening();
+
+        var testMessageBytes = Encoding.UTF8.GetBytes(TestMessage);
+
+        var response = await _omfByteHttpClient.SendMessageAsync(messageType, testMessageBytes, MessageAction.Default, OmfVersion.Omf20, CancellationToken.None);
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+
+        // A null expected value asserts that the header is absent.
+        var expectedHeaders = new Dictionary<string, string>
+        {
+            { EndpointManagerConstants.MessageTypeHeaderKey, messageType.ToString() },
+            { EndpointManagerConstants.MessagePartitionKeyHeaderKey, null },
+        };
+
+        Assert.True(_testEndpoint.VerifyMessageReceived(TestMessage, expectedHeaders));
+    }
+
+    [Theory]
     [MemberData(nameof(GetValidConfigUpdates))]
     public async Task OmfWriter_UpdateConfigurationValid(EndpointConfigurationBase configuration)
     {

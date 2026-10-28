@@ -64,6 +64,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     private readonly TypesStreamsGroupingBlock _typesStreamsGroupingBlock;
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
+    private readonly OmfVersion _omfVersion;
     private bool _disposed;
 
     #endregion
@@ -96,6 +97,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+        _omfVersion = omfVersion;
         var tuningParameters = omfVersion == OmfVersion.Omf20
             ? new TuningParameters
             {
@@ -167,12 +169,30 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     }
 
     /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
 
         _typesStreamsGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
         _schemaGroupingBlock?.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction));
+    }
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -185,12 +205,30 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     }
 
     /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
 
         _typesStreamsGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
         _schemaGroupingBlock?.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction));
+    }
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -313,6 +351,15 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         _schemaGroupingBlock?.Post(new RelationshipMessage(link, messageAction));
     }
 
+    /// <inheritdoc/>
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    {
+        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new RelationshipMessage(link, messageAction, partitionKey));
+    }
+
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
     {
         _instanceGroupingBlock?.Post(new RelationshipMessage(link, messageAction));
@@ -360,6 +407,18 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
 
         failoverDataMessageProcessor.Initialize();
         return failoverDataMessageProcessor.ProcessOmfMessage;
+    }
+
+    /// <summary>
+    /// Rejects keyed schema writes unless the configured protocol is explicitly OMF 2.0.
+    /// A schema grouping block also exists for other versions, so its presence is not a capability check.
+    /// </summary>
+    private void ThrowIfSchemaPartitionKeysUnsupported()
+    {
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Schema partition keys are only supported in OMF 2.0.");
+        }
     }
 
     #endregion

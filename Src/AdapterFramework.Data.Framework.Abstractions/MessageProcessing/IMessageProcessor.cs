@@ -22,6 +22,52 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 /// <summary>
 /// Represents a type used to process data types, streams and messages.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Schema partition keys control routing, not separate schema lifecycles. When this processor uses
+/// the framework's instrumentation cache, each schema ID has one latest object and action.
+/// Schema resend sends that latest state to every key previously used for the ID, including the
+/// default partition if an unkeyed write occurred. A delete written with one key therefore resends
+/// a delete to all those keys. The same rule applies to a schema relationship's cached identity.
+/// </para>
+/// <para>
+/// Schema partition keys are supported only for OMF 2.0, not OMF 1.2 or 1.3. Write the same schema to every key that dependent
+/// data will be sent with, before sending that data, and don't modify the objects between per-key
+/// writes. Changing the key starts a new schema batch, so group writes by key.
+/// </para>
+/// <para>
+/// Do not pass the same schema object instance to concurrent write-method invocations: a second
+/// call must not enter while another call using that instance has not returned. This includes calls
+/// from different threads, with different partition keys, or through single-item and batch overloads.
+/// A sequential per-key loop that waits for each write method to return before calling the next
+/// does not violate this invocation restriction; pending pipeline work is not an active write call.
+/// This restriction concerns object reference identity, not equal schema IDs or values. Preparation
+/// modifies supplied objects, for example by prefixing stream IDs and merging metadata; concurrent
+/// calls sharing mutable state can double-prefix an ID or modify a dictionary concurrently.
+/// Shallow copies can still share mutable nested state. Independent deep copies of mutable state
+/// avoid this shared-state preparation race, but do not guarantee pipeline ordering or end-to-end
+/// thread safety. With the instrumentation cache, copies sharing a schema ID update one resend-cache
+/// entry; callers must not rely on a defined winner between concurrent writes with different
+/// contents or actions.
+/// </para>
+/// <para>
+/// Separately, completion of a write-method invocation does not mean queued processing is complete.
+/// Calling write methods one at a time does not wait for queued objects to be converted to JSON.
+/// A write can return while the pipeline still needs to read the supplied object. The pipeline
+/// queues object references rather than immutable snapshots, and the instrumentation cache can
+/// retain them for resend. After submission, callers must not modify schema objects, their nested
+/// collections, or submitted batch arrays. Use fresh objects and arrays for later changes.
+/// Sequential per-key reuse is not an end-to-end thread-safety guarantee.
+/// </para>
+/// <para>
+/// Keyed schema overloads don't keep independent resend state per key. Callers must not rely on a
+/// key-specific delete remaining limited to that key after a schema resend.
+/// </para>
+/// <para>
+/// The default implementations of the keyed schema overloads on this interface and
+/// <see cref="IAdapterMessageProcessor"/> throw <see cref="NotSupportedException"/>.
+/// </para>
+/// </remarks>
 public interface IMessageProcessor
 {
     /// <summary>
@@ -32,11 +78,31 @@ public interface IMessageProcessor
     void WriteType(DataType dataType, MessageAction messageAction = MessageAction.Default);
 
     /// <summary>
+    /// Writes a single instance of <see cref="DataType"/> message with a PartitionKey.
+    /// </summary>
+    /// <param name="dataType">The type message instance.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the type once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
+
+    /// <summary>
     /// Writes an array of <see cref="DataType"/> type messages.
     /// </summary>
     /// <param name="dataTypes">An array of <see cref="DataType"/> instances.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
     void WriteTypes(DataType[] dataTypes, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes an array of <see cref="DataType"/> type messages with a PartitionKey.
+    /// </summary>
+    /// <param name="dataTypes">An array of <see cref="DataType"/> instances.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the types once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
     /// <summary>
     /// Writes a single instance of <see cref="DataStream"/> message.
@@ -46,11 +112,31 @@ public interface IMessageProcessor
     void WriteStream(DataStream dataStream, MessageAction messageAction = MessageAction.Default);
 
     /// <summary>
+    /// Writes a single instance of <see cref="DataStream"/> message with a PartitionKey.
+    /// </summary>
+    /// <param name="dataStream">The <see cref="DataStream"/> instance.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the stream once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
+
+    /// <summary>
     /// Writes an array of <see cref="DataStream"/> messages.
     /// </summary>
     /// <param name="dataStreams">An array of <see cref="DataStream"/> instances.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
     void WriteStreams(DataStream[] dataStreams, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes an array of <see cref="DataStream"/> messages with a PartitionKey.
+    /// </summary>
+    /// <param name="dataStreams">An array of <see cref="DataStream"/> instances.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the streams once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
 
     /// <summary>
     /// Writes a single instance of a data message.
@@ -165,6 +251,16 @@ public interface IMessageProcessor
     /// <param name="link">The <see cref="Link"/> that describes the relationship between the source and target types.</param>
     /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
     void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default);
+
+    /// <summary>
+    /// Writes a schema-level relationship between two static types with a PartitionKey.
+    /// </summary>
+    /// <param name="link">The <see cref="Link"/> that describes the relationship between the source and target types.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service. To reach several partitions, write the relationship once per key.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <remarks>See the interface remarks on <see cref="IMessageProcessor"/> for keyed schema rules.</remarks>
+    void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+        => throw PartitionKeyThrowHelper.PartitionKeysNotSupported(this);
     
     /// <summary>
     /// Writes an instance-level relationship between two static data values.
