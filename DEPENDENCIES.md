@@ -57,7 +57,7 @@ Information on which specific dependencies are required are presented to you whi
 | Microsoft.TestPlatform.ObjectModel 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.TestPlatform.ObjectModel](http://www.nuget.org/packages/Microsoft.TestPlatform.ObjectModel) |
 | Microsoft.TestPlatform.TestHost 18.0.1<br>© Microsoft Corporation. All rights reserved. | MIT License | [http://www.nuget.org/packages/Microsoft.TestPlatform.TestHost](http://www.nuget.org/packages/Microsoft.TestPlatform.TestHost) |
 | moq/moq4 4.20.72<br>Copyright (c) 2007, Clarius Consulting, Manas Technology Solutions, InSTEDD, and Contributors. All rights reserved. | BSD 3-clause "New" or "Revised" License | [https://github.com/moq/moq4](https://github.com/moq/moq4) |
-| .NET v10.0.10<br>(c) .NET Foundation and Contributors | MIT License | [https://docs.microsoft.com/dotnet/core/](https://docs.microsoft.com/dotnet/core/) |
+| .NET v10.0.14<br>(c) .NET Foundation and Contributors | MIT License | [https://docs.microsoft.com/dotnet/core/](https://docs.microsoft.com/dotnet/core/) |
 | NETStandard.Library 2.0.0<br>.NET Foundation and Contributors | MIT License | |
 | Polly.Contrib.WaitAndRetry 1.1.1<br>Copyright (c) 2020, App vNext and contributors | BSD 3-clause "New" or "Revised" License | [https://github.com/Polly-Contrib/Polly.Contrib.WaitAndRetry](https://github.com/Polly-Contrib/Polly.Contrib.WaitAndRetry) |
 | Polly.Core 8.6.6<br>Copyright (c) 2015-2026, App vNext | BSD 3-clause "New" or "Revised" License | [https://github.com/App-vNext/Polly](https://github.com/App-vNext/Polly) |
