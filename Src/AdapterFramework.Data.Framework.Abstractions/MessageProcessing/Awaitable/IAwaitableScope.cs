@@ -27,11 +27,14 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// <see cref="OmfReasonCode.AcceptanceTrackingDisabled"/>. Existing completed outcomes are unchanged.
 /// Later writes through an old unsealed scope may still be delivered, but its discarded observation cannot become successful,
 /// even after returning to warm or cold mode. A discarded observation does not cancel data delivery.
+/// A scope holds one of the active-scope slots from creation until it's disposed, even after its outcome is final,
+/// so dispose every scope, for example with <c>await using</c>.
 /// </remarks>
 public interface IAwaitableScope : IAsyncDisposable
 {
     /// <summary>
     /// Seals the scope after in-flight writes on other threads finish. Later writes throw <see cref="InvalidOperationException"/>.
+    /// Like a write, sealing blocks while the pipeline is full.
     /// </summary>
     void Seal();
 
@@ -43,5 +46,9 @@ public interface IAwaitableScope : IAsyncDisposable
     /// <returns>The acceptance result; <see cref="OmfAcceptanceOutcome.TimedOut"/> when the wait ends first. Waits can be repeated.</returns>
     /// <exception cref="OperationCanceledException">The token, scope disposal, or framework shutdown cancelled the wait.</exception>
     /// <exception cref="ObjectDisposedException">The scope was already disposed.</exception>
+    /// <remarks>
+    /// Sealing runs synchronously before the wait starts and can block like <see cref="Seal"/>, which keeps backpressure on the caller.
+    /// The timeout and the cancellation token apply only after sealing finishes.
+    /// </remarks>
     Task<OmfAcceptanceResult> WaitForAcceptanceAsync(TimeSpan? timeout = null, CancellationToken cancellationToken = default);
 }

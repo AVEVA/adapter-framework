@@ -331,6 +331,31 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     }
 
     /// <summary>
+    /// Discards a scope whose materialization can't complete, for example because a grouping block refused its seal barrier.
+    /// Item counts are unchanged, and later barriers for the scope have no effect.
+    /// </summary>
+    /// <param name="scope">The scope.</param>
+    /// <param name="reason">Why materialization failed.</param>
+    public void RecordMaterializationFailed(ScopeToken scope, OmfOutcomeReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            if (TryGetTracking(scope, out var tracking))
+            {
+                tracking.Materialized = true;
+                if (tracking.Outcome is null)
+                {
+                    Complete(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+                }
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>
     /// Registers one delivery per endpoint writer in the snapshot captured for the body, before any writer sends it.
     /// An empty snapshot discards the body with <see cref="OmfReasonCode.NoEndpoints"/>.
     /// </summary>

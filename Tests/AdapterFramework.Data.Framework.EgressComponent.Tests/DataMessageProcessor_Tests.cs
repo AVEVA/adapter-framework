@@ -1177,11 +1177,14 @@ public class DataMessageProcessor_Tests
     }
 
     /// <summary>
-    /// Verifies that when only one grouping block accepts a scope's seal barrier, the scope fails with
+    /// Verifies that when one or both grouping blocks refuse a scope's seal barrier, the scope fails with
     /// <see cref="OmfReasonCode.PostRejected"/> and serialization doesn't keep a barrier count for the scope forever.
     /// </summary>
-    [Fact]
-    public async Task DataMessageProcessor_SealRefusedByOneBlock_DiscardsScopeWithoutLeakingBarrierCount()
+    /// <param name="bothRefuse">Whether the schema block refuses its barrier too, not only the instance block.</param>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DataMessageProcessor_SealRefused_DiscardsScopeWithoutLeakingBarrierCount(bool bothRefuse)
     {
         using var coordinator = new OmfAwaitableCoordinator();
         using var schemaSent = new ManualResetEventSlim(false);
@@ -1194,30 +1197,19 @@ public class DataMessageProcessor_Tests
                     schemaSent.Set();
                 }
             });
-        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
-        var mockApplicationManifest = new Mock<IApplicationManifest>();
-        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
-        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
-        var mockLogManager = new Mock<ILogManager>();
-        mockLogManager.Setup(logManager => logManager.GetOrCreateLogger(It.IsAny<string>(), It.IsAny<LoggerConfiguration>()))
-            .Returns(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
-
-        using var messageProcessor = new DataMessageProcessor(
-            mockLogManager.Object,
-            new OmfJsonSerializer(),
-            null,
-            new Mock<IOmfDataEndpointManager>().Object,
-            mockEgressComponentIdService.Object,
-            new Mock<IConfigurationProvider>().Object,
-            mockFailoverDataMessageProcessor.Object,
-            mockApplicationManifest.Object,
-            coordinator);
+        using var messageProcessor = CreateScopedProcessor(coordinator, mockFailoverDataMessageProcessor.Object);
         ((IDisposable)TestUtilities.GetFieldValueFromObject("_instanceGroupingBlock", messageProcessor)).Dispose();
         var serializationBlock = (SerializationBlock)TestUtilities.GetFieldValueFromObject("_serializationBlock", messageProcessor);
         var barrierCounts = (Dictionary<ScopeToken, int>)TestUtilities.GetFieldValueFromObject("_materializationBarrierCounts", serializationBlock);
 
         Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
         scope.WriteType(new DynamicDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() });
+        if (bothRefuse)
+        {
+            // Disposing flushes the buffered type, so only the barrier is refused.
+            ((IDisposable)TestUtilities.GetFieldValueFromObject("_schemaGroupingBlock", messageProcessor)).Dispose();
+        }
+
         scope.Seal();
 
         var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(10));
@@ -1227,6 +1219,52 @@ public class DataMessageProcessor_Tests
         await Task.Delay(300);
         Assert.Empty(barrierCounts);
         await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that disposing a scope after sealing it, while one seal barrier is still waiting for a grouping block flush,
+    /// doesn't leave a barrier count behind in serialization once the late barrier arrives.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_ScopeDisposedBeforeLateBarrier_LeavesNoBarrierCount()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var messageProcessor = CreateScopedProcessor(coordinator, new Mock<IFailoverDataMessageProcessor>().Object);
+        var serializationBlock = (SerializationBlock)TestUtilities.GetFieldValueFromObject("_serializationBlock", messageProcessor);
+        var barrierCounts = (Dictionary<ScopeToken, int>)TestUtilities.GetFieldValueFromObject("_materializationBarrierCounts", serializationBlock);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = false }, out var scope));
+        scope.WriteType(new DynamicDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() });
+        scope.Seal();
+        Assert.True(SpinWait.SpinUntil(() => barrierCounts.Count == 1, WaitTime), "The instance block's barrier did not reach serialization.");
+
+        await scope.DisposeAsync();
+
+        // Disposing flushes the schema block, which forwards the late barrier.
+        ((IDisposable)TestUtilities.GetFieldValueFromObject("_schemaGroupingBlock", messageProcessor)).Dispose();
+        Assert.True(SpinWait.SpinUntil(() => barrierCounts.Count == 0, WaitTime), "Serialization kept a barrier count for the disposed scope.");
+    }
+
+    private static DataMessageProcessor CreateScopedProcessor(OmfAwaitableCoordinator coordinator, IFailoverDataMessageProcessor failoverDataMessageProcessor)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+        var mockLogManager = new Mock<ILogManager>();
+        mockLogManager.Setup(logManager => logManager.GetOrCreateLogger(It.IsAny<string>(), It.IsAny<LoggerConfiguration>()))
+            .Returns(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+        return new DataMessageProcessor(
+            mockLogManager.Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            failoverDataMessageProcessor,
+            mockApplicationManifest.Object,
+            coordinator);
     }
 
     private static Dictionary<string, object> DeserializeValues(IEnumerable<object> values)

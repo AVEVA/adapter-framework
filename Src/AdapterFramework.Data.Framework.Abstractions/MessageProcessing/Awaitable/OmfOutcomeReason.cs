@@ -26,14 +26,22 @@ public sealed record OmfOutcomeReason(OmfReasonCode Code, string Message)
     /// </summary>
     public const int MaxMessageLength = 1024;
 
+    private readonly string _message = Truncate(Message);
+
     /// <summary>
     /// Gets the human-readable text for logs and support. It's at most <see cref="MaxMessageLength"/> characters and can be empty.
     /// </summary>
-    public string Message { get; init; } = Message is null ? string.Empty
-        : Message.Length > MaxMessageLength ? Message[..MaxMessageLength] : Message;
+    public string Message
+    {
+        get => _message;
+        init => _message = Truncate(value);
+    }
 
     /// <summary>
     /// Gets the pipeline stage <see cref="Code"/> belongs to.
     /// </summary>
     public OmfPipelineStage Stage => Code.GetStage();
+
+    private static string Truncate(string message) =>
+        message is null ? string.Empty : message.Length > MaxMessageLength ? message[..MaxMessageLength] : message;
 }

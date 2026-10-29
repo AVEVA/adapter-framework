@@ -66,4 +66,20 @@ public class OmfOutcomeReason_Tests
         Assert.Equal(OmfOutcomeReason.MaxMessageLength, longReason.Message.Length);
         Assert.Equal(string.Empty, nullReason.Message);
     }
+
+    /// <summary>
+    /// Verifies that a <c>with</c> expression can't bypass the message limit: a long message is truncated and a null one becomes empty.
+    /// </summary>
+    [Fact]
+    public void Message_SetWithExpression_IsTruncatedAndNeverNull()
+    {
+        var reason = new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, "short");
+
+        var longReason = reason with { Message = new string('x', OmfOutcomeReason.MaxMessageLength + 10) };
+        var nullReason = reason with { Message = null };
+
+        Assert.Equal(OmfOutcomeReason.MaxMessageLength, longReason.Message.Length);
+        Assert.Equal(string.Empty, nullReason.Message);
+        Assert.Equal(new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, new string('x', OmfOutcomeReason.MaxMessageLength)), longReason);
+    }
 }

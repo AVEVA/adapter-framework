@@ -21,7 +21,8 @@ public enum OmfAcceptanceOutcome
 {
     /// <summary>
     /// Every required delivery received exact 202 Accepted. A body's required deliveries are those to every endpoint
-    /// writer active when the body was dispatched.
+    /// writer active when the body was dispatched. Values that data filters removed never entered the pipeline,
+    /// so a scope whose filters removed only some of its values can still be accepted.
     /// </summary>
     Accepted,
 
@@ -36,7 +37,7 @@ public enum OmfAcceptanceOutcome
     Discarded,
 
     /// <summary>
-    /// Filters removed every value, so nothing entered the pipeline.
+    /// Nothing entered the pipeline, because filters removed every value or the scope had no writes.
     /// </summary>
     Filtered,
 

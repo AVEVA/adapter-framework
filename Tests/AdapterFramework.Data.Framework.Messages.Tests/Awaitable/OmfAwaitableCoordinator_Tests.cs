@@ -823,6 +823,29 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(TimeSpan.Zero));
     }
 
+    /// <summary>
+    /// Verifies that a failed materialization discards the scope with its own reason and closes materialization,
+    /// so a later barrier can't replace the reason with a count mismatch, and that a scope with a final outcome keeps it.
+    /// </summary>
+    [Fact]
+    public async Task RecordMaterializationFailed_DiscardsScopeAndIgnoresLaterBarrier()
+    {
+        await using var scope = CreateScope();
+        _coordinator.RecordAdmitted(scope, 2);
+        scope.Seal();
+        var refused = new OmfOutcomeReason(OmfReasonCode.PostRejected, "Barrier refused.");
+
+        _coordinator.RecordMaterializationFailed(scope, refused);
+        _coordinator.CloseMaterialization(scope);
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Same(refused, result.Reason);
+
+        _coordinator.RecordMaterializationFailed(scope, new OmfOutcomeReason(OmfReasonCode.PostRejected, "Second refusal."));
+        Assert.Same(refused, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Reason);
+    }
+
     /// <summary>Checks the terminal observation is explicitly discarded at the failover stage, independent of physical delivery diagnostics.</summary>
     private static void AssertTrackingDisabled(OmfAcceptanceResult result)
     {

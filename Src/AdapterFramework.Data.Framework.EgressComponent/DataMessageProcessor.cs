@@ -459,7 +459,7 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         var instancePosted = _instanceGroupingBlock.Post(new ScopeSealBarrier(scope, scope.Options.FlushOnSeal, 2));
         if (!schemaPosted || !instancePosted)
         {
-            _coordinator.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.PostRejected, "A grouping block refused the scope's seal barrier."));
+            _coordinator.RecordMaterializationFailed(scope, new OmfOutcomeReason(OmfReasonCode.PostRejected, "A grouping block refused the scope's seal barrier."));
             if (schemaPosted || instancePosted)
             {
                 // Stands in for the refused barrier, so serialization stops counting barriers for this scope.

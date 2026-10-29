@@ -631,12 +631,14 @@ public class SerializationBlock : BaseBlock<Message>
                         }
                         else
                         {
+                            // Only OMF 1.2 reaches this drop, and it has no scopes to report it to.
                             _logger.LogError("Data array cannot be converted to {Type}. Skipping the message.", nameof(StreamData));
                         }
                     }
                     else
                     {
                         // very unlikely. Requires a single type or container to be so big that it is > _maxByteCount
+                        // Only OMF 1.2 reaches this drop, and it has no scopes to report it to.
                         _logger.LogError("One message of type {Type} is too big to be sent and cannot be reduced. " +
                                          "Final byte size {ByteCount}, max {MaxByteCount}.", messageType, byteCount, _maxByteCount);
                         return;

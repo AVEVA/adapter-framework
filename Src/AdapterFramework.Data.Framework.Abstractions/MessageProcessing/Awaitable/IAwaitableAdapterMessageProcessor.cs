@@ -29,5 +29,6 @@ public interface IAwaitableAdapterMessageProcessor : IAdapterMessageProcessor
     /// <returns><c>true</c> if the scope was created; <c>false</c> when the active-scope limit is reached.</returns>
     /// <exception cref="NotSupportedException">OMF 1.2, a processor chain without scope support, or hot failover is configured; or the processor
     /// overrides an unscoped dynamic-value write method that scoped writes would bypass.</exception>
+    /// <remarks>Every scope counts against the limit until it's disposed, including scopes whose outcome is final.</remarks>
     bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableAdapterMessageScope scope);
 }
