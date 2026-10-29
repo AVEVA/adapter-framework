@@ -101,7 +101,14 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+
+        // Registers before any block starts, so a second pipeline sharing the coordinator fails without leaving blocks running.
         awaitableCoordinator?.SetOmfVersion(omfVersion);
+        if (omfVersion != OmfVersion.Omf12)
+        {
+            awaitableCoordinator?.SetSealHandler(PostSealBarriers);
+        }
+
         var tuningParameters = omfVersion == OmfVersion.Omf20
             ? new TuningParameters
             {
@@ -158,7 +165,6 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
                 msg => _schemaGroupingBlock.Post(msg), maximumDataBatchCount, flushTime, CancellationToken.None);
 
             _coordinator = awaitableCoordinator;
-            _coordinator?.SetSealHandler(PostSealBarriers);
         }
     }
 

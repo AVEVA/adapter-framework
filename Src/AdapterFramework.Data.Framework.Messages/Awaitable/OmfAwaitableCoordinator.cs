@@ -102,10 +102,16 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// Sets the OMF version of the data pipeline. Scopes require OMF 2.0.
     /// </summary>
     /// <param name="omfVersion">The configured OMF version.</param>
+    /// <exception cref="InvalidOperationException">A different OMF version is already set, which means a second data pipeline shares this coordinator.</exception>
     public void SetOmfVersion(OmfVersion omfVersion)
     {
         lock (_lock)
         {
+            if (_omfVersion is { } current && current != omfVersion)
+            {
+                throw SecondPipelineException();
+            }
+
             _omfVersion = omfVersion;
         }
     }
@@ -158,10 +164,16 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// Sets the action that starts materialization when a scope with admitted items is sealed, for example by posting seal barriers.
     /// </summary>
     /// <param name="sealHandler">The action. It runs outside the coordinator lock.</param>
+    /// <exception cref="InvalidOperationException">A different action is already set, which means a second data pipeline shares this coordinator.</exception>
     public void SetSealHandler(Action<OmfAwaitableScopeState> sealHandler)
     {
         lock (_lock)
         {
+            if (_sealHandler is not null && !_sealHandler.Equals(sealHandler))
+            {
+                throw SecondPipelineException();
+            }
+
             _sealHandler = sealHandler;
         }
     }
@@ -361,6 +373,10 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <summary>Explains why Hot mode cannot satisfy a scoped acceptance observation.</summary>
     private static OmfOutcomeReason AcceptanceTrackingDisabledReason() =>
         new(OmfReasonCode.AcceptanceTrackingDisabled, "Hot failover does not support awaitable acceptance tracking.");
+
+    /// <summary>Creates the exception for a second data pipeline registering with this coordinator.</summary>
+    private static InvalidOperationException SecondPipelineException() =>
+        new("Another data pipeline is already registered with this coordinator. Each data pipeline needs its own coordinator.");
 
     /// <summary>
     /// Gets whether a delivery of the body to the endpoint is still waiting for its final decision.

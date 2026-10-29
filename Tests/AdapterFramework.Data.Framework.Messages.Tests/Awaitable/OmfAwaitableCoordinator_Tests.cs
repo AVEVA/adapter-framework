@@ -55,6 +55,44 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
     }
 
+    /// <summary>
+    /// Verifies that a second data pipeline with a different OMF version can't register with the same coordinator,
+    /// and that the first pipeline's version is kept, while the same pipeline setting its version again is allowed.
+    /// </summary>
+    [Fact]
+    public async Task SetOmfVersion_DifferentVersionAlreadySet_ThrowsAndKeepsFirst()
+    {
+        _coordinator.SetOmfVersion(OmfVersion.Omf20);
+
+        Assert.Throws<InvalidOperationException>(() => _coordinator.SetOmfVersion(OmfVersion.Omf12));
+        Assert.True(_coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a second data pipeline can't replace the first pipeline's seal handler,
+    /// while the same handler registering again is allowed.
+    /// </summary>
+    [Fact]
+    public async Task SetSealHandler_DifferentHandlerAlreadySet_ThrowsAndKeepsFirst()
+    {
+        var firstSeals = 0;
+        Action<OmfAwaitableScopeState> first = _ => firstSeals++;
+        _coordinator.SetSealHandler(first);
+        _coordinator.SetSealHandler(first);
+
+        Assert.Throws<InvalidOperationException>(() => _coordinator.SetSealHandler(_ => { }));
+
+        Assert.True(_coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+        await using (scope)
+        {
+            _coordinator.RecordAdmitted(scope, 1);
+            scope.Seal();
+        }
+
+        Assert.Equal(1, firstSeals);
+    }
+
     /// <summary>Verifies Hot always rejects scopes by throwing, including when the scope capacity is exhausted.</summary>
     [Theory]
     [InlineData(false)]

@@ -1075,6 +1075,42 @@ public class DataMessageProcessor_Tests
     }
 
     /// <summary>
+    /// Verifies that a second data pipeline can't share the first pipeline's coordinator: building the second processor fails,
+    /// whether its OMF version matches or not, and the first processor's scopes still work.
+    /// </summary>
+    [Theory]
+    [InlineData(OmfVersion.Omf20)]
+    [InlineData(OmfVersion.Omf12)]
+    public async Task DataMessageProcessor_SecondPipelineSharesCoordinator_Throws(OmfVersion secondOmfVersion)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var first = CreateProcessor(OmfVersion.Omf20);
+
+        Assert.Throws<InvalidOperationException>(() => CreateProcessor(secondOmfVersion));
+
+        Assert.True(first.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out var scope));
+        await scope.DisposeAsync();
+
+        DataMessageProcessor CreateProcessor(OmfVersion omfVersion)
+        {
+            var mockApplicationManifest = new Mock<IApplicationManifest>();
+            mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
+            return new DataMessageProcessor(
+                new Mock<ILogManager>().Object,
+                new OmfJsonSerializer(),
+                null,
+                new Mock<IOmfDataEndpointManager>().Object,
+                mockEgressComponentIdService.Object,
+                new Mock<IConfigurationProvider>().Object,
+                null,
+                mockApplicationManifest.Object,
+                coordinator);
+        }
+    }
+
+    /// <summary>
     /// Verifies end to end through a real OMF 2.0 pipeline that a scope writing types with embedded relationships, streams, a large bulk of values,
     /// partitioned values, and a relationship, while another thread writes unscoped values, is accepted once every body it reaches is accepted.
     /// Acceptance proves the serialization block registered every admitted item, because a shortfall would discard the scope with a count mismatch.
