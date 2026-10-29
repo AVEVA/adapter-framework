@@ -348,14 +348,10 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             if (body.Deliveries.Count == 0)
             {
                 body.DiscardReason = new OmfOutcomeReason(OmfReasonCode.NoEndpoints, string.Empty);
-            }
-
-            // In AnyCompleteEndpoint mode, a body sent to a disjoint snapshot leaves no endpoint that can complete the scope.
-            var reason = body.DiscardReason
-                ?? new OmfOutcomeReason(OmfReasonCode.NoEndpoints, "No single endpoint received every body in the scope.");
-            foreach (var tracking in body.Membership.Keys)
-            {
-                Evaluate(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+                foreach (var tracking in body.Membership.Keys)
+                {
+                    Evaluate(tracking, OmfAcceptanceOutcome.Discarded, body.DiscardReason, ref completed);
+                }
             }
         }
 
@@ -554,8 +550,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 .ToList();
 
             return tracking.Outcome is { } outcome
-                ? new OmfAcceptanceResult(outcome, scope.Options.EndpointMode, deliveries, tracking.OutcomeReason, DateTimeOffset.UtcNow)
-                : new OmfAcceptanceResult(OmfAcceptanceOutcome.TimedOut, scope.Options.EndpointMode, deliveries, GetLeastAdvancedReason(tracking), DateTimeOffset.UtcNow);
+                ? new OmfAcceptanceResult(outcome, deliveries, tracking.OutcomeReason, DateTimeOffset.UtcNow)
+                : new OmfAcceptanceResult(OmfAcceptanceOutcome.TimedOut, deliveries, GetLeastAdvancedReason(tracking), DateTimeOffset.UtcNow);
         }
     }
 
@@ -589,7 +585,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             return;
         }
 
-        // Failures are final as soon as they make the endpoint mode unsatisfiable; the event that did so supplies the reason.
+        // Failures are final as soon as they make acceptance unsatisfiable; the event that did so supplies the reason.
         if (failureOutcome is not null && IsUnsatisfiable(tracking))
         {
             Complete(tracking, failureOutcome.Value, failureReason, ref completed);
@@ -626,41 +622,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             return true;
         }
 
-        var anyEndpoint = tracking.Scope.Options.EndpointMode == OmfAwaitableEndpointMode.AnyCompleteEndpoint;
-        HashSet<string> viableEndpoints = null;
         foreach (var body in tracking.Bodies)
         {
-            if (body.DiscardReason is not null)
-            {
-                return true;
-            }
-
-            if (body.Deliveries is null)
-            {
-                continue;
-            }
-
-            if (!anyEndpoint)
-            {
-                if (body.Deliveries.Exists(delivery => delivery.IsFailed))
-                {
-                    return true;
-                }
-
-                continue;
-            }
-
-            var bodyEndpoints = body.Deliveries.Where(delivery => !delivery.IsFailed).Select(delivery => delivery.EndpointId);
-            if (viableEndpoints is null)
-            {
-                viableEndpoints = new HashSet<string>(bodyEndpoints, StringComparer.Ordinal);
-            }
-            else
-            {
-                viableEndpoints.IntersectWith(bodyEndpoints);
-            }
-
-            if (viableEndpoints.Count == 0)
+            if (body.DiscardReason is not null || (body.Deliveries?.Exists(delivery => delivery.IsFailed) ?? false))
             {
                 return true;
             }
@@ -671,36 +635,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
 
     private static bool IsSatisfied(ScopeTracking tracking)
     {
-        var anyEndpoint = tracking.Scope.Options.EndpointMode == OmfAwaitableEndpointMode.AnyCompleteEndpoint;
-        HashSet<string> completeEndpoints = null;
         foreach (var body in tracking.Bodies)
         {
-            if (body.Deliveries is null)
-            {
-                return false;
-            }
-
-            if (!anyEndpoint)
-            {
-                if (!body.Deliveries.TrueForAll(delivery => delivery.State == OmfDeliveryState.Accepted))
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            var acceptedEndpoints = body.Deliveries.Where(delivery => delivery.State == OmfDeliveryState.Accepted).Select(delivery => delivery.EndpointId);
-            if (completeEndpoints is null)
-            {
-                completeEndpoints = new HashSet<string>(acceptedEndpoints, StringComparer.Ordinal);
-            }
-            else
-            {
-                completeEndpoints.IntersectWith(acceptedEndpoints);
-            }
-
-            if (completeEndpoints.Count == 0)
+            if (body.Deliveries is null || !body.Deliveries.TrueForAll(delivery => delivery.State == OmfDeliveryState.Accepted))
             {
                 return false;
             }

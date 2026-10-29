@@ -192,51 +192,19 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
         Assert.Equal(OmfDeliveryState.Accepted, later.Deliveries.Single(delivery => delivery.EndpointId == EndpointB).State);
     }
 
+    /// <summary>Verifies each body only requires the endpoints active when it was dispatched, so endpoint churn between bodies doesn't block acceptance.</summary>
     [Fact]
-    public async Task Wait_AnyCompleteEndpoint_OneEndpointAcceptsEveryBody_IsAccepted()
+    public async Task Wait_DifferentSnapshotsPerBody_IsAcceptedWhenEachSnapshotAccepts()
     {
-        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = OmfAwaitableEndpointMode.AnyCompleteEndpoint });
-        var reason = new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, string.Empty);
-        var (firstBody, secondBody) = SimulateTwoBodies(scope, new[] { TargetA, TargetB }, new[] { TargetA, TargetB });
+        await using var scope = CreateScope();
+        var (firstBody, secondBody) = SimulateTwoBodies(scope, new[] { TargetA }, new[] { TargetB });
 
-        _coordinator.RecordDisposition(firstBody, EndpointA, OmfDeliveryState.Rejected, HttpStatusCode.Conflict, reason);
-        _coordinator.RecordDisposition(firstBody, EndpointB, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
+        _coordinator.RecordDisposition(firstBody, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
         Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
 
         _coordinator.RecordDisposition(secondBody, EndpointB, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
 
         Assert.Equal(OmfAcceptanceOutcome.Accepted, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-    }
-
-    [Fact]
-    public async Task Wait_AnyCompleteEndpoint_AcceptancesFromDifferentEndpointsAreNotCombined()
-    {
-        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = OmfAwaitableEndpointMode.AnyCompleteEndpoint });
-        var reason = new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, string.Empty);
-        var (firstBody, secondBody) = SimulateTwoBodies(scope, new[] { TargetA, TargetB }, new[] { TargetA, TargetB });
-
-        _coordinator.RecordDisposition(firstBody, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
-        _coordinator.RecordDisposition(secondBody, EndpointB, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
-        _coordinator.RecordDisposition(firstBody, EndpointB, OmfDeliveryState.Rejected, HttpStatusCode.BadRequest, reason);
-        Assert.Equal(OmfAcceptanceOutcome.TimedOut, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
-
-        _coordinator.RecordDisposition(secondBody, EndpointA, OmfDeliveryState.Rejected, HttpStatusCode.BadRequest, reason);
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.Rejected, result.Outcome);
-        Assert.Equal(reason, result.Reason);
-    }
-
-    [Fact]
-    public async Task Wait_AnyCompleteEndpoint_DisjointSnapshots_IsDiscarded()
-    {
-        await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = OmfAwaitableEndpointMode.AnyCompleteEndpoint });
-
-        SimulateTwoBodies(scope, new[] { TargetA }, new[] { TargetB });
-        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
-
-        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
-        Assert.Equal(OmfReasonCode.NoEndpoints, result.Reason.Code);
     }
 
     [Fact]
@@ -617,55 +585,52 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
     [InlineData(4, false)]
     public async Task SetFailoverMode_AllUnfinishedStages_AreDiscarded(int stage, bool sealedScope)
     {
-        foreach (var endpointMode in new[] { OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch, OmfAwaitableEndpointMode.AnyCompleteEndpoint })
+        _coordinator.SetFailoverMode(FailoverMode.Warm);
+        await using var scope = CreateScope();
+        var body = Guid.NewGuid();
+        if (stage >= 1)
         {
-            _coordinator.SetFailoverMode(FailoverMode.Warm);
-            await using var scope = CreateScope(new OmfAwaitableScopeOptions { EndpointMode = endpointMode });
-            var body = Guid.NewGuid();
-            if (stage >= 1)
-            {
-                scope.EnterWrite();
-                _coordinator.RecordAdmitted(scope, 1);
-                scope.ExitWrite();
-            }
+            scope.EnterWrite();
+            _coordinator.RecordAdmitted(scope, 1);
+            scope.ExitWrite();
+        }
 
-            if (stage >= 2)
-            {
-                _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
-            }
+        if (stage >= 2)
+        {
+            _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
+        }
 
-            if (stage >= 3)
-            {
-                _coordinator.CloseMaterialization(scope);
-                _coordinator.RegisterDeliveries(body, new[] { TargetA });
-            }
+        if (stage >= 3)
+        {
+            _coordinator.CloseMaterialization(scope);
+            _coordinator.RegisterDeliveries(body, new[] { TargetA });
+        }
 
-            if (stage >= 4)
-            {
-                _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-            }
+        if (stage >= 4)
+        {
+            _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
+        }
 
-            if (sealedScope)
-            {
-                scope.Seal();
-            }
+        if (sealedScope)
+        {
+            scope.Seal();
+        }
 
-            var pending = sealedScope ? scope.WaitForAcceptanceAsync(Timeout.InfiniteTimeSpan) : null;
-            Assert.Equal(OmfAcceptanceOutcome.TimedOut, _coordinator.GetResult(scope).Outcome);
-            _coordinator.SetFailoverMode(FailoverMode.Hot);
-            AssertTrackingDisabled(_coordinator.GetResult(scope));
-            if (pending is not null)
-            {
-                AssertTrackingDisabled(await pending.WaitAsync(LongWait));
-            }
+        var pending = sealedScope ? scope.WaitForAcceptanceAsync(Timeout.InfiniteTimeSpan) : null;
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, _coordinator.GetResult(scope).Outcome);
+        _coordinator.SetFailoverMode(FailoverMode.Hot);
+        AssertTrackingDisabled(_coordinator.GetResult(scope));
+        if (pending is not null)
+        {
+            AssertTrackingDisabled(await pending.WaitAsync(LongWait));
+        }
 
-            foreach (var mode in new[] { FailoverMode.Cold, FailoverMode.Hot, FailoverMode.NotConfigured, FailoverMode.Warm })
-            {
-                _coordinator.SetFailoverMode(mode);
-                _coordinator.CloseMaterialization(scope);
-                _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
-                AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(TimeSpan.Zero));
-            }
+        foreach (var mode in new[] { FailoverMode.Cold, FailoverMode.Hot, FailoverMode.NotConfigured, FailoverMode.Warm })
+        {
+            _coordinator.SetFailoverMode(mode);
+            _coordinator.CloseMaterialization(scope);
+            _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
+            AssertTrackingDisabled(await scope.WaitForAcceptanceAsync(TimeSpan.Zero));
         }
     }
 

@@ -21,17 +21,15 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// The acceptance result of an awaitable scope.
 /// </summary>
 /// <param name="Outcome">The acceptance outcome.</param>
-/// <param name="EndpointMode">The endpoint mode the outcome was evaluated with.</param>
 /// <param name="Deliveries">Every delivery of every body that carries the scope's items.</param>
 /// <param name="Reason">
 /// Null for <see cref="OmfAcceptanceOutcome.Accepted"/> and <see cref="OmfAcceptanceOutcome.Filtered"/>.
-/// For a failure, the first recorded failure that made the endpoint mode unsatisfiable. For <see cref="OmfAcceptanceOutcome.TimedOut"/>,
+/// For a failure, the first recorded failure that made acceptance unsatisfiable. For <see cref="OmfAcceptanceOutcome.TimedOut"/>,
 /// the reason of the least-advanced unfinished work.
 /// </param>
 /// <param name="ObservedAtUtc">When the result was observed.</param>
 public sealed record OmfAcceptanceResult(
     OmfAcceptanceOutcome Outcome,
-    OmfAwaitableEndpointMode EndpointMode,
     IReadOnlyList<OmfDeliveryResult> Deliveries,
     OmfOutcomeReason Reason,
     DateTimeOffset ObservedAtUtc);

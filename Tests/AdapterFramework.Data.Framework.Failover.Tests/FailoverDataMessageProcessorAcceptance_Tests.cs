@@ -257,9 +257,9 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         public bool AcceptOnSend { get; set; } = true;
 
         /// <summary>Creates scopes through the public coordinator API; the caller owns their asynchronous lifetime.</summary>
-        public OmfAwaitableScopeState CreateScope(OmfAwaitableEndpointMode mode = OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch)
+        public OmfAwaitableScopeState CreateScope()
         {
-            Assert.True(Coordinator.TryCreateScope(new OmfAwaitableScopeOptions { EndpointMode = mode }, out var scope));
+            Assert.True(Coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
             return scope;
         }
 

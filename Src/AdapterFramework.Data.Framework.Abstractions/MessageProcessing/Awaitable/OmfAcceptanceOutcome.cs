@@ -20,7 +20,8 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 public enum OmfAcceptanceOutcome
 {
     /// <summary>
-    /// Every required delivery received exact 202 Accepted.
+    /// Every required delivery received exact 202 Accepted. A body's required deliveries are those to every endpoint
+    /// writer active when the body was dispatched.
     /// </summary>
     Accepted,
 

@@ -22,11 +22,6 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 public sealed record OmfAwaitableScopeOptions
 {
     /// <summary>
-    /// Gets which deliveries must be accepted for the scope to be accepted.
-    /// </summary>
-    public OmfAwaitableEndpointMode EndpointMode { get; init; } = OmfAwaitableEndpointMode.AllActiveEndpointsAtDispatch;
-
-    /// <summary>
     /// Gets the timeout used when a wait passes no timeout. Must be positive or <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>.
     /// </summary>
     public TimeSpan DefaultWaitTimeout { get; init; } = TimeSpan.FromMinutes(15);
