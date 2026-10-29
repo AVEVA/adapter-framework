@@ -47,7 +47,6 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private CancellationTokenSource _internalDataQueueConsumerCts;
     private Task _internalDataQueueConsumerTask;
 
-    private long _lastReceivedTimeTicks;
     private long _lastDataProcessedTimeTicks;
 
     private bool _disposed;
@@ -95,11 +94,10 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
             if (CurrentFailoverMode == FailoverMode.Hot)
             {
-                _lastReceivedTimeTicks = messageReceivedTime.Ticks;
                 var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody,
                     message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
                 {
-                    ProcessTimeTicks = _lastReceivedTimeTicks,
+                    ProcessTimeTicks = messageReceivedTime.Ticks,
                 };
                 _internalBackedUpMessageQueue.Enqueue(failoverMessage);
             }

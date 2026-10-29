@@ -541,18 +541,20 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         processor.UpdateMode(FailoverMode.Hot);
         var body = new SerializedOmfMessage(MessageType.Instance, new byte[] { 1, 2 }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
         processor.ProcessOmfMessage(body);
+        Thread.Sleep(1);
+        var beforeLast = DateTime.UtcNow;
         processor.ProcessOmfMessage(body);
-        var lastProcessTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
-        Assert.True(lastProcessTicks > 0);
+        var afterLast = DateTime.UtcNow;
         Assert.Equal(DateTime.MinValue, processor.LastDataProcessedTime);
 
         processor.UpdateState(FailoverRole.Primary, default);
         Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 2, TimeSpan.FromSeconds(10)));
-        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        var lastHandoff = processor.LastDataProcessedTime;
+        Assert.InRange(lastHandoff, beforeLast, afterLast);
         await Task.Delay(20);
-        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        Assert.Equal(lastHandoff, processor.LastDataProcessedTime);
         processor.UpdateState(FailoverRole.Secondary, default);
-        Assert.Equal(new DateTime(lastProcessTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        Assert.Equal(lastHandoff, processor.LastDataProcessedTime);
         Assert.Equal(DateTimeKind.Utc, processor.LastDataProcessedTime.Kind);
 
         var persistence = new Mock<IPersistentQueue>();
@@ -583,12 +585,13 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         processor.Initialize();
         processor.UpdateMode(FailoverMode.Hot);
         processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
-        var firstTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
+        var afterFirst = DateTime.UtcNow;
+        Thread.Sleep(1);
+        var beforeSecond = DateTime.UtcNow;
         processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 2 }, MessageAction.Default));
-        var secondTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", processor);
-        Assert.True(secondTicks > firstTicks);
+        var afterSecond = DateTime.UtcNow;
 
-        processor.UpdateState(FailoverRole.Secondary, new DateTime(firstTicks, DateTimeKind.Utc));
+        processor.UpdateState(FailoverRole.Secondary, afterFirst);
         processor.UpdateState(FailoverRole.Primary, default);
         Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
         processor.UpdateState(FailoverRole.Secondary, default);
@@ -596,7 +599,7 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         var sent = Assert.Single(_sentMessages);
         Assert.Equal(new byte[] { 2 }, sent.MessageBody);
         Assert.Null(sent.SerializedMessageId);
-        Assert.Equal(new DateTime(secondTicks, DateTimeKind.Utc), processor.LastDataProcessedTime);
+        Assert.InRange(processor.LastDataProcessedTime, beforeSecond, afterSecond);
     }
 
     /// <summary>

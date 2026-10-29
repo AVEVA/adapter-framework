@@ -73,6 +73,8 @@ public class SerializationBlock : BaseBlock<Message>
         CancellationToken token,
         OmfVersion omfVersion = OmfVersion.Omf12,
         OmfAwaitableCoordinator awaitableCoordinator = null)
+
+        // Not single-producer: both grouping blocks and the seal handler's stand-in barrier post here concurrently.
         : base(logger, capacity, false, false, token)
     {
         ThrowHelper.ThrowIfArgumentNull(serializer, nameof(serializer));

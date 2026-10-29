@@ -157,14 +157,16 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         });
         fixture.Processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data,
             new byte[overflow ? (BufferingConstants.DefaultVolatileMemorySizeMb + 1) * 1024 * 1024 : 1], MessageAction.Default));
+        Thread.Sleep(1);
+        var beforeLast = DateTime.UtcNow;
         fixture.Processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
-        var ticks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", fixture.Processor);
+        var afterLast = DateTime.UtcNow;
 
         fixture.Processor.UpdateState(FailoverRole.Primary, default);
         fixture.WaitForSent(1);
         fixture.Processor.UpdateState(FailoverRole.Secondary, default);
 
-        Assert.Equal(new DateTime(ticks, DateTimeKind.Utc), fixture.Processor.LastDataProcessedTime);
+        Assert.InRange(fixture.Processor.LastDataProcessedTime, beforeLast, afterLast);
         Assert.Null(Assert.Single(fixture.Sent).SerializedMessageId);
         fixture.Endpoint.Verify(endpoint => endpoint.SendMessage(It.IsAny<ISerializedOmfMessage>()), Times.Exactly(overflow ? 1 : 2));
     }
@@ -178,16 +180,17 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         var first = new SerializedOmfMessage(MessageType.Instance, new byte[600 * 1024], MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
         var second = new SerializedOmfMessage(MessageType.Data, new byte[600 * 1024], MessageAction.Default, 2, OmfVersion.Omf20, PartitionKey.Key2);
         fixture.Processor.ProcessOmfMessage(first);
-        var firstTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", fixture.Processor);
+        var afterFirst = DateTime.UtcNow;
+        Thread.Sleep(1);
+        var beforeSecond = DateTime.UtcNow;
         fixture.Processor.ProcessOmfMessage(second);
-        var lastTicks = (long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", fixture.Processor);
-        Assert.True(lastTicks > firstTicks);
+        var afterSecond = DateTime.UtcNow;
         fixture.Processor.Dispose();
         Assert.NotEmpty(Directory.GetFiles(fixture.DirectoryPath, "*", SearchOption.AllDirectories));
 
         fixture.Restart();
         fixture.Processor.UpdateMode(FailoverMode.Hot);
-        fixture.Processor.UpdateState(FailoverRole.Secondary, new DateTime(firstTicks, DateTimeKind.Utc));
+        fixture.Processor.UpdateState(FailoverRole.Secondary, afterFirst);
         fixture.Processor.UpdateState(FailoverRole.Primary, default);
         fixture.WaitForSent(1);
         fixture.Processor.UpdateState(FailoverRole.Secondary, default);
@@ -199,7 +202,7 @@ public sealed class FailoverDataMessageProcessorAcceptance_Tests
         Assert.Equal(second.PartitionKey, sent.PartitionKey);
         Assert.Equal(second.OmfVersion, sent.OmfVersion);
         Assert.Null(sent.SerializedMessageId);
-        Assert.Equal(new DateTime(lastTicks, DateTimeKind.Utc), fixture.Processor.LastDataProcessedTime);
+        Assert.InRange(fixture.Processor.LastDataProcessedTime, beforeSecond, afterSecond);
     }
 
     /// <summary>Checks the scope was discarded by hot mode and that no delivery was recorded for its buffered body.</summary>

@@ -17,7 +17,7 @@ namespace AdapterFramework.Data.Framework.Messages.Awaitable;
 /// <summary>
 /// A run of consecutive values in one stream of a grouped message that belong to one scope.
 /// </summary>
-/// <param name="ScopeIndex">The index of the scope in <see cref="ScopeSidecar.Scopes"/>.</param>
+/// <param name="ScopeIndex">The index of the scope in <see cref="ScopeSidecar.ScopeTable"/>.</param>
 /// <param name="Start">The position of the first value in the stream's value list.</param>
 /// <param name="Count">The number of values.</param>
 public readonly record struct ScopeRange(int ScopeIndex, int Start, int Count);
