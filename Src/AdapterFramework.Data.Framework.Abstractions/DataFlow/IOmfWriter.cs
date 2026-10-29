@@ -33,6 +33,11 @@ public interface IOmfWriter : IDisposable
     }
 
     /// <summary>
+    /// Gets the URI the writer sends to, or null when it isn't known.
+    /// </summary>
+    Uri TargetUri => null;
+
+    /// <summary>
     /// Gets the number of values successfully sent since the last call to this method. 
     /// </summary>
     /// <returns>The number of values successfully sent.</returns>

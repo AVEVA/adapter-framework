@@ -20,6 +20,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Buffering.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 
@@ -86,6 +87,16 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
     #endregion
 
+    #region Public Events
+
+    /// <summary>
+    /// Raised when a body with a serialized message ID is dropped because the volatile queue is full and there is no persistent queue.
+    /// Handlers run under the queue lock, so they must not call back into the queue.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
+
+    #endregion
+
     #region Public Methods
 
     /// <inheritdoc/>
@@ -100,7 +111,15 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
             if (_currentVolatileQueueSize > _maxVolatileQueueSize)
             {
-                ConsolidateQueues();
+                try
+                {
+                    ConsolidateQueues();
+                }
+                catch (Exception ex)
+                {
+                    // The message is queued; only moving older messages to the persistent queue failed, and that queue reports any it lost.
+                    _logger?.LogError(ex, "Failed to move buffered messages to the persistent queue.");
+                }
             }
         }
     }
@@ -230,6 +249,10 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                     if (_persistentQueue == null)
                     {
                         _logger.LogDebug(MaxBufferSizeReachedMessage);
+                        if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } serializedMessageId)
+                        {
+                            SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, OmfReasonCode.BufferFull));
+                        }
                     }
                 }
             }

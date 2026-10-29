@@ -32,6 +32,7 @@ using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Host.Configuration;
 using AdapterFramework.Data.Framework.Host.Helpers;
 using AdapterFramework.Data.Framework.Logger;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using IConfigurationProvider = AdapterFramework.Data.Framework.Abstractions.Configuration.IConfigurationProvider;
 
 [assembly: InternalsVisibleTo("AdapterFramework.Data.Framework.Host.Tests")]
@@ -59,6 +60,11 @@ public static class SystemHost
     public static string MachineName { get; private set; }
 
     public static OmfVersion OmfVersion { get; private set; }
+
+    /// <summary>
+    /// Gets the maximum number of awaitable scopes that can be active at once, from the <c>ApplicationSettings:MaxActiveAwaitableScopes</c> setting.
+    /// </summary>
+    public static int MaxActiveAwaitableScopes { get; private set; } = OmfAwaitableCoordinator.DefaultMaxActiveScopes;
 
     public static async Task RunAsync(string[] args, bool enforceBetaTimeout, DateTime? betaTimeoutDate = null, OmfVersion omfVersion = OmfVersion.Omf12)
     {
@@ -121,6 +127,7 @@ public static class SystemHost
     private static IHostBuilder CreateHostBuilder(string[] args)
     {
         Port = EdgeSystemHelper.GetPortNumber(_configuration);
+        MaxActiveAwaitableScopes = EdgeSystemHelper.GetMaxActiveAwaitableScopes(_configuration);
         BaseAddress = string.Format(CultureInfo.InvariantCulture, ConfigurationConstants.BaseUri, Port);
 
         return Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder(args)

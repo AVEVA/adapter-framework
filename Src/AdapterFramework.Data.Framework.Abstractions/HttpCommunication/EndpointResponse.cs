@@ -13,6 +13,8 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Net;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 
 namespace AdapterFramework.Data.Framework.Abstractions.HttpCommunication;
 
@@ -106,6 +108,16 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
     /// </summary>
     public TimeSpan Delay { get; }
 
+    /// <summary>
+    /// Gets the HTTP status the endpoint returned, or null when no response was received.
+    /// </summary>
+    public HttpStatusCode? StatusCode { get; init; }
+
+    /// <summary>
+    /// Gets the values parsed from a 2xx response body, or null when the body has none.
+    /// </summary>
+    public OmfIngressReceipt Receipt { get; init; }
+
     public static bool operator ==(EndpointResponse left, EndpointResponse right)
     {
         return left.Equals(right);
@@ -120,7 +132,9 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
     {
         return ResponseStatus.Equals(other.ResponseStatus) &&
                Message == other.Message &&
-               Delay.Equals(other.Delay);
+               Delay.Equals(other.Delay) &&
+               StatusCode == other.StatusCode &&
+               Equals(Receipt, other.Receipt);
     }
 
     public override bool Equals(object obj)
@@ -133,5 +147,5 @@ public readonly struct EndpointResponse : IEquatable<EndpointResponse>
         return false;
     }
 
-    public override int GetHashCode() => HashCode.Combine(ResponseStatus, Message, Delay);
+    public override int GetHashCode() => HashCode.Combine(ResponseStatus, Message, Delay, StatusCode, Receipt);
 }

@@ -1,0 +1,48 @@
+// Copyright 2018-2026 AVEVA Group Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
+namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
+
+/// <summary>
+/// The acceptance outcome of an awaitable scope.
+/// </summary>
+public enum OmfAcceptanceOutcome
+{
+    /// <summary>
+    /// Every required delivery received exact 202 Accepted. A body's required deliveries are those to every endpoint
+    /// writer active when the body was dispatched. Values that data filters removed never entered the pipeline,
+    /// so a scope whose filters removed only some of its values can still be accepted.
+    /// </summary>
+    Accepted,
+
+    /// <summary>
+    /// A required delivery reached a terminal non-202 response.
+    /// </summary>
+    Rejected,
+
+    /// <summary>
+    /// A required delivery or item was dropped without a response.
+    /// </summary>
+    Discarded,
+
+    /// <summary>
+    /// Nothing entered the pipeline, because filters removed every value or the scope had no writes.
+    /// </summary>
+    Filtered,
+
+    /// <summary>
+    /// The outcome wasn't known when the wait ended. Delivery continues.
+    /// </summary>
+    TimedOut,
+}

@@ -73,5 +73,15 @@ Version: 2.1.0
 
 ## Additional documentation
 
+Updated 2026-10-23: awaitable scopes require OMF 2.0 and are supported without failover,
+or with warm/cold failover. Hot failover retains legacy writer hand-off timestamps and does
+not support scoped acceptance. Entering hot mode logs a warning, discards unfinished scope
+observations without cancelling data delivery, and rejects new scopes. Writers must not advance
+source checkpoints on discarded observations or silently fall back to unscoped writes.
+
+Hot failover buffers now keep each body's OMF version and partition key, and use a new record
+format. Drain endpoint and failover buffers before rolling back to an earlier release.
+
+- [Documentation/HotFailoverAcceptance.md](Documentation/HotFailoverAcceptance.md) - Supported scope configurations, hot-mode restrictions, hot failover changes, and buffer compatibility.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute changes, tests, and documentation.
 - [SECURITY.md](SECURITY.md) - How to report suspected vulnerabilities responsibly.

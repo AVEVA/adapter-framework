@@ -17,6 +17,7 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.Messages;
 
@@ -111,6 +112,9 @@ public class InstanceMessage : Message, IDisposable
 
     /// <summary>Gets the PartitionKey that will be sent with the message to the OMFIngress Service.</summary>
     public PartitionKey? PartitionKey { get; }
+
+    /// <summary>Gets the scope of each item, or <c>null</c> when no item belongs to a scope.</summary>
+    public InstanceScopeSidecar Sidecar { get; init; }
 
     /// <summary>
     /// Releases resources used by the <see cref="InstanceMessage"/> and returns rented arrays to their pools when applicable.

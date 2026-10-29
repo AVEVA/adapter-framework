@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Buffers.Binary;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
@@ -35,21 +36,24 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
     #region Protected overrides
 
+    /// <summary>
+    /// Writes the V3 failover layout, which adds the partition key and OMF version to the V2 layout.
+    /// </summary>
+    /// <remarks>
+    /// Known rollback limitation, accepted by design: earlier releases don't check the record version and misread V3 records
+    /// as V2 (wrong message action and process time, two extra bytes in the body). The release notes require failover
+    /// buffers to drain fully before rolling back to an earlier adapter version.
+    /// </remarks>
     protected override DataItem CreateDataItem(IFailoverSerializedOmfMessage message)
     {
         if (message == null)
         {
-            return new DataItem(DataItemVersion.V2, Array.Empty<byte>());
+            return new DataItem(DataItemVersion.V3, Array.Empty<byte>());
         }
 
-        var dataBuffer = new byte[message.GetMessageSizeInBytes()];
+        var dataBuffer = new byte[FailoverSerializedOmfMessage.GetRecordSizeInBytes(message.MessageBody.Length)];
         dataBuffer[0] = (byte)message.MessageType;
-        var valueCount = BitConverter.GetBytes(message.ItemCount);
-        Buffer.BlockCopy(valueCount,
-            0,
-            dataBuffer,
-            MessageTypeEnumSize,
-            ValueCountSize);
+        BinaryPrimitives.WriteInt32LittleEndian(dataBuffer.AsSpan(MessageTypeEnumSize), message.ItemCount);
 
         Buffer.BlockCopy(message.MessageBody,
             0,
@@ -57,36 +61,51 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             MessageTypeEnumSize + ValueCountSize,
             message.MessageBody.Length);
 
-        var procesTimeTicksBytes = BitConverter.GetBytes(message.ProcessTimeTicks);
-        Buffer.BlockCopy(procesTimeTicksBytes,
-            0,
-            dataBuffer,
-            MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length,
-            ProcessTimeTicksLength);
+        BinaryPrimitives.WriteInt64LittleEndian(dataBuffer.AsSpan(MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length), message.ProcessTimeTicks);
 
-        dataBuffer[^1] = (byte)message.MessageAction;
+        dataBuffer[^3] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^2] = (byte)message.MessageAction;
+        dataBuffer[^1] = (byte)message.OmfVersion;
 
-        return new DataItem(DataItemVersion.V2, dataBuffer);
+        return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
+    /// <summary>
+    /// Reads V2 and V3 failover records, preserving timestamps.
+    /// </summary>
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
-        if (serializedWithType == null)
+        var hasOmfTrailer = dataItem?.Version == DataItemVersion.V3;
+        var trailerLength = hasOmfTrailer
+            ? PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize
+            : MessageActionEnumSize;
+
+        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V3)
+            || serializedWithType == null || serializedWithType.Length < MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + trailerLength)
         {
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 
         var messageType = (MessageType)serializedWithType[0];
-        var messageAction = (MessageAction)dataItem.Data[^1];
-        var valueCount = BitConverter.ToInt32(serializedWithType, MessageTypeEnumSize);
+        var valueCount = BinaryPrimitives.ReadInt32LittleEndian(serializedWithType.AsSpan(MessageTypeEnumSize));
 
-        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize];
+        var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - trailerLength];
         Buffer.BlockCopy(serializedWithType, MessageTypeEnumSize + ValueCountSize, messageBody, 0, messageBody.Length);
 
-        var processTimeTicks = BitConverter.ToInt64(serializedWithType, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
+        var processTimeTicks = BinaryPrimitives.ReadInt64LittleEndian(serializedWithType.AsSpan(MessageTypeEnumSize + ValueCountSize + messageBody.Length));
 
-        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount)
+        var messageAction = (MessageAction)serializedWithType[^1];
+        var omfVersion = OmfVersion.Omf12;
+        PartitionKey? partitionKey = null;
+        if (hasOmfTrailer)
+        {
+            partitionKey = serializedWithType[^3] == 0 ? null : (PartitionKey)serializedWithType[^3];
+            messageAction = (MessageAction)serializedWithType[^2];
+            omfVersion = (OmfVersion)serializedWithType[^1];
+        }
+
+        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey)
         {
             ProcessTimeTicks = processTimeTicks,
         };

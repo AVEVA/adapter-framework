@@ -25,6 +25,7 @@ using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.Buffering;
 using AdapterFramework.Data.Framework.Failover.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 
 namespace AdapterFramework.Data.Framework.Failover;
@@ -34,6 +35,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private readonly ILogger _logger;
     private readonly IConfigurationProvider _configurationProvider;
     private readonly IOmfDataEndpointManager _dataEndpointManager;
+    private readonly OmfAwaitableCoordinator _awaitableCoordinator;
     private readonly object _lockObject = new();
 
     private BufferingConfiguration _bufferingConfiguration;
@@ -45,13 +47,16 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private CancellationTokenSource _internalDataQueueConsumerCts;
     private Task _internalDataQueueConsumerTask;
 
+    private long _lastDataProcessedTimeTicks;
+
     private bool _disposed;
 
-    public FailoverDataMessageProcessor(ILogger logger, IConfigurationProvider configurationProvider, IOmfDataEndpointManager dataEndpointManager)
+    public FailoverDataMessageProcessor(ILogger logger, IConfigurationProvider configurationProvider, IOmfDataEndpointManager dataEndpointManager, OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         _logger = logger;
         _configurationProvider = configurationProvider;
         _dataEndpointManager = dataEndpointManager;
+        _awaitableCoordinator = awaitableCoordinator;
     }
 
     #region Public Properties
@@ -60,7 +65,11 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
     public FailoverRole CurrentFailoverRole { get; private set; }
 
-    public DateTime LastDataProcessedTime { get; private set; }
+    /// <summary>
+    /// Gets the last hand-off time: the receive time outside hot mode, or the process time of the last body sent from the hot buffer.
+    /// Read without a lock so a stalled send can't delay the failover heartbeat.
+    /// </summary>
+    public DateTime LastDataProcessedTime => new(Interlocked.Read(ref _lastDataProcessedTimeTicks), DateTimeKind.Utc);
 
     #endregion
 
@@ -83,17 +92,18 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
             var messageReceivedTime = DateTime.UtcNow;
 
-            // convert the ISerializedOmfMessage to a failover message so we can add process time ticks
-            var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody, message.MessageAction, message.ItemCount);
-
             if (CurrentFailoverMode == FailoverMode.Hot)
             {
-                failoverMessage.ProcessTimeTicks = messageReceivedTime.Ticks;
+                var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody,
+                    message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
+                {
+                    ProcessTimeTicks = messageReceivedTime.Ticks,
+                };
                 _internalBackedUpMessageQueue.Enqueue(failoverMessage);
             }
             else
             {
-                LastDataProcessedTime = messageReceivedTime;
+                Interlocked.Exchange(ref _lastDataProcessedTimeTicks, messageReceivedTime.Ticks);
 
                 _dataEndpointManager.SendMessage(message);
                 if ((CurrentFailoverMode == FailoverMode.Warm || CurrentFailoverMode == FailoverMode.Cold) & CurrentFailoverRole == FailoverRole.Secondary)
@@ -131,6 +141,10 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         }
     }
 
+    /// <summary>
+    /// Applies the failover mode and logs a warning on each switch into hot mode, which doesn't support awaitable scopes.
+    /// </summary>
+    /// <param name="newFailoverMode">The configured failover mode.</param>
     public void UpdateMode(FailoverMode newFailoverMode)
     {
         lock (_lockObject)
@@ -149,7 +163,14 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
                 DeleteInternalDataQueue();
             }
 
+            var enteringHot = CurrentFailoverMode != FailoverMode.Hot && newFailoverMode == FailoverMode.Hot;
             CurrentFailoverMode = newFailoverMode;
+            if (enteringHot)
+            {
+                _logger.LogWarning("Hot failover does not support awaitable scopes. Existing scopes are discarded and new scopes are rejected. Unscoped delivery is unaffected.");
+            }
+
+            _awaitableCoordinator?.SetFailoverMode(newFailoverMode);
         }
     }
 
@@ -276,8 +297,16 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             {
                 if (_internalBackedUpMessageQueue.TryDequeue(out var message))
                 {
-                    _dataEndpointManager.SendMessage(message);
-                    LastDataProcessedTime = new DateTime(message.ProcessTimeTicks, DateTimeKind.Utc);
+                    try
+                    {
+                        _dataEndpointManager.SendMessage(message);
+                        Interlocked.Exchange(ref _lastDataProcessedTimeTicks, message.ProcessTimeTicks);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Dropped, not retried: the next send moves the heartbeat past this body, so the secondary trims its copy too.
+                        _logger.LogError(ex, "Failed to dispatch a body from the failover buffer.");
+                    }
                 }
                 else
                 {

@@ -53,7 +53,7 @@ public interface IFailoverDataMessageProcessor : IDisposable
     void UpdateState(FailoverRole role, DateTime lastDataProcessedTime);
 
     /// <summary>
-    /// Update the failover mode.
+    /// Update the failover mode. Hot mode does not support awaitable scopes.
     /// </summary>
     /// <param name="newFailoverMode">The failover mode to update.</param>
     void UpdateMode(FailoverMode newFailoverMode);

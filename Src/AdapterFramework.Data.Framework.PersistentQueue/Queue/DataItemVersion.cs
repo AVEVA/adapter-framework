@@ -22,4 +22,6 @@ public enum DataItemVersion
     V3 = 3,
     // Earlier builds read V4 as corrupt and drop it, so this is a one-way upgrade.
     V4 = 4,
+    // Earlier builds read V5 as corrupt and drop it, so this is a one-way upgrade.
+    V5 = 5,
 }

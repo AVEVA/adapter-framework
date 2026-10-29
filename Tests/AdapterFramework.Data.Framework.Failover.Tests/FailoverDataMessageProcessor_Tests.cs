@@ -25,7 +25,14 @@ using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
+using AdapterFramework.Data.Framework.Buffering;
 using AdapterFramework.Data.Framework.Failover.Messages;
+using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
+using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
+using AdapterFramework.Data.Framework.PersistentQueue.Queue;
+using AdapterFramework.Data.Framework.Tests.Helper;
 using Xunit;
 
 namespace AdapterFramework.Data.Framework.Failover.Tests;
@@ -151,6 +158,96 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.Equal(secondMessageToProcess.ItemCount, _sentMessages[1].ItemCount);
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    [Fact]
+    public void FailoverDataMessageProcessor_ProcessOmfMessage_HotMode_PreservesOmfVersionAndPartitionKey()
+    {
+        var mockLogger = new Mock<ILogger>();
+        var mockConfigurationProvider = GetMockConfigurationProvider("ProcessOmfMessage_HotMode_PreservesOmfVersionAndPartitionKey");
+        var mockOmfDataEndpointManager = GetMockOmfDataEndpointManager();
+
+        using var failoverDataMessageProcessor = new FailoverDataMessageProcessor(mockLogger.Object, mockConfigurationProvider.Object, mockOmfDataEndpointManager.Object);
+        failoverDataMessageProcessor.Initialize();
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        failoverDataMessageProcessor.UpdateState(FailoverRole.Secondary, default);
+
+        var messageToProcess = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
+        failoverDataMessageProcessor.ProcessOmfMessage(messageToProcess);
+        Assert.Empty(_sentMessages);
+
+        failoverDataMessageProcessor.UpdateState(FailoverRole.Primary, default);
+
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, 1500));
+        Assert.Equal(MessageType.Instance, _sentMessages[0].MessageType);
+        Assert.Equal(MessageAction.Update, _sentMessages[0].MessageAction);
+        Assert.Equal(3, _sentMessages[0].ItemCount);
+        Assert.Equal(OmfVersion.Omf20, _sentMessages[0].OmfVersion);
+        Assert.Equal(PartitionKey.Key5, _sentMessages[0].PartitionKey);
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    /// <summary>Verifies every transition into Hot warns exactly once, with or without a coordinator.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UpdateMode_WhenEnteringHot_WarnsOncePerTransition(bool useCoordinator)
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        var logger = new Mock<ILogger>();
+        var warnings = new List<string>();
+        logger.Setup(x => x.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(), It.IsAny<Exception>(),
+                It.IsAny<Func<It.IsAnyType, Exception, string>>()))
+            .Callback((LogLevel _, EventId _, object state, Exception _, object _) => warnings.Add(state.ToString()));
+        using var processor = new FailoverDataMessageProcessor(logger.Object,
+            GetMockConfigurationProvider(nameof(UpdateMode_WhenEnteringHot_WarnsOncePerTransition)).Object,
+            GetMockOmfDataEndpointManager().Object, useCoordinator ? coordinator : null);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Warm);
+        Assert.Empty(warnings);
+        foreach (var nextMode in new[] { FailoverMode.Cold, FailoverMode.Warm, FailoverMode.NotConfigured })
+        {
+            var previousCount = warnings.Count;
+            processor.UpdateMode(FailoverMode.Hot);
+            Assert.Equal(previousCount + 1, warnings.Count);
+            processor.UpdateMode(FailoverMode.Hot);
+            Assert.Equal(previousCount + 1, warnings.Count);
+            processor.UpdateMode(nextMode);
+            Assert.Equal(previousCount + 1, warnings.Count);
+        }
+
+        Assert.All(warnings, warning =>
+        {
+            Assert.Contains("does not support awaitable scopes", warning);
+            Assert.Contains("Existing scopes are discarded", warning);
+            Assert.Contains("new scopes are rejected", warning);
+            Assert.Contains("Unscoped delivery is unaffected", warning);
+        });
+    }
+
+    /// <summary>Verifies Hot always rejects scopes, including repeated mode updates, while Warm remains supported.</summary>
+    [Fact]
+    public async Task FailoverDataMessageProcessor_UpdateMode_SetsCoordinatorFailoverMode()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        coordinator.SetOmfVersion(OmfVersion.Omf20);
+        using var failoverDataMessageProcessor = new FailoverDataMessageProcessor(
+            new Mock<ILogger>().Object,
+            GetMockConfigurationProvider("UpdateMode_SetsCoordinatorFailoverMode").Object,
+            GetMockOmfDataEndpointManager().Object,
+            coordinator);
+        failoverDataMessageProcessor.Initialize();
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Hot);
+        Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+
+        failoverDataMessageProcessor.UpdateMode(FailoverMode.Warm);
+        Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+        await using var warmScopeLifetime = scope;
     }
 
     [Fact]
@@ -423,6 +520,158 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
         Assert.True(returnedLastDataProcessedTime > utcTimeNow);
     }
 
+    /// <summary>Verifies neither the processor nor its interface exposes an opt-in mode overload.</summary>
+    [Fact]
+    public void UpdateMode_WhenInspectingPublicApi_ExposesOnlySingleParameter()
+    {
+        var signature = new[] { typeof(FailoverMode), typeof(bool) };
+        Assert.Null(typeof(IFailoverDataMessageProcessor).GetMethod(nameof(IFailoverDataMessageProcessor.UpdateMode), signature));
+        Assert.Null(typeof(FailoverDataMessageProcessor).GetMethod(nameof(FailoverDataMessageProcessor.UpdateMode), signature));
+    }
+
+    /// <summary>Verifies legacy hot progress is exactly the last buffered handoff timestamp, does not grow while idle, and emits V3-compatible writer bodies.</summary>
+    [Fact]
+    public async Task LastDataProcessedTime_LegacyHot_IsExactLastHandoffWithoutAcceptanceQueryOrIdleExtension()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(LastDataProcessedTime_LegacyHot_IsExactLastHandoffWithoutAcceptanceQueryOrIdleExtension)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        var body = new SerializedOmfMessage(MessageType.Instance, new byte[] { 1, 2 }, MessageAction.Update, 3, OmfVersion.Omf20, PartitionKey.Key5);
+        processor.ProcessOmfMessage(body);
+        Thread.Sleep(1);
+        var beforeLast = DateTime.UtcNow;
+        processor.ProcessOmfMessage(body);
+        var afterLast = DateTime.UtcNow;
+        Assert.Equal(DateTime.MinValue, processor.LastDataProcessedTime);
+
+        processor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 2, TimeSpan.FromSeconds(10)));
+        var lastHandoff = processor.LastDataProcessedTime;
+        Assert.InRange(lastHandoff, beforeLast, afterLast);
+        await Task.Delay(20);
+        Assert.Equal(lastHandoff, processor.LastDataProcessedTime);
+        processor.UpdateState(FailoverRole.Secondary, default);
+        Assert.Equal(lastHandoff, processor.LastDataProcessedTime);
+        Assert.Equal(DateTimeKind.Utc, processor.LastDataProcessedTime.Kind);
+
+        var persistence = new Mock<IPersistentQueue>();
+        using var writerQueue = new PersistentOmfMessageQueue("legacy-writer", persistence.Object, new Mock<ILogger>().Object);
+        Assert.All(_sentMessages, sent =>
+        {
+            Assert.Null(sent.SerializedMessageId);
+            Assert.Equal(body.MessageBody, sent.MessageBody);
+            Assert.Equal(body.MessageType, sent.MessageType);
+            Assert.Equal(body.MessageAction, sent.MessageAction);
+            Assert.Equal(body.ItemCount, sent.ItemCount);
+            Assert.Equal(body.OmfVersion, sent.OmfVersion);
+            Assert.Equal(body.PartitionKey, sent.PartitionKey);
+            writerQueue.Enqueue(sent);
+        });
+        persistence.Verify(queue => queue.Enqueue(It.Is<DataItem>(item => item.Version == DataItemVersion.V3 && item.TrackingId == null)), Times.Exactly(2));
+        persistence.Verify(queue => queue.Enqueue(It.IsAny<DataItem>()), Times.Exactly(2));
+    }
+
+    /// <summary>Verifies legacy failover buffering still stamps local process ticks and trims only the covered body before promotion.</summary>
+    [Fact]
+    public void ProcessOmfMessage_LegacyHot_RetainsTrimTicksButDoesNotForwardThemToWriter()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(ProcessOmfMessage_LegacyHot_RetainsTrimTicksButDoesNotForwardThemToWriter)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
+        var afterFirst = DateTime.UtcNow;
+        Thread.Sleep(1);
+        var beforeSecond = DateTime.UtcNow;
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 2 }, MessageAction.Default));
+        var afterSecond = DateTime.UtcNow;
+
+        processor.UpdateState(FailoverRole.Secondary, afterFirst);
+        processor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        processor.UpdateState(FailoverRole.Secondary, default);
+
+        var sent = Assert.Single(_sentMessages);
+        Assert.Equal(new byte[] { 2 }, sent.MessageBody);
+        Assert.Null(sent.SerializedMessageId);
+        Assert.InRange(processor.LastDataProcessedTime, beforeSecond, afterSecond);
+    }
+
+    /// <summary>
+    /// Verifies that the hot primary's buffer consumer keeps dispatching while another thread holds
+    /// the processor lock, so incoming writes cannot stall delivery of buffered bodies.
+    /// </summary>
+    [Fact]
+    public void ConsumeInternalDataQueue_HotPrimaryWhileProcessorLockHeld_StillDispatches()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(ConsumeInternalDataQueue_HotPrimaryWhileProcessorLockHeld_StillDispatches)).Object,
+            endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.UpdateState(FailoverRole.Primary, default);
+        var processorLock = TestUtilities.GetFieldValueFromObject("_lockObject", processor);
+        var queue = (FailoverBackedUpOmfMessageQueue)TestUtilities.GetFieldValueFromObject("_internalBackedUpMessageQueue", processor);
+
+        Monitor.Enter(processorLock);
+        try
+        {
+            queue.Enqueue(new FailoverSerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default) { ProcessTimeTicks = 42 });
+
+            Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            Monitor.Exit(processorLock);
+        }
+
+        Assert.Equal(new DateTime(42, DateTimeKind.Utc), processor.LastDataProcessedTime);
+    }
+
+    /// <summary>
+    /// Verifies that the heartbeat can read <see cref="FailoverDataMessageProcessor.LastDataProcessedTime"/>
+    /// while another thread holds the processor lock, for example during a slow send, and gets the last hand-off time.
+    /// </summary>
+    /// <param name="mode">The failover mode that selects which hand-off time is reported.</param>
+    [Theory]
+    [InlineData(FailoverMode.Warm)]
+    [InlineData(FailoverMode.Hot)]
+    public void LastDataProcessedTime_WhileProcessorLockHeld_ReturnsWithoutWaiting(FailoverMode mode)
+    {
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider($"{nameof(LastDataProcessedTime_WhileProcessorLockHeld_ReturnsWithoutWaiting)}_{mode}").Object,
+            GetMockOmfDataEndpointManager().Object);
+        processor.Initialize();
+        processor.UpdateMode(mode);
+        processor.UpdateState(FailoverRole.Primary, default);
+        processor.ProcessOmfMessage(new SerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default));
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, TimeSpan.FromSeconds(10)));
+        var expected = processor.LastDataProcessedTime;
+        Assert.NotEqual(default, expected);
+        var processorLock = TestUtilities.GetFieldValueFromObject("_lockObject", processor);
+
+        var actual = default(DateTime);
+        var reader = new Thread(() => actual = processor.LastDataProcessedTime) { IsBackground = true };
+        Monitor.Enter(processorLock);
+        try
+        {
+            reader.Start();
+            Assert.True(reader.Join(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            Monitor.Exit(processorLock);
+        }
+
+        Assert.Equal(expected, actual);
+    }
+
     public void Dispose()
     {
         Dispose(true);
@@ -462,6 +711,7 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
     private Mock<IOmfDataEndpointManager> GetMockOmfDataEndpointManager()
     {
         var mockOmfDataEndpointManager = new Mock<IOmfDataEndpointManager>();
+        // Legacy handoff progress must not query endpoint acceptance, even when it is unknown.
         mockOmfDataEndpointManager.Setup(x => x.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback((ISerializedOmfMessage message) =>
         {
             _sentMessages.Add(message);

@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,15 +19,20 @@ using System.Dynamic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.AdapterCommon;
+using AdapterFramework.Data.Framework.DataFlow;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
+using AdapterFramework.Data.Framework.Tests.Helper;
 using Moq;
 using AdapterFramework.Data.Framework.Serialization;
 using Xunit;
@@ -1034,6 +1039,232 @@ public class DataMessageProcessor_Tests
         // delaying for flushTime + 10ms and received a message
         Thread.Sleep(20000);
         Assert.NotNull(receivedMessage);
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf20, true)]
+    [InlineData(OmfVersion.Omf12, false)]
+    public async Task DataMessageProcessor_SetsCoordinatorOmfVersion(OmfVersion omfVersion, bool scopesSupported)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
+        using var coordinator = new OmfAwaitableCoordinator();
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            null,
+            mockApplicationManifest.Object,
+            coordinator);
+
+        if (scopesSupported)
+        {
+            Assert.True(coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out var scope));
+            await scope.DisposeAsync();
+        }
+        else
+        {
+            Assert.Throws<NotSupportedException>(() => coordinator.TryCreateScope(new OmfAwaitableScopeOptions(), out _));
+        }
+    }
+
+    /// <summary>
+    /// Verifies that a second data pipeline can't share the first pipeline's coordinator: building the second processor fails,
+    /// whether its OMF version matches or not, and the first processor's scopes still work.
+    /// </summary>
+    [Theory]
+    [InlineData(OmfVersion.Omf20)]
+    [InlineData(OmfVersion.Omf12)]
+    public async Task DataMessageProcessor_SecondPipelineSharesCoordinator_Throws(OmfVersion secondOmfVersion)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var first = CreateProcessor(OmfVersion.Omf20);
+
+        Assert.Throws<InvalidOperationException>(() => CreateProcessor(secondOmfVersion));
+
+        Assert.True(first.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out var scope));
+        await scope.DisposeAsync();
+
+        DataMessageProcessor CreateProcessor(OmfVersion omfVersion)
+        {
+            var mockApplicationManifest = new Mock<IApplicationManifest>();
+            mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
+            return new DataMessageProcessor(
+                new Mock<ILogManager>().Object,
+                new OmfJsonSerializer(),
+                null,
+                new Mock<IOmfDataEndpointManager>().Object,
+                mockEgressComponentIdService.Object,
+                new Mock<IConfigurationProvider>().Object,
+                null,
+                mockApplicationManifest.Object,
+                coordinator);
+        }
+    }
+
+    /// <summary>
+    /// Verifies end to end through a real OMF 2.0 pipeline that a scope writing types with embedded relationships, streams, a large bulk of values,
+    /// partitioned values, and a relationship, while another thread writes unscoped values, is accepted once every body it reaches is accepted.
+    /// Acceptance proves the serialization block registered every admitted item, because a shortfall would discard the scope with a count mismatch.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_ScopedWritesMixedWithUnscoped_EveryAdmittedItemIsAccepted()
+    {
+        const string endpointId = "endpoint";
+        using var coordinator = new OmfAwaitableCoordinator();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockFailoverDataMessageProcessor.Setup(processor => processor.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(body =>
+            {
+                if (body is Messages.SerializedOmfMessage { SerializedMessageId: { } id })
+                {
+                    coordinator.RegisterDeliveries(id, [new OmfDeliveryTarget(endpointId, new Uri("https://example.com/omf"))]);
+                    coordinator.RecordDisposition(id, endpointId, OmfDeliveryState.Accepted, System.Net.HttpStatusCode.Accepted, null);
+                }
+            });
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+        var mockLogManager = new Mock<ILogManager>();
+        mockLogManager.Setup(logManager => logManager.GetOrCreateLogger(It.IsAny<string>(), It.IsAny<LoggerConfiguration>()))
+            .Returns(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+        using var messageProcessor = new DataMessageProcessor(
+            mockLogManager.Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            mockFailoverDataMessageProcessor.Object,
+            mockApplicationManifest.Object,
+            coordinator);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
+        var unscopedWriter = Task.Run(() =>
+        {
+            for (var i = 0; i < 500; i++)
+            {
+                messageProcessor.WriteDynamicValue("unscoped", new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = i }, MessageAction.Default);
+            }
+        });
+
+        scope.WriteType(new StaticDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>(), Relationships = [new Link(new RelationshipLinkNode("source"), new RelationshipLinkNode("target")), new Link(new RelationshipLinkNode("source"), new RelationshipLinkNode("target"))] });
+        scope.WriteStream(new DataStream { Id = "stream", TypeId = "type" });
+        scope.WriteDynamicValues("stream", Enumerable.Range(0, 20000).Select(i => new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = i }).ToList());
+        for (var i = 0; i < 100; i++)
+        {
+            scope.WriteDynamicValue("partitioned", new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = i }, partitionKey: PartitionKey.Key3);
+        }
+
+        scope.WriteInstanceRelationship(new Link(new RelationshipLinkNode("source"), new RelationshipLinkNode("target")));
+        await unscopedWriter;
+        scope.Seal();
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.Outcome == OmfAcceptanceOutcome.Accepted, $"{result.Outcome}: {result.Reason}");
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that when one or both grouping blocks refuse a scope's seal barrier, the scope fails with
+    /// <see cref="OmfReasonCode.PostRejected"/> and serialization doesn't keep a barrier count for the scope forever.
+    /// </summary>
+    /// <param name="bothRefuse">Whether the schema block refuses its barrier too, not only the instance block.</param>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DataMessageProcessor_SealRefused_DiscardsScopeWithoutLeakingBarrierCount(bool bothRefuse)
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var schemaSent = new ManualResetEventSlim(false);
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockFailoverDataMessageProcessor.Setup(processor => processor.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(body =>
+            {
+                if (body.MessageType == MessageType.Schema)
+                {
+                    schemaSent.Set();
+                }
+            });
+        using var messageProcessor = CreateScopedProcessor(coordinator, mockFailoverDataMessageProcessor.Object);
+        ((IDisposable)TestUtilities.GetFieldValueFromObject("_instanceGroupingBlock", messageProcessor)).Dispose();
+        var serializationBlock = (SerializationBlock)TestUtilities.GetFieldValueFromObject("_serializationBlock", messageProcessor);
+        var barrierCounts = (Dictionary<ScopeToken, int>)TestUtilities.GetFieldValueFromObject("_materializationBarrierCounts", serializationBlock);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
+        scope.WriteType(new DynamicDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() });
+        if (bothRefuse)
+        {
+            // Disposing flushes the buffered type, so only the barrier is refused.
+            ((IDisposable)TestUtilities.GetFieldValueFromObject("_schemaGroupingBlock", messageProcessor)).Dispose();
+        }
+
+        scope.Seal();
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfReasonCode.PostRejected, result.Reason.Code);
+        Assert.True(schemaSent.Wait(WaitTime), "The schema block did not flush the scoped type.");
+        await Task.Delay(300);
+        Assert.Empty(barrierCounts);
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that disposing a scope after sealing it, while one seal barrier is still waiting for a grouping block flush,
+    /// doesn't leave a barrier count behind in serialization once the late barrier arrives.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_ScopeDisposedBeforeLateBarrier_LeavesNoBarrierCount()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var messageProcessor = CreateScopedProcessor(coordinator, new Mock<IFailoverDataMessageProcessor>().Object);
+        var serializationBlock = (SerializationBlock)TestUtilities.GetFieldValueFromObject("_serializationBlock", messageProcessor);
+        var barrierCounts = (Dictionary<ScopeToken, int>)TestUtilities.GetFieldValueFromObject("_materializationBarrierCounts", serializationBlock);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = false }, out var scope));
+        scope.WriteType(new DynamicDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() });
+        scope.Seal();
+        Assert.True(SpinWait.SpinUntil(() => barrierCounts.Count == 1, WaitTime), "The instance block's barrier did not reach serialization.");
+
+        await scope.DisposeAsync();
+
+        // Disposing flushes the schema block, which forwards the late barrier.
+        ((IDisposable)TestUtilities.GetFieldValueFromObject("_schemaGroupingBlock", messageProcessor)).Dispose();
+        Assert.True(SpinWait.SpinUntil(() => barrierCounts.Count == 0, WaitTime), "Serialization kept a barrier count for the disposed scope.");
+    }
+
+    private static DataMessageProcessor CreateScopedProcessor(OmfAwaitableCoordinator coordinator, IFailoverDataMessageProcessor failoverDataMessageProcessor)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+        var mockLogManager = new Mock<ILogManager>();
+        mockLogManager.Setup(logManager => logManager.GetOrCreateLogger(It.IsAny<string>(), It.IsAny<LoggerConfiguration>()))
+            .Returns(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+
+        return new DataMessageProcessor(
+            mockLogManager.Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            failoverDataMessageProcessor,
+            mockApplicationManifest.Object,
+            coordinator);
     }
 
     private static Dictionary<string, object> DeserializeValues(IEnumerable<object> values)

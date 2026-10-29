@@ -19,6 +19,7 @@ internal static class ConfigurationConstants
     internal const string ApplicationDataDirectoryKey = "ApplicationSettings:ApplicationDataDirectory";
     internal const string ApplicationPortKey = "ApplicationSettings:Port";
     internal const string DeviceNameKey = "ApplicationSettings:DeviceName";
+    internal const string MaxActiveAwaitableScopesKey = "ApplicationSettings:MaxActiveAwaitableScopes";
     internal const string DefaultAppSettingsFileName = "appsettings.json";
     internal const string AppSettingsFileTemplate = "appsettings.{0}.json";
     internal const string DefaultInstanceId = "1";

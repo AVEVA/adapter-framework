@@ -17,6 +17,7 @@ using System.IO;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
@@ -55,7 +56,23 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         _targetIdentifier = targetIdentifier;
         _persistentQueue = persistentQueue;
         _logger = logger;
+        _persistentQueue.TrackedItemsLost += OnTrackedItemsLost;
     }
+
+    #endregion
+
+    #region Public Events
+
+    /// <summary>
+    /// Raised when bodies with a serialized message ID can't be added to the queue, or are lost before they are dequeued.
+    /// Loss handlers run while the persistent queue holds its locks, so they must not call back into the queue.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
+
+    /// <summary>
+    /// Raised when writing a body with a serialized message ID to disk fails. The queue keeps the body and writes it on a later flush.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodyWriteFailed;
 
     #endregion
 
@@ -66,9 +83,15 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
     {
         ThrowHelper.ThrowIfArgumentNull(message, nameof(message));
 
-        var dataItem = CreateDataItem(message);
-
-        _persistentQueue.Enqueue(dataItem);
+        try
+        {
+            _persistentQueue.Enqueue(CreateDataItem(message));
+        }
+        catch
+        {
+            RaiseForBody(SerializedBodiesDiscarded, message, OmfReasonCode.EnqueueFailed);
+            throw;
+        }
 
         try
         {
@@ -78,6 +101,13 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         {
             // This should only happen for an out of disk space exception when using FileQueue as the IPersistentQueue
             _logger?.LogError(ex, "Error flushing {MessageType} to disk in buffer for {TargetIdentifier}.", message.MessageType, _targetIdentifier);
+            RaiseForBody(SerializedBodyWriteFailed, message, OmfReasonCode.DiskError);
+        }
+        catch
+        {
+            // The body is already staged and is written on a later flush, so it isn't lost.
+            RaiseForBody(SerializedBodyWriteFailed, message, OmfReasonCode.DiskError);
+            throw;
         }
     }
 
@@ -139,11 +169,48 @@ public abstract class PersistentOmfMessageQueueBase<TMessage> : IPersistentMessa
         {
             if (disposing)
             {
+                _persistentQueue.TrackedItemsLost -= OnTrackedItemsLost;
                 _persistentQueue.Dispose();
             }
 
             _disposed = true;
         }
+    }
+
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// Raises <paramref name="handler"/> for the body when it has a serialized message ID.
+    /// </summary>
+    /// <param name="handler">The event to raise.</param>
+    /// <param name="message">The body.</param>
+    /// <param name="reason">The reason code.</param>
+    private void RaiseForBody(EventHandler<SerializedBodiesEventArgs> handler, TMessage message, OmfReasonCode reason)
+    {
+        if (message.SerializedMessageId is { } serializedMessageId)
+        {
+            handler?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, reason));
+        }
+    }
+
+    /// <summary>
+    /// Re-raises lost tracked items as <see cref="SerializedBodiesDiscarded"/> with the matching reason code.
+    /// </summary>
+    /// <param name="sender">The persistent queue.</param>
+    /// <param name="e">The lost tracking IDs and the loss reason.</param>
+    private void OnTrackedItemsLost(object sender, TrackedItemsLostEventArgs e)
+    {
+        var reason = e.Reason switch
+        {
+            TrackedItemLossReason.Evicted => OmfReasonCode.BufferFull,
+            TrackedItemLossReason.Cleared => OmfReasonCode.BuffersReset,
+            _ => OmfReasonCode.CorruptRecord,
+        };
+
+        _logger?.LogWarning("{Count} persisted bodies with serialized message IDs were lost in buffer for {TargetIdentifier}: {Reason}.", e.TrackingIds.Count, _targetIdentifier, reason);
+        SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesEventArgs(e.TrackingIds, reason));
     }
 
     #endregion

@@ -138,6 +138,7 @@ public class Serializer_Tests : IDisposable
     [InlineData(DataItemVersion.V2)]
     [InlineData(DataItemVersion.V3)]
     [InlineData(DataItemVersion.V4)]
+    [InlineData(DataItemVersion.V5)]
     public void Serializer_SerializeDeserializeDataItem_Success(DataItemVersion dataItemVersion)
     {
         var rnd = new Random();
@@ -153,6 +154,68 @@ public class Serializer_Tests : IDisposable
         Assert.NotNull(deserializedItem);
         Assert.Equal(item.Version, deserializedItem.Version);
         Assert.Equal(item.Data, deserializedItem.Data);
+    }
+
+    /// <summary>
+    /// Verifies each persisted version retains its published marker and framing.
+    /// </summary>
+    [Theory]
+    [InlineData(DataItemVersion.V1, "814CED2F2F374A15")]
+    [InlineData(DataItemVersion.V2, "421C4B998E7D1141")]
+    [InlineData(DataItemVersion.V3, "324C429223321342")]
+    [InlineData(DataItemVersion.V4, "7A13E45C0B9D61C8")]
+    [InlineData(DataItemVersion.V5, "5A17C36E942B7DE1")]
+    public void Serializer_SerializeDataItem_PreservesVersionMarkerAndFraming(DataItemVersion version, string marker)
+    {
+        using var stream = new MemoryStream();
+        _serializer.SerializeDataItem(stream, new DataItem(version, new byte[] { 0x11, 0x22, 0x33 }));
+        var bytes = stream.ToArray();
+
+        Assert.Equal(19, bytes.Length);
+        Assert.Equal(Convert.FromHexString(marker), bytes[..8]);
+        Assert.Equal(new byte[] { 3, 0, 0, 0 }, bytes[8..12]);
+        Assert.Equal(new byte[] { 0x11, 0x22, 0x33 }, bytes[12..15]);
+        stream.Position = 0;
+        var restored = _serializer.DeserializeDataItem(stream);
+        Assert.Equal(version, restored.Version);
+        Assert.Equal(new byte[] { 0x11, 0x22, 0x33 }, restored.Data);
+        Assert.Equal(stream.Length, stream.Position);
+    }
+
+    /// <summary>
+    /// Verifies mixed legacy, V4, and V5 records can be read sequentially and recovered after corrupt bytes, including CRC validation of V5.
+    /// </summary>
+    [Fact]
+    public void Serializer_MixedVersionsAndCorruptV5_RecoversNextValidRecord()
+    {
+        using var stream = new MemoryStream();
+        var versions = new[] { DataItemVersion.V1, DataItemVersion.V2, DataItemVersion.V3, DataItemVersion.V4, DataItemVersion.V5 };
+        foreach (var version in versions)
+        {
+            _serializer.SerializeDataItem(stream, new DataItem(version, new byte[] { (byte)version }));
+        }
+
+        var corruptPosition = stream.Position;
+        _serializer.SerializeDataItem(stream, new DataItem(DataItemVersion.V5, new byte[] { 0x11 }));
+        stream.Position = corruptPosition + 12;
+        stream.WriteByte(0xff);
+        stream.Position = stream.Length;
+        _serializer.SerializeDataItem(stream, new DataItem(DataItemVersion.V5, Array.Empty<byte>()));
+        stream.Position = 0;
+
+        foreach (var version in versions)
+        {
+            var restored = _serializer.DeserializeDataItem(stream);
+            Assert.Equal(version, restored.Version);
+            Assert.Equal(new byte[] { (byte)version }, restored.Data);
+        }
+
+        Assert.Throws<DataRecordException>(() => _serializer.DeserializeDataItem(stream));
+        Assert.Equal(corruptPosition, stream.Position);
+        Assert.True(_serializer.TryDeserializeNextValidDataItem(stream, out var recovered));
+        Assert.Equal(DataItemVersion.V5, recovered.Version);
+        Assert.Empty(recovered.Data);
+        Assert.Equal(stream.Length, stream.Position);
     }
 
     [Fact]
