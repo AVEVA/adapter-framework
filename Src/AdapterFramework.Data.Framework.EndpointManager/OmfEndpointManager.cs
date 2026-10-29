@@ -50,6 +50,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     private readonly OmfAwaitableCoordinator _awaitableCoordinator;
 
     // Orders delivery registration against writer removal, so a removal discards every delivery registered for the writer.
+    // Only writer list changes and enqueues run under it. Writer disposal and buffer file I/O run outside it, except during a reset.
     private readonly object _dispatchLock = new();
 
     // Serializes endpoint changes, so a removed writer can be disposed outside the dispatch lock before its ID is added again.
@@ -107,6 +108,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         {
             // Snapshot, delivery registration, and enqueue share the removal lock so endpoint
             // removal cannot miss a delivery registered for that writer.
+            // Enqueue can flush to disk inline, as on main; deferring that to the queue's background task was considered and not adopted.
             var writers = _writers;
             var serializedMessageId = _dispatchCoordinator is null ? null : serializedMessage.SerializedMessageId;
             if (serializedMessageId is { } bodyId)
@@ -248,6 +250,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         lock (_configurationLock)
         {
             // Reset replaces every writer, so sends wait instead of finding no writers mid-reset.
+            // The new writers reuse the old writers' buffer files, so they can't be created until the old ones are disposed.
             lock (_dispatchLock)
             {
                 return ResetDataBuffersCore();
@@ -272,7 +275,8 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     public void UpdateBufferSize(int newMaxBufferSizeMB)
     {
-        lock (_dispatchLock)
+        // Every writer list change takes this lock, so no writer is disposed while its files are resized, and sends aren't blocked.
+        lock (_configurationLock)
         {
             UpdateBufferSizeCore(newMaxBufferSizeMB);
         }
@@ -306,28 +310,32 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     protected virtual void Dispose(bool disposing)
     {
-        lock (_configurationLock)
-        {
-            lock (_dispatchLock)
-            {
-                DisposeCore(disposing);
-            }
-        }
-    }
-
-    private void DisposeCore(bool disposing)
-    {
-        if (_disposed || !disposing)
+        if (!disposing)
         {
             return;
         }
 
-        foreach (var writer in _writers)
+        lock (_configurationLock)
         {
-            writer?.Dispose();
-        }
+            ImmutableArray<IOmfWriter> writers;
+            lock (_dispatchLock)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
 
-        _disposed = true;
+                _disposed = true;
+                writers = _writers;
+                _writers = ImmutableArray<IOmfWriter>.Empty;
+            }
+
+            // Like RemoveOmfWriter: detached under the dispatch lock, disposed outside it so sends don't wait.
+            foreach (var writer in writers)
+            {
+                writer?.Dispose();
+            }
+        }
     }
 
     private void AddOmfWriters(string componentId, string facet)

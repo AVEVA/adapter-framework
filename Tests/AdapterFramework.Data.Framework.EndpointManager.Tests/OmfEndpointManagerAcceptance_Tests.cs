@@ -252,6 +252,71 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
     }
 
     /// <summary>
+    /// Verifies that a buffer size change completes while a send is stuck in a writer, such as in a slow disk flush,
+    /// because resizing doesn't take the dispatch lock.
+    /// </summary>
+    [Fact]
+    public async Task UpdateBufferSize_SendBlockedInWriter_Completes()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _writers["A"].Setup(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback(() =>
+        {
+            entered.SetResult();
+            release.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        });
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20);
+        var send = Task.Run(() => manager.SendMessage(message));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await Task.Run(() => manager.UpdateBufferSize(50)).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await send.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>
+    /// Verifies that while shutdown is still disposing a writer, a send completes instead of waiting for the disposal,
+    /// and reaches no writer because shutdown detached them all first.
+    /// </summary>
+    [Fact]
+    public async Task Dispose_WriterStillDisposing_DoesNotBlockSendMessage()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var disposing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _writers["A"].Setup(writer => writer.Dispose()).Callback(() =>
+        {
+            disposing.SetResult();
+            release.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+        });
+        var shutdown = Task.Run(manager.Dispose);
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x7b, 0x7d }, MessageAction.Create, 1, OmfVersion.Omf20);
+        try
+        {
+            await disposing.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await Task.Run(() => manager.SendMessage(message)).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await shutdown.WaitAsync(TimeSpan.FromSeconds(10));
+        _writers["A"].Verify(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>()), Times.Never);
+        _writers["B"].Verify(writer => writer.SendMessage(It.IsAny<ISerializedOmfMessage>()), Times.Never);
+        _writers["B"].Verify(writer => writer.Dispose(), Times.Once);
+    }
+
+    /// <summary>
     /// Disposes the coordinator.
     /// </summary>
     public void Dispose() => _coordinator.Dispose();
