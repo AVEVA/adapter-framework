@@ -204,13 +204,13 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         }
     }
 
-    /// <summary>Recovered V3/V4 records retain their payload and IDs; later ordinary scopes remain independent of earlier outcomes.</summary>
+    /// <summary>Recovered V3/V5 records retain their payload and IDs; later ordinary scopes remain independent of earlier outcomes.</summary>
     [Theory]
     [InlineData(DataItemVersion.V3, false, HttpStatusCode.Accepted)]
-    [InlineData(DataItemVersion.V4, true, HttpStatusCode.Accepted)]
-    [InlineData(DataItemVersion.V4, true, HttpStatusCode.OK)]
-    [InlineData(DataItemVersion.V4, true, HttpStatusCode.NoContent)]
-    [InlineData(DataItemVersion.V4, true, HttpStatusCode.BadRequest)]
+    [InlineData(DataItemVersion.V5, true, HttpStatusCode.Accepted)]
+    [InlineData(DataItemVersion.V5, true, HttpStatusCode.OK)]
+    [InlineData(DataItemVersion.V5, true, HttpStatusCode.NoContent)]
+    [InlineData(DataItemVersion.V5, true, HttpStatusCode.BadRequest)]
     public async Task SendMessage_PersistedBacklog_PreservesVersionsAndScopedAcceptance(DataItemVersion version, bool scoped, HttpStatusCode status)
     {
         _endpoint.SetHttpResponse(status);

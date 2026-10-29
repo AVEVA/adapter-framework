@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -35,16 +36,18 @@ public class PersistentOmfMessageQueue_Tests
     private const string TestTargetIdentifier = "http://localhost:5590/omf";
 
     /// <summary>
-    /// Verifies independently constructed writer payloads retain their exact body, trailer fields, and V4 ID.
+    /// Verifies independently constructed writer payloads retain their exact body, trailer fields, V4 resource counts, and V5 ID.
     /// </summary>
     [Theory]
     [InlineData(DataItemVersion.V1)]
     [InlineData(DataItemVersion.V2)]
     [InlineData(DataItemVersion.V3)]
     [InlineData(DataItemVersion.V4)]
+    [InlineData(DataItemVersion.V5)]
     public void PersistentOmfMessageQueue_ExistingRecordVersions_ReadBodyAndId(DataItemVersion version)
     {
         var id = Guid.Parse("12345678-90ab-cdef-1234-567890abcdef");
+        var resourceCounts = new OmfResourceCounts(1_000, 7, 3);
         var payload = new List<byte> { (byte)MessageType.Instance, 4, 3, 2, 1, 0x11, 0x22 };
         if (version >= DataItemVersion.V3)
         {
@@ -61,7 +64,16 @@ public class PersistentOmfMessageQueue_Tests
             payload.Add((byte)OmfVersion.Omf20);
         }
 
-        if (version == DataItemVersion.V4)
+        if (version >= DataItemVersion.V4)
+        {
+            var counts = new byte[3 * sizeof(long)];
+            BinaryPrimitives.WriteInt64LittleEndian(counts, resourceCounts.StreamValues);
+            BinaryPrimitives.WriteInt64LittleEndian(counts.AsSpan(sizeof(long)), resourceCounts.Assets);
+            BinaryPrimitives.WriteInt64LittleEndian(counts.AsSpan(2 * sizeof(long)), resourceCounts.Events);
+            payload.AddRange(counts);
+        }
+
+        if (version == DataItemVersion.V5)
         {
             payload.AddRange(id.ToByteArray());
         }
@@ -74,24 +86,25 @@ public class PersistentOmfMessageQueue_Tests
         Assert.Equal(new byte[] { 0x11, 0x22 }, restored.MessageBody);
         Assert.Equal(0x01020304, restored.ItemCount);
         Assert.Equal(MessageType.Instance, restored.MessageType);
-        Assert.Equal(version == DataItemVersion.V4 ? id : (Guid?)null, restored.SerializedMessageId);
+        Assert.Equal(version == DataItemVersion.V5 ? id : (Guid?)null, restored.SerializedMessageId);
+        Assert.Equal(version >= DataItemVersion.V4 ? resourceCounts : default, restored.ResourceCounts);
         Assert.Equal(version >= DataItemVersion.V3 ? PartitionKey.Key7 : (PartitionKey?)null, restored.PartitionKey);
         Assert.Equal(version >= DataItemVersion.V3 ? OmfVersion.Omf20 : OmfVersion.Omf12, restored.OmfVersion);
         Assert.Equal(version >= DataItemVersion.V2 ? MessageAction.Update : MessageAction.Default, restored.MessageAction);
     }
 
     /// <summary>
-    /// Verifies V4 records missing any part of their trailer or ID are not interpreted as message bodies or IDs.
+    /// Verifies V5 records missing any part of their trailer, resource counts, or ID are not interpreted as message bodies or IDs.
     /// </summary>
     [Theory]
     [InlineData(5)]
     [InlineData(8)]
-    [InlineData(16)]
-    [InlineData(23)]
-    public void PersistentOmfMessageQueue_TruncatedV4_ReturnsEmptyMessage(int length)
+    [InlineData(32)]
+    [InlineData(47)]
+    public void PersistentOmfMessageQueue_TruncatedV5_ReturnsEmptyMessage(int length)
     {
         var persistentQueue = new Mock<IPersistentQueue>();
-        persistentQueue.Setup(q => q.Dequeue()).Returns(new DataItem(DataItemVersion.V4, new byte[length]));
+        persistentQueue.Setup(q => q.Dequeue()).Returns(new DataItem(DataItemVersion.V5, new byte[length]));
         using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, persistentQueue.Object, null);
 
         Assert.True(queue.TryDequeue(out var restored));
@@ -165,6 +178,125 @@ public class PersistentOmfMessageQueue_Tests
         Assert.Equal(serializedOmfMessage.PartitionKey, partitionKey == null ? null : (PartitionKey)enqueuedDataItem.Data[^3]);
         Assert.Equal(serializedOmfMessage.MessageAction, (MessageAction)enqueuedDataItem.Data[^2]);
         Assert.Equal(serializedOmfMessage.OmfVersion, (OmfVersion)enqueuedDataItem.Data[^1]);
+    }
+
+    [Theory]
+    [InlineData(null, MessageAction.Create)]
+    [InlineData(PartitionKey.Key16, MessageAction.Update)]
+    [InlineData(null, MessageAction.Delete)]
+    public void PersistentOmfMessageQueue_ResourceCounts_RoundTrip_Test(PartitionKey? partitionKey, MessageAction messageAction)
+    {
+        DataItem enqueuedDataItem = null;
+        var body = new byte[] { 0x20, 0x21, 0x22 };
+        var resourceCounts = new OmfResourceCounts(1_000, 7, 3);
+        var serializedOmfMessage = new SerializedOmfMessage(MessageType.Instance, body, messageAction, 1_012, OmfVersion.Omf20, partitionKey)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Enqueue(It.IsAny<DataItem>()))
+            .Callback((DataItem dataItem) => enqueuedDataItem = dataItem);
+
+        using var persistentOmfMessageQueue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        persistentOmfMessageQueue.Enqueue(serializedOmfMessage);
+
+        Assert.NotNull(enqueuedDataItem);
+        Assert.Equal(DataItemVersion.V4, enqueuedDataItem.Version);
+
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Dequeue()).Returns(enqueuedDataItem);
+        Assert.True(persistentOmfMessageQueue.TryDequeue(out var dequeuedMessage));
+
+        Assert.Equal(MessageType.Instance, dequeuedMessage.MessageType);
+        Assert.Equal(body, dequeuedMessage.MessageBody);
+        Assert.Equal(1_012, dequeuedMessage.ItemCount);
+        Assert.Equal(messageAction, dequeuedMessage.MessageAction);
+        Assert.Equal(OmfVersion.Omf20, dequeuedMessage.OmfVersion);
+        Assert.Equal(partitionKey, dequeuedMessage.PartitionKey);
+        Assert.Equal(resourceCounts, dequeuedMessage.ResourceCounts);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Instance, OmfVersion.Omf20)]
+    [InlineData(MessageType.Schema, OmfVersion.Omf20)]
+    [InlineData(MessageType.DynamicData, OmfVersion.Omf12)]
+    public void PersistentOmfMessageQueue_NoResourceCounts_WritesV3_Test(MessageType messageType, OmfVersion omfVersion)
+    {
+        DataItem enqueuedDataItem = null;
+        var serializedOmfMessage = new SerializedOmfMessage(messageType, new byte[] { 0x20 }, MessageAction.Default, 1, omfVersion);
+
+        var mockPersistentQueue = new Mock<IPersistentQueue>();
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Enqueue(It.IsAny<DataItem>()))
+            .Callback((DataItem dataItem) => enqueuedDataItem = dataItem);
+
+        using var persistentOmfMessageQueue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
+        persistentOmfMessageQueue.Enqueue(serializedOmfMessage);
+
+        Assert.Equal(DataItemVersion.V3, enqueuedDataItem.Version);
+
+        mockPersistentQueue.Setup(persistentQueue => persistentQueue.Dequeue()).Returns(enqueuedDataItem);
+        Assert.True(persistentOmfMessageQueue.TryDequeue(out var dequeuedMessage));
+        Assert.True(dequeuedMessage.ResourceCounts.IsEmpty);
+    }
+
+    [Fact]
+    public void PersistentOmfMessageQueue_MixedV3AndV4Records_ReadAfterUpgrade_Test()
+    {
+        const string FilePrefix = "data";
+        var bufferDirectory = Path.Combine(Path.GetTempPath(), $"omf-buffer-{Guid.NewGuid():N}");
+
+        try
+        {
+            // Before upgrade: V3 records exactly as the previous build wrote them.
+            using (var fileQueue = new FileQueue(bufferDirectory, FilePrefix))
+            {
+                fileQueue.Enqueue(CreateV3DataItem(MessageType.Instance, 5, new byte[] { 0x10, 0x11 }, PartitionKey.Key5, MessageAction.Create, OmfVersion.Omf20));
+                fileQueue.Enqueue(CreateV3DataItem(MessageType.DynamicData, 2, new byte[] { 0x20 }, null, MessageAction.Default, OmfVersion.Omf12));
+                fileQueue.FlushEnqueues();
+            }
+
+            // After upgrade: reopen the same buffer with the new code and append a V4 record.
+            var v4Counts = new OmfResourceCounts(1_000, 7, 3);
+            using var reopenedFileQueue = new FileQueue(bufferDirectory, FilePrefix);
+            using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, reopenedFileQueue, null);
+            queue.Enqueue(new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x30, 0x31, 0x32 }, MessageAction.Update, 1_010, OmfVersion.Omf20, PartitionKey.Key16)
+            {
+                ResourceCounts = v4Counts,
+            });
+
+            Assert.True(queue.TryDequeue(out var first));
+            Assert.Equal(MessageType.Instance, first.MessageType);
+            Assert.Equal(new byte[] { 0x10, 0x11 }, first.MessageBody);
+            Assert.Equal(5, first.ItemCount);
+            Assert.Equal(PartitionKey.Key5, first.PartitionKey);
+            Assert.Equal(MessageAction.Create, first.MessageAction);
+            Assert.Equal(OmfVersion.Omf20, first.OmfVersion);
+            Assert.True(first.ResourceCounts.IsEmpty);
+
+            Assert.True(queue.TryDequeue(out var second));
+            Assert.Equal(MessageType.DynamicData, second.MessageType);
+            Assert.Equal(new byte[] { 0x20 }, second.MessageBody);
+            Assert.Equal(2, second.ItemCount);
+            Assert.Null(second.PartitionKey);
+            Assert.Equal(OmfVersion.Omf12, second.OmfVersion);
+            Assert.True(second.ResourceCounts.IsEmpty);
+
+            Assert.True(queue.TryDequeue(out var third));
+            Assert.Equal(new byte[] { 0x30, 0x31, 0x32 }, third.MessageBody);
+            Assert.Equal(1_010, third.ItemCount);
+            Assert.Equal(PartitionKey.Key16, third.PartitionKey);
+            Assert.Equal(MessageAction.Update, third.MessageAction);
+            Assert.Equal(v4Counts, third.ResourceCounts);
+
+            Assert.False(queue.TryDequeue(out _));
+        }
+        finally
+        {
+            if (Directory.Exists(bufferDirectory))
+            {
+                Directory.Delete(bufferDirectory, recursive: true);
+            }
+        }
     }
 
     [Theory]
@@ -357,27 +489,33 @@ public class PersistentOmfMessageQueue_Tests
     }
 
     /// <summary>
-    /// A body with a serialized message ID is written as a V4 record that appends the ID after the V3 trailer and carries it as the tracking ID.
+    /// A body with a serialized message ID is written as a V5 record that appends resource counts and the ID after the V3 trailer and carries the ID as the tracking ID.
     /// </summary>
     [Fact]
-    public void PersistentOmfMessageQueue_Enqueue_ScopedBody_WritesV4Record()
+    public void PersistentOmfMessageQueue_Enqueue_ScopedBody_WritesV5Record()
     {
         var id = Guid.NewGuid();
+        var resourceCounts = new OmfResourceCounts(3, 0, 0);
         DataItem enqueued = null;
-        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20, 0x21 }, MessageAction.Create, 3, OmfVersion.Omf20, PartitionKey.Key7) { SerializedMessageId = id };
+        var message = new SerializedOmfMessage(MessageType.Instance, new byte[] { 0x20, 0x21 }, MessageAction.Create, 3, OmfVersion.Omf20, PartitionKey.Key7)
+        {
+            SerializedMessageId = id,
+            ResourceCounts = resourceCounts,
+        };
         var mockPersistentQueue = new Mock<IPersistentQueue>();
         mockPersistentQueue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback((DataItem item) => enqueued = item);
 
         using var queue = new PersistentOmfMessageQueue(TestTargetIdentifier, mockPersistentQueue.Object, null);
         queue.Enqueue(message);
 
-        Assert.Equal(DataItemVersion.V4, enqueued.Version);
+        Assert.Equal(DataItemVersion.V5, enqueued.Version);
         Assert.Equal(id, enqueued.TrackingId);
         Assert.Equal(message.MessageBody.Length + 8 + SerializedOmfMessage.SerializedMessageIdSize, message.GetMessageSizeInBytes());
-        Assert.Equal(message.GetMessageSizeInBytes(), enqueued.Data.Length);
-        Assert.Equal(PartitionKey.Key7, (PartitionKey)enqueued.Data[^19]);
-        Assert.Equal(MessageAction.Create, (MessageAction)enqueued.Data[^18]);
-        Assert.Equal(OmfVersion.Omf20, (OmfVersion)enqueued.Data[^17]);
+        Assert.Equal(message.GetMessageSizeInBytes() + (3 * sizeof(long)), enqueued.Data.Length);
+        Assert.Equal(PartitionKey.Key7, (PartitionKey)enqueued.Data[^43]);
+        Assert.Equal(MessageAction.Create, (MessageAction)enqueued.Data[^42]);
+        Assert.Equal(OmfVersion.Omf20, (OmfVersion)enqueued.Data[^41]);
+        Assert.Equal(resourceCounts.StreamValues, BinaryPrimitives.ReadInt64LittleEndian(enqueued.Data.AsSpan(enqueued.Data.Length - 40)));
         Assert.Equal(id, new Guid(enqueued.Data.AsSpan(enqueued.Data.Length - 16)));
     }
 
@@ -518,5 +656,18 @@ public class PersistentOmfMessageQueue_Tests
 
         Assert.Empty(discarded);
         Assert.Equal(new[] { id }, Assert.Single(writeFailed).SerializedMessageIds);
+    }
+
+    // Byte layout used by builds before V4: [type][itemCount int32 LE][body][partitionKey][action][omfVersion].
+    private static DataItem CreateV3DataItem(MessageType messageType, int itemCount, byte[] body, PartitionKey? partitionKey, MessageAction messageAction, OmfVersion omfVersion)
+    {
+        var data = new byte[1 + sizeof(int) + body.Length + 3];
+        data[0] = (byte)messageType;
+        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(1), itemCount);
+        body.CopyTo(data, 1 + sizeof(int));
+        data[^3] = (byte)(partitionKey ?? 0);
+        data[^2] = (byte)messageAction;
+        data[^1] = (byte)omfVersion;
+        return new DataItem(DataItemVersion.V3, data);
     }
 }

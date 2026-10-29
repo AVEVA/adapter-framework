@@ -126,6 +126,7 @@ public class FailoverPersistentOmfMessageQueue_Tests
     [InlineData(DataItemVersion.V3, 0)]
     [InlineData(DataItemVersion.V3, 15)]
     [InlineData(DataItemVersion.V4, 40)]
+    [InlineData(DataItemVersion.V5, 48)]
     [InlineData(DataItemVersion.V1, 40)]
     public void FailoverPersistentOmfMessageQueue_InvalidRecord_ReturnsEmptyMessage(DataItemVersion version, int length)
     {
