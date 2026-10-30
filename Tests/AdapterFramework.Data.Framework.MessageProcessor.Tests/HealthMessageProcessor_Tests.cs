@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -314,5 +315,35 @@ public class HealthMessageProcessor_Tests
         {
             Assert.Null(receivedMessages[j].Metadata);
         }
+    }
+
+    [Fact]
+    public void HealthMessageProcessor_DisposeBeforeFlushTimer_SendsTypeAndContainerBeforeData()
+    {
+        var sentMessageTypes = new ConcurrentQueue<MessageType>();
+        var mockEndpointManager = new Mock<IOmfHealthEndpointManager>();
+        var mockSerializer = new Mock<ISerializer>();
+
+        mockEndpointManager.Setup(em => em.SendMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(message => sentMessageTypes.Enqueue(message.MessageType));
+        mockSerializer.Setup(serializer => serializer.Serialize(It.IsAny<It.IsAnyType>())).Returns([1]);
+
+        // A 10-minute flush time keeps every batch buffered until Dispose, so the test always detects a reverted dispose order.
+        using var messageProcessor = new HealthMessageProcessor(null, mockSerializer.Object, null, mockEndpointManager.Object, (int)TimeSpan.FromMinutes(10).TotalMilliseconds);
+
+        messageProcessor.WriteHealthTypes([new DynamicDataType { Id = "HealthType" }], MessageAction.Create);
+        messageProcessor.WriteHealthStreams([new DataStream { Id = "HealthStream", TypeId = "HealthType" }], MessageAction.Create);
+        messageProcessor.WriteHealthValue("HealthStream", Classification.Dynamic, 42, MessageAction.Default);
+
+        // Only the producers-first dispose order delivers the pending batches, definitions first.
+        Assert.Null(Record.Exception(messageProcessor.Dispose));
+
+        List<MessageType> order = [.. sentMessageTypes];
+
+        Assert.Contains(MessageType.Type, order);
+        Assert.Contains(MessageType.Container, order);
+        Assert.Contains(MessageType.DynamicData, order);
+        Assert.True(order.IndexOf(MessageType.Type) < order.IndexOf(MessageType.DynamicData), $"Type must be sent before data. Order: {string.Join(", ", order)}");
+        Assert.True(order.IndexOf(MessageType.Container) < order.IndexOf(MessageType.DynamicData), $"Container must be sent before data. Order: {string.Join(", ", order)}");
     }
 }

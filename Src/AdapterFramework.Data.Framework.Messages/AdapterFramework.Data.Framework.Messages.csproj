@@ -26,4 +26,9 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\AdapterFramework.Data.DataModel\AdapterFramework.Data.DataModel.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- FlushThenForwardMessage handoff tracking (MarkAccepted / IsHandedOff) is used by the dataflow blocks. -->
+    <InternalsVisibleTo Include="AdapterFramework.Data.Framework.DataFlow" />
+  </ItemGroup>
+
 </Project>

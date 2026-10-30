@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+#pragma warning disable CS0618 // Deliberately covers the obsolete Action<Message> constructor overload.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -40,8 +41,6 @@ public class InstanceGroupingBlock_Tests
     private bool _flushTypesStreamsCalled;
     private int _flushCalledCounter;
     private MessageAction _flushMessageAction;
-    private DateTime _flushTypesStreamsCalledTimestamp;
-    private DateTime _flushCalledTimestamp;
     private InstanceMessage _lastFlushedInstanceMessage;
 
     public InstanceGroupingBlock_Tests()
@@ -89,10 +88,20 @@ public class InstanceGroupingBlock_Tests
             mockLogger.Object,
             100,
             DummyFlushAction,
-            null,
+            (Action<Message>)null,
             1000,
             10000,
             CancellationToken.None));
+
+        var definitionsNull = Assert.Throws<ArgumentNullException>(() => new InstanceGroupingBlock(
+            mockLogger.Object,
+            100,
+            DummyFlushAction,
+            (DefinitionsBlock)null,
+            1000,
+            10000,
+            CancellationToken.None));
+        Assert.Equal("definitions", definitionsNull.ParamName);
     }
 
     #endregion
@@ -154,12 +163,9 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
     }
 
     [Fact]
@@ -186,12 +192,9 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
     }
 
     [Fact]
@@ -220,9 +223,7 @@ public class InstanceGroupingBlock_Tests
         block.Post(new DataMessage(_dataMessage.Id, _dataMessage.Classification, _dataMessage.Instance, MessageAction.Update));
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled && _flushMessageAction == MessageAction.Delete, SpinWaitTimeout));
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(1, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 1);
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
         Assert.Equal(MessageAction.Delete, _flushMessageAction);
@@ -295,9 +296,7 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalledCounter == 2, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
-        Assert.Equal(1, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 1);
         Assert.True(_flushCalled);
         Assert.Equal(2, _flushCalledCounter);
     }
@@ -500,11 +499,9 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(SpinWait.SpinUntil(() => _flushCalled && _flushMessageAction == MessageAction.Create, SpinWaitTimeout));
 
-        var totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-
+        AssertTotalInstanceCountEventually(block, 0);
         Assert.True(_flushTypesStreamsCalled);
         Assert.Equal(MessageAction.Create, _flushMessageAction);
-        Assert.Equal(0, totalInstanceCount);
         Assert.Equal(2, _flushCalledCounter);
     }
 
@@ -954,10 +951,8 @@ public class InstanceGroupingBlock_Tests
 
         Assert.True(_flushTypesStreamsCalled);
         Assert.True(_flushCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushCalledTimestamp);
 
-        totalInstanceCount = GetFieldValueFromObject(TotalInstanceCountFieldName, block);
-        Assert.Equal(0, totalInstanceCount);
+        AssertTotalInstanceCountEventually(block, 0);
     }
 
     #endregion
@@ -1058,26 +1053,25 @@ public class InstanceGroupingBlock_Tests
         var mockLogger = new Mock<ILogger>();
         var maxBatchCount = 50_000;
         var capacity = 1000;
+        const int count = 10;
 
-        var block = new InstanceGroupingBlock(
+        using (var block = new InstanceGroupingBlock(
             mockLogger.Object,
             capacity,
             DummyFlushAction,
             DummyFlushTypesStreamsAction,
             maxBatchCount,
             int.MaxValue,
-            CancellationToken.None);
-
-        const int count = 10;
-        for (var i = 0; i < count; i++)
+            CancellationToken.None))
         {
-            block.Post(_dataMessage);
+            for (var i = 0; i < count; i++)
+            {
+                block.Post(_dataMessage);
+            }
+
+            Thread.Sleep(WaitTime);
+            Assert.False(_flushCalled);
         }
-
-        Thread.Sleep(WaitTime);
-        Assert.False(_flushCalled);
-
-        block.Dispose();
 
         Assert.True(_flushCalled);
         Assert.NotNull(_lastFlushedInstanceMessage);
@@ -1088,9 +1082,14 @@ public class InstanceGroupingBlock_Tests
 
     #region Helper Methods
 
+    // The flush callback runs before the worker finishes updating its counters, so wait for the expected value.
+    private static void AssertTotalInstanceCountEventually(InstanceGroupingBlock block, int expected) =>
+        Assert.True(
+            SpinWait.SpinUntil(() => (int)GetFieldValueFromObject(TotalInstanceCountFieldName, block) == expected, SpinWaitTimeout),
+            $"The total instance count did not reach {expected}.");
+
     private void DummyFlushAction(Message m)
     {
-        _flushCalledTimestamp = DateTime.UtcNow;
         _flushCalled = true;
         _flushCalledCounter++;
 
@@ -1103,8 +1102,12 @@ public class InstanceGroupingBlock_Tests
 
     private void DummyFlushTypesStreamsAction(Message m)
     {
-        _flushTypesStreamsCalledTimestamp = DateTime.UtcNow;
         _flushTypesStreamsCalled = true;
+
+        if (m is FlushThenForwardMessage forward)
+        {
+            forward.Deliver();
+        }
     }
 
     #endregion

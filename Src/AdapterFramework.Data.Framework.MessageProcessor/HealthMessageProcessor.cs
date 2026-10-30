@@ -53,6 +53,7 @@ public class HealthMessageProcessor : IHealthMessageProcessor, IDisposable
     private readonly DataGroupingBlock _dataGroupingBlock;
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
+    private readonly ILogger _logger;
     private bool _disposed;
 
     #endregion
@@ -60,9 +61,27 @@ public class HealthMessageProcessor : IHealthMessageProcessor, IDisposable
     #region Public Constructor
 
     public HealthMessageProcessor(ILogger logger, ISerializer serializer, ICompressor compressor, IOmfHealthEndpointManager endpointManager)
+        : this(logger, serializer, compressor, endpointManager, FlushTime)
+    {
+    }
+
+    #endregion
+
+    #region Internal Constructor
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="HealthMessageProcessor"/> class with a custom flush time for the grouping blocks.
+    /// </summary>
+    /// <param name="logger"><see cref="ILogger"/> instance.</param>
+    /// <param name="serializer">The serializer.</param>
+    /// <param name="compressor">The optional compressor.</param>
+    /// <param name="endpointManager">The health endpoint manager.</param>
+    /// <param name="flushTime">The max time in milliseconds before batched types, streams and values get flushed.</param>
+    internal HealthMessageProcessor(ILogger logger, ISerializer serializer, ICompressor compressor, IOmfHealthEndpointManager endpointManager, int flushTime)
     {
         ThrowHelper.ThrowIfArgumentNull(endpointManager, nameof(endpointManager));
 
+        _logger = logger;
         endpointManager.Initialize(EdgeSystemConstants.SystemComponentId, EdgeSystemConstants.HealthEndpointsFacetName);
 
         var tuningParameters = new TuningParameters
@@ -76,10 +95,10 @@ public class HealthMessageProcessor : IHealthMessageProcessor, IDisposable
         var dataBatchingStrategyOptimizer = new BatchSizeOptimizer(tuningParameters, MaxMessageSizeBytes, msg => _dataGroupingBlock.Post(new StateMessage(msg)));
         var streamsBatchingStrategyOptimizer = new BatchSizeOptimizer(tuningParameters, MaxMessageSizeBytes, msg => _typesStreamsGroupingBlock.Post(new StateMessage(msg)));
 
-        _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg), MaxStreamsBatchCount, MaxTypesBatchCount, FlushTime, CancellationToken.None);
-        _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.Post(msg), msg => _typesStreamsGroupingBlock.Post(msg), MaxDataBatchCount, FlushTime, CancellationToken.None);
+        _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg), MaxStreamsBatchCount, MaxTypesBatchCount, flushTime, CancellationToken.None);
+        _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.PostOrThrow(msg), _typesStreamsGroupingBlock, MaxDataBatchCount, flushTime, CancellationToken.None);
         _serializationBlock = new SerializationBlock(dataBatchingStrategyOptimizer, streamsBatchingStrategyOptimizer, MaxMessageSizeBytes, logger, BlockCapacity, serializer, compressor, endpointManager.SendMessage, CancellationToken.None);
-        _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg), CancellationToken.None);
+        _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg), CancellationToken.None);
     }
 
     #endregion
@@ -139,12 +158,31 @@ public class HealthMessageProcessor : IHealthMessageProcessor, IDisposable
             return;
         }
 
-        _typesStreamsGroupingBlock?.Dispose();
-        _dataGroupingBlock?.Dispose();
-        _omfDataMessageBlock?.Dispose();
-        _serializationBlock?.Dispose();
+        // Producers must be disposed before the definitions and downstream blocks they feed.
+        // Each block is disposed in isolation so one failure cannot leave the rest running.
+        Safely(() => _dataGroupingBlock?.Dispose());
+        Safely(() => _typesStreamsGroupingBlock?.Dispose());
+        Safely(() => _omfDataMessageBlock?.Dispose());
+        Safely(() => _serializationBlock?.Dispose());
 
         _disposed = true;
+    }
+
+    #endregion
+
+    #region Private Methods
+
+    // Kept in this type so CA2213 can see each field being disposed.
+    private void Safely(Action dispose)
+    {
+        try
+        {
+            dispose();
+        }
+        catch (Exception exception)
+        {
+            DataflowDisposal.ReportDisposeFailure(_logger, exception);
+        }
     }
 
     #endregion
