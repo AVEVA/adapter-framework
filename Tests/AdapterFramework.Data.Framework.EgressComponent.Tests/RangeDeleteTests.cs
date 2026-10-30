@@ -97,7 +97,7 @@ public class RangeDeleteTests
     }
 
     [Fact]
-    public void RangeDelete_PreservesWriteDeleteWriteOrderAndSeparateRanges()
+    public void RangeDelete_PreservesLocalEnqueueOrderAndSeparateRanges()
     {
         var sent = new ConcurrentQueue<ISerializedOmfMessage>();
         using (var processor = CreateProcessor(sent))
@@ -174,6 +174,65 @@ public class RangeDeleteTests
     }
 
     [Fact]
+    public void RangeDelete_RejectsOversizedPayloadBeforeEnqueueing()
+    {
+        const int maximumBytes = 512 * 1024;
+        var range = new StreamingDataRange(Start, Start);
+        var serializer = new OmfJsonSerializer();
+        var wrapperSize = serializer.Serialize(new Dictionary<string, RangeDeleteMessage[]>
+        {
+            ["streamingdata"] = [new RangeDeleteMessage("S", range)],
+        }).Length - 1;
+        var idAtLimit = new string('S', maximumBytes - wrapperSize);
+        var sent = new ConcurrentQueue<ISerializedOmfMessage>();
+        using (var processor = CreateProcessor(sent))
+        {
+            var error = Assert.Throws<ArgumentException>(() => processor.DeleteDynamicValuesInRange(idAtLimit + "S", range));
+            Assert.Equal("id", error.ParamName);
+            // Escaping makes the serialized size larger than the character count.
+            Assert.Throws<ArgumentException>(() => processor.DeleteDynamicValuesInRange(new string('"', maximumBytes / 2), range));
+            processor.DeleteDynamicValuesInRange(idAtLimit, range);
+        }
+
+        Assert.Equal(maximumBytes, Assert.Single(sent).MessageBody.Length);
+    }
+
+    [Fact]
+    public void RangeDelete_SizeValidationUsesConfiguredCompression()
+    {
+        var compressor = new AdapterFramework.Data.Framework.Compression.GZipCompressor();
+        var sent = new ConcurrentQueue<ISerializedOmfMessage>();
+        var id = new string('S', 512 * 1024);
+        using (var processor = CreateProcessor(sent, compressor: compressor))
+        {
+            processor.DeleteDynamicValuesInRange(id, new StreamingDataRange(Start, Start));
+        }
+
+        var message = Assert.Single(sent);
+        Assert.True(message.MessageBody.Length < 512 * 1024);
+        using var payload = JsonDocument.Parse(compressor.Decompress(message.MessageBody));
+        Assert.Equal(id, payload.RootElement.GetProperty("streamingdata")[0].GetProperty("id").GetString());
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    public void RangeDelete_UnsupportedMessageDoesNotFaultSerializationBlock(OmfVersion version)
+    {
+        var sent = new ConcurrentQueue<ISerializedOmfMessage>();
+        var logger = new TestLogger();
+        using (var block = new SerializationBlock(null, null, 4096, logger, -1,
+            new OmfJsonSerializer(), null, sent.Enqueue, CancellationToken.None, version))
+        {
+            block.Post(new RangeDeleteMessage("Stream", new StreamingDataRange(Start, Start)));
+            block.Post(new OmfMessage<DataType>(1, [new StaticDataType { Id = "Type" }], MessageAction.Create));
+        }
+
+        Assert.Equal(MessageAction.Create, Assert.Single(sent).MessageAction);
+        Assert.True(logger.AreErrorsWarningsInLog());
+    }
+
+    [Fact]
     public void RangeDelete_UsesConfiguredCompression()
     {
         var sent = new ConcurrentQueue<ISerializedOmfMessage>();
@@ -189,7 +248,7 @@ public class RangeDeleteTests
             compressed.MessageAction, compressed.ItemCount, compressed.OmfVersion, compressed.PartitionKey), Start, Start);
     }
 
-    private static DataMessageProcessor CreateProcessor(ConcurrentQueue<ISerializedOmfMessage> sent, OmfVersion version = OmfVersion.Omf20)
+    private static DataMessageProcessor CreateProcessor(ConcurrentQueue<ISerializedOmfMessage> sent, OmfVersion version = OmfVersion.Omf20, ICompressor compressor = null)
     {
         var endpoints = new Mock<IOmfDataEndpointManager>();
         endpoints.Setup(e => e.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback<ISerializedOmfMessage>(sent.Enqueue);
@@ -197,7 +256,7 @@ public class RangeDeleteTests
         logs.Setup(l => l.GetOrCreateLogger(It.IsAny<string>())).Returns(NullLogger.Instance);
         var manifest = new Mock<IApplicationManifest>();
         manifest.SetupGet(m => m.OmfVersion).Returns(version);
-        return new DataMessageProcessor(logs.Object, new OmfJsonSerializer(), null, endpoints.Object,
+        return new DataMessageProcessor(logs.Object, new OmfJsonSerializer(), compressor, endpoints.Object,
             new Mock<IEgressComponentIdService>().Object, new Mock<IConfigurationProvider>().Object, applicationManifest: manifest.Object);
     }
 

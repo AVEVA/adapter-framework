@@ -29,8 +29,11 @@ public interface IAdapterMessageProcessor
     /// <param name="range">The bounded time interval to delete.</param>
     /// <param name="partitionKey">The partition used for delivery.</param>
     /// <remarks>
-    /// Acceptance is not confirmation of server completion. Callers must coordinate completion
-    /// before submitting replacement values when the destination processes requests asynchronously.
+    /// This method only enqueues the delete and exposes no server-completion signal. Immediately
+    /// writing replacement values is unsafe unless the destination guarantees ordered completion.
+    /// A shared partition key alone is not such a guarantee. Otherwise, callers must confirm deletion
+    /// through the destination before rewriting. Retries and hot failover may replay a delete after
+    /// replacement values were written; coordinate replay or avoid range replacement in that case.
     /// Range deletes bypass data filters and do not count as written values.
     /// </remarks>
     void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null)

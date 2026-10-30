@@ -36,6 +36,9 @@ public class SerializationBlock : BaseBlock<Message>
     private static readonly Action<ILogger, int, int, Exception> _rangeDeleteTooLarge = LoggerMessage.Define<int, int>(
         LogLevel.Error, new EventId(0, nameof(ProcessRangeDelete)),
         "A range delete cannot be split. Final byte size {ByteCount}, max {MaxByteCount}.");
+    private static readonly Action<ILogger, Exception> _unsupportedRangeDelete = LoggerMessage.Define(
+        LogLevel.Error, new EventId(0, nameof(ProcessRangeDelete)),
+        "Range deletes require OMF 2.0. The message was discarded.");
     private readonly BatchingStrategyOptimizer _dataBatchingStrategyOptimizer;
     private readonly BatchingStrategyOptimizer _streamsBatchingStrategyOptimizer;
     private readonly Action<ISerializedOmfMessage> _flushAction;
@@ -203,7 +206,8 @@ public class SerializationBlock : BaseBlock<Message>
     {
         if (_omfVersion != OmfVersion.Omf20)
         {
-            throw new NotSupportedException("Range deletes require OMF 2.0.");
+            _unsupportedRangeDelete(_logger, null);
+            return;
         }
 
         var bytes = SerializeWithWrapper(new Dictionary<string, RangeDeleteMessage[]>

@@ -70,9 +70,9 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             return new DataItem(DataItemVersion.V2, dataBuffer);
         }
 
-        dataBuffer[^3] = (byte)message.MessageAction;
-        dataBuffer[^2] = (byte)message.OmfVersion;
-        dataBuffer[^1] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^3] = (byte)(message.PartitionKey ?? 0);
+        dataBuffer[^2] = (byte)message.MessageAction;
+        dataBuffer[^1] = (byte)message.OmfVersion;
         return new DataItem(DataItemVersion.V3, dataBuffer);
     }
 
@@ -86,10 +86,16 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
         var hasMetadata = dataItem.Version == DataItemVersion.V3;
         var metadataSize = hasMetadata ? OmfVersionEnumSize + PartitionKeyEnumSize : 0;
+        var minimumLength = MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + MessageActionEnumSize + metadataSize;
+        if (dataItem.Version is not (DataItemVersion.V2 or DataItemVersion.V3) || serializedWithType.Length < minimumLength)
+        {
+            return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
+        }
+
         var messageType = (MessageType)serializedWithType[0];
-        var messageAction = (MessageAction)serializedWithType[^(1 + metadataSize)];
-        var omfVersion = hasMetadata ? (OmfVersion)serializedWithType[^2] : OmfVersion.Omf12;
-        PartitionKey? partitionKey = hasMetadata && serializedWithType[^1] != 0 ? (PartitionKey)serializedWithType[^1] : null;
+        var messageAction = (MessageAction)serializedWithType[hasMetadata ? ^2 : ^1];
+        var omfVersion = hasMetadata ? (OmfVersion)serializedWithType[^1] : OmfVersion.Omf12;
+        PartitionKey? partitionKey = hasMetadata && serializedWithType[^3] != 0 ? (PartitionKey)serializedWithType[^3] : null;
         var valueCount = BitConverter.ToInt32(serializedWithType, MessageTypeEnumSize);
 
         var messageBody = new byte[serializedWithType.Length - MessageTypeEnumSize - ValueCountSize - ProcessTimeTicksLength - MessageActionEnumSize - metadataSize];

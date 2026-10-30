@@ -45,6 +45,11 @@ public class FailoverPersistentOmfMessageQueue_Tests
         buffer.Enqueue(message);
         Assert.Equal(recordVersion, stored.Version);
         Assert.Equal(message.GetMessageSizeInBytes(), stored.Data.Length);
+        if (recordVersion == DataItemVersion.V3)
+        {
+            Assert.Equal(new[] { (byte)(partitionKey ?? 0), (byte)original.MessageAction, (byte)version }, stored.Data[^3..]);
+        }
+
         Assert.True(buffer.TryDequeue(out var restored));
         Assert.Equal(original.MessageBody, restored.MessageBody);
         Assert.Equal(original.MessageAction, restored.MessageAction);
@@ -52,6 +57,24 @@ public class FailoverPersistentOmfMessageQueue_Tests
         Assert.Equal(partitionKey, restored.PartitionKey);
         Assert.Equal(message.ProcessTimeTicks, restored.ProcessTimeTicks);
         Assert.Equal(0, restored.ItemCount);
+    }
+
+    [Fact]
+    public void FailoverPersistentOmfMessageQueue_TruncatedRecordsReturnEmptyMessage()
+    {
+        using var buffer = new FailoverMessageQueueWrapper(new Mock<IPersistentQueue>().Object);
+        foreach (var version in new[] { DataItemVersion.V2, DataItemVersion.V3 })
+        {
+            // Type, value count, process ticks, action, and optional partition/version metadata.
+            var minimumLength = 1 + sizeof(int) + sizeof(long) + 1 + (version == DataItemVersion.V3 ? 2 : 0);
+            for (var length = 0; length < minimumLength; length++)
+            {
+                var restored = buffer.CreateSerializedOmfMessageExternal(new DataItem(version, new byte[length]));
+                Assert.Empty(restored.MessageBody);
+                Assert.Equal(0, restored.ItemCount);
+                Assert.Equal(0, restored.ProcessTimeTicks);
+            }
+        }
     }
 
     [Fact]

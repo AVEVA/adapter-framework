@@ -140,7 +140,7 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
     }
 
     /// <inheritdoc/>
-    public void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null)
+    public virtual void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null)
     {
         ThrowHelper.ThrowIfArgumentNull(dataSelectionItem, nameof(dataSelectionItem));
         ThrowHelper.ThrowIfArgumentNull(range, nameof(range));

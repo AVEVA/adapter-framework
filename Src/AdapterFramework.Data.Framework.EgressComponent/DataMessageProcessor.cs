@@ -65,6 +65,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
     private readonly OmfVersion _omfVersion;
+    private readonly ISerializer _serializer;
+    private readonly ICompressor _compressor;
+    private readonly int _maximumMessageSizeBytes;
     private bool _disposed;
 
     #endregion
@@ -115,6 +118,9 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             };
 
         var maximumMessageSizeBytes = omfVersion == OmfVersion.Omf20 ? MaxMessageSizeBytesOmf13 : MaxMessageSizeBytes;
+        _maximumMessageSizeBytes = maximumMessageSizeBytes;
+        _serializer = serializer;
+        _compressor = compressor;
         var maximumDataBatchCount = omfVersion == OmfVersion.Omf20 ? MaxDataBatchCountOmf13 : MaxDataBatchCount;
 
         if (omfVersion == OmfVersion.Omf12)
@@ -212,7 +218,18 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             throw new NotSupportedException("Range deletes require OMF 2.0.");
         }
 
-        _instanceGroupingBlock.Post(new RangeDeleteMessage(id, range, partitionKey));
+        var message = new RangeDeleteMessage(id, range, partitionKey);
+        var bytes = _serializer.Serialize(new Dictionary<string, RangeDeleteMessage[]>
+        {
+            ["streamingdata"] = [message],
+        });
+        bytes = _compressor?.Compress(bytes) ?? bytes;
+        if (bytes.Length > _maximumMessageSizeBytes)
+        {
+            throw new ArgumentException("The range delete exceeds the maximum message size and cannot be split.", nameof(id));
+        }
+
+        _instanceGroupingBlock.Post(message);
     }
 
     /// <inheritdoc/>
