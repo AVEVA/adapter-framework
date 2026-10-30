@@ -207,6 +207,7 @@ public class RangeDeleteTests
         Assert.Equal(MessageAction.Delete, message.MessageAction);
         Assert.Equal(OmfVersion.Omf20, message.OmfVersion);
         Assert.Equal(0, message.ItemCount);
+        Assert.True(message.ResourceCounts.IsEmpty);
         using var document = JsonDocument.Parse(message.MessageBody);
         var item = Assert.Single(document.RootElement.GetProperty("streamingdata").EnumerateArray());
         Assert.Equal("Stream", item.GetProperty("id").GetString());

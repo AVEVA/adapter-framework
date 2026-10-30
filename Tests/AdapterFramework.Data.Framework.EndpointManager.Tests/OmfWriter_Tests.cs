@@ -192,10 +192,10 @@ public class OmfWriter_Tests : IDisposable
             callback => { });
 
         var backedUpDataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_dataQueue", omfWriter);
-        var backedUpTypesStreamsQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_typesAndStreamsQueue", omfWriter);
+        var backedUpMetadataQueue = (BackedUpOmfMessageQueueBase<ISerializedOmfMessage>)TestUtilities.GetFieldValueFromObject("_metadataQueue", omfWriter);
 
         var maximumDataQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpDataQueue);
-        var maximumTypesStreamsQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpTypesStreamsQueue);
+        var maximumMetadataQueueSizeBytes = (long)TestUtilities.GetFieldValueFromObject("_maxVolatileQueueSize", backedUpMetadataQueue);
 
         if (writerType == OmfWriterType.Health || enablePersistentBuffering)
         {
@@ -208,7 +208,61 @@ public class OmfWriter_Tests : IDisposable
             Assert.Equal(configuredSize, maximumDataQueueSizeBytes);
         }
 
-        Assert.Equal(defaultSize, maximumTypesStreamsQueueSizeBytes);
+        Assert.Equal(defaultSize, maximumMetadataQueueSizeBytes);
+    }
+
+    [Theory]
+    [InlineData(MessageType.Type, true)]
+    [InlineData(MessageType.Container, true)]
+    [InlineData(MessageType.Schema, true)]
+    [InlineData(MessageType.Data, false)]
+    [InlineData(MessageType.DynamicData, false)]
+    [InlineData(MessageType.StaticData, false)]
+    [InlineData(MessageType.Instance, false)]
+    public void OmfWriter_SendMessage_RoutesMessageToExpectedQueue(MessageType messageType, bool expectMetadataQueue)
+    {
+        var bufferPath = Path.Combine(Path.GetTempPath(), "OmfWriterRoutingTests", Guid.NewGuid().ToString());
+        OmfWriter omfWriter = null;
+
+        try
+        {
+            // Nothing listens on this endpoint, so sends fail and the message stays buffered.
+            omfWriter = new OmfWriter(
+                new EndpointConfigurationBase
+                {
+                    Id = EndpointId,
+                    Endpoint = "http://localhost:5466/api/omf/",
+                    UserName = UserName,
+                    Password = _dataProtector.Protect(Password),
+                },
+                _testLogger,
+                _serializer,
+                null,
+                _dataProtector,
+                new BufferingConfiguration { EnablePersistentBuffering = true, BufferLocation = bufferPath },
+                new ApplicationManifest(),
+                bufferPath,
+                string.Empty,
+                OmfWriterType.Data,
+                _ => { });
+
+            var message = new SerializedOmfMessage(messageType, Encoding.UTF8.GetBytes("routingTestMessage"), MessageAction.Default);
+            omfWriter.SendMessage(message);
+
+            // Disposing moves volatile messages into the persistent buffer files.
+            omfWriter.Dispose();
+
+            Assert.Equal(expectMetadataQueue, GetBufferedBytes(bufferPath, BufferingConstants.MetadataBufferFilePrefix) > 0);
+            Assert.Equal(!expectMetadataQueue, GetBufferedBytes(bufferPath, BufferingConstants.DataBufferFilePrefix) > 0);
+        }
+        finally
+        {
+            omfWriter?.Dispose();
+            TestUtilities.CleanupDirectories(bufferPath);
+        }
+
+        static long GetBufferedBytes(string path, string prefix) =>
+            Directory.GetFiles(path, $"{prefix}_data*").Sum(file => new FileInfo(file).Length);
     }
 
     [Fact]
@@ -293,6 +347,7 @@ public class OmfWriter_Tests : IDisposable
     [InlineData(MessageType.Data, 1)]
     [InlineData(MessageType.DynamicData, 1)]
     [InlineData(MessageType.StaticData, 1)]
+    [InlineData(MessageType.Instance, 1)]
     public void OmfWriter_SendMessage_NotFound_DataMessageBreaksOut(MessageType messageType, int expectedRetries)
     {
         _testEndpoint.StopListening();
@@ -309,9 +364,11 @@ public class OmfWriter_Tests : IDisposable
     }
 
     [Theory]
-    [InlineData(MessageType.Type)]
-    [InlineData(MessageType.Container)]
-    public async Task OmfWriter_SendMessage_NotFound_MetadataInQueue(MessageType messageType)
+    [InlineData(MessageType.Type, MessageType.DynamicData)]
+    [InlineData(MessageType.Container, MessageType.DynamicData)]
+    [InlineData(MessageType.Schema, MessageType.DynamicData)]
+    [InlineData(MessageType.Schema, MessageType.Instance)]
+    public async Task OmfWriter_SendMessage_NotFound_MetadataInQueue(MessageType messageType, MessageType dataMessageType)
     {
         _testEndpoint.StopListening();
         _testEndpoint.SetHttpResponse(HttpStatusCode.NotFound);
@@ -322,8 +379,8 @@ public class OmfWriter_Tests : IDisposable
         const string TestDataMessage2 = "DataMessage2";
         const string TestMetadataMessage = "MetadataMessage";
 
-        var dataMessage1 = new SerializedOmfMessage(MessageType.DynamicData, Encoding.UTF8.GetBytes(TestDataMessage1), MessageAction.Default);
-        var dataMessage2 = new SerializedOmfMessage(MessageType.DynamicData, Encoding.UTF8.GetBytes(TestDataMessage2), MessageAction.Default);
+        var dataMessage1 = new SerializedOmfMessage(dataMessageType, Encoding.UTF8.GetBytes(TestDataMessage1), MessageAction.Default);
+        var dataMessage2 = new SerializedOmfMessage(dataMessageType, Encoding.UTF8.GetBytes(TestDataMessage2), MessageAction.Default);
         var metadataMessage = new SerializedOmfMessage(messageType, Encoding.UTF8.GetBytes(TestMetadataMessage), MessageAction.Default);
 
         _testLogger.ClearLog();
@@ -514,6 +571,96 @@ public class OmfWriter_Tests : IDisposable
 
         Assert.True(_omfWriter.GetAndResetEgressedValuesCounter() == dataCount);
         Assert.True(_omfWriter.GetAndResetEgressedValuesCounter() == 0);
+    }
+
+    [Fact]
+    public void OmfWriter_SendMessage_Success_CountsResources()
+    {
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_success";
+        var resourceCounts = new OmfResourceCounts(10, 2, 3);
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        _omfWriter.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) == 1, TimeToWaitForBufferedRetry));
+
+        var egressed = default(OmfResourceCounts);
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                var counts = _omfWriter.GetAndResetEgressedResourceCounters();
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                return egressed == resourceCounts;
+            },
+            SuccessfulSendExpectedWaitTime));
+
+        Assert.True(_omfWriter.GetAndResetEgressedResourceCounters().IsEmpty);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public void OmfWriter_SendMessage_Rejected_DoesNotCountResources(HttpStatusCode statusCode)
+    {
+        _testEndpoint.SetHttpResponse(statusCode);
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_rejected";
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = new OmfResourceCounts(10, 2, 3),
+        };
+
+        _omfWriter.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) >= 1, TimeToWaitForBufferedRetry));
+
+        // The existing IORate counter still counts processed-but-rejected messages; the per-resource counters only count delivered ones.
+        Assert.True(SpinWait.SpinUntil(() => _omfWriter.GetAndResetEgressedValuesCounter() == 15, SuccessfulSendExpectedWaitTime));
+        Assert.True(_omfWriter.GetAndResetEgressedResourceCounters().IsEmpty);
+    }
+
+    [Fact]
+    public void OmfWriterWithBuffering_SendMessage_RetriedThenDelivered_CountsResourcesOnce()
+    {
+        _testEndpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { { "Retry-After", "1" } });
+        _testEndpoint.StartListening();
+
+        const string TestMessage = "testMsg_resourceCounts_retried";
+        var resourceCounts = new OmfResourceCounts(10, 2, 3);
+        var msg = new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Create, 15, OmfVersion.Omf20)
+        {
+            ResourceCounts = resourceCounts,
+        };
+
+        _omfWriterBuffered.SendMessage(msg);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) >= 2, TimeToWaitForBufferedRetry));
+        Assert.True(_omfWriterBuffered.GetAndResetEgressedResourceCounters().IsEmpty);
+
+        var attemptsBeforeRecovery = _testEndpoint.NumberOfTimesMessageReceived(TestMessage);
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(TestMessage) > attemptsBeforeRecovery, TimeToWaitForBufferedRetry));
+
+        // Accumulate snapshots until the full tuple is seen: the three counters are reset independently, so one snapshot can be partial.
+        // Counting the delivery twice overshoots the expected tuple, so the wait times out.
+        var egressed = default(OmfResourceCounts);
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                var counts = _omfWriterBuffered.GetAndResetEgressedResourceCounters();
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                return egressed == resourceCounts;
+            },
+            TimeToWaitForBufferedRetry));
+
+        Assert.True(_omfWriterBuffered.GetAndResetEgressedResourceCounters().IsEmpty);
     }
 
     [Theory]

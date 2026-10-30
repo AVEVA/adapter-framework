@@ -180,6 +180,25 @@ public class SerializationBlock : BaseBlock<Message>
         return numItems;
     }
 
+    private static OmfResourceCounts GetStreamValueResourceCounts(MessageType messageType, int streamValueCount) =>
+        messageType == MessageType.Instance ? new OmfResourceCounts(streamValueCount, 0, 0) : default;
+
+    private static OmfResourceCounts GetInstanceResourceCounts<T>(int count)
+    {
+        if (typeof(T) == typeof(StaticStreamData))
+        {
+            return new OmfResourceCounts(0, count, 0);
+        }
+
+        if (typeof(T) == typeof(Event))
+        {
+            return new OmfResourceCounts(0, 0, count);
+        }
+
+        // Relationships are not counted as a resource.
+        return default;
+    }
+
     private void ProcessRangeDelete(RangeDeleteMessage message)
     {
         if (_omfVersion != OmfVersion.Omf20)
@@ -268,7 +287,7 @@ public class SerializationBlock : BaseBlock<Message>
                         }
                         else
                         {
-                            Flush(message.EventsCount, MessageType.Instance, eventsBytes, message.MessageAction);
+                            Flush(message.EventsCount, MessageType.Instance, eventsBytes, message.MessageAction, resourceCounts: new OmfResourceCounts(0, 0, message.EventsCount));
                         }
                     }
                     
@@ -295,7 +314,7 @@ public class SerializationBlock : BaseBlock<Message>
                                 }
                                 else
                                 {
-                                    Flush(message.EntitiesCount, MessageType.Instance, entitiesBytes, message.MessageAction);
+                                    Flush(message.EntitiesCount, MessageType.Instance, entitiesBytes, message.MessageAction, resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, 0));
                                 }
                             }
 
@@ -318,13 +337,15 @@ public class SerializationBlock : BaseBlock<Message>
                         }
                         else
                         {
-                            Flush(message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesOfEntitiesAndLinks, message.MessageAction);
+                            Flush(message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesOfEntitiesAndLinks, message.MessageAction,
+                                resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, 0));
                         }
                     }
                 }
                 else // if Events + Entities + Relationships not oversize
                 {
-                    Flush(message.EventsCount + message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesWithoutStreamingData, message.MessageAction);
+                    Flush(message.EventsCount + message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesWithoutStreamingData, message.MessageAction,
+                        resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, message.EventsCount));
                 }
             }
 
@@ -342,13 +363,15 @@ public class SerializationBlock : BaseBlock<Message>
                 }
                 else
                 {
-                    Flush(message.StreamingDataTotalCount, MessageType.Instance, streamingDataBytes, message.MessageAction, message.PartitionKey);
+                    Flush(message.StreamingDataTotalCount, MessageType.Instance, streamingDataBytes, message.MessageAction, message.PartitionKey,
+                        new OmfResourceCounts(message.StreamingDataTotalCount, 0, 0));
                 }
             }
         }
         else // if the whole Instance message is not oversize
         {
-            Flush(instanceItemCount, MessageType.Instance, bytes, message.MessageAction, message.PartitionKey);
+            Flush(instanceItemCount, MessageType.Instance, bytes, message.MessageAction, message.PartitionKey,
+                new OmfResourceCounts(message.StreamingDataTotalCount, message.EntitiesCount, message.EventsCount));
         }
 
         // OMF 2.0 instance messages participate in batch optimization.
@@ -572,11 +595,11 @@ public class SerializationBlock : BaseBlock<Message>
                 if (typeof(T) == typeof(StreamData))
                 {
                     var count = GetStreamDataValuesCount(segment, MessageType.Instance);
-                    Flush(count, MessageType.Instance, bytes, messageAction, partitionKey);
+                    Flush(count, MessageType.Instance, bytes, messageAction, partitionKey, new OmfResourceCounts(count, 0, 0));
                 }
                 else
                 {
-                    Flush(segment.Count, MessageType.Instance, bytes, messageAction);
+                    Flush(segment.Count, MessageType.Instance, bytes, messageAction, resourceCounts: GetInstanceResourceCounts<T>(segment.Count));
                 }
             }
         }
@@ -651,7 +674,7 @@ public class SerializationBlock : BaseBlock<Message>
                 }
 
                 var count = GetStreamDataValuesCount(segment, messageType);
-                Flush(count, messageType, bytes, messageAction, partitionKey);
+                Flush(count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, count));
             }
         }
     }
@@ -702,7 +725,7 @@ public class SerializationBlock : BaseBlock<Message>
             }
             else
             {
-                Flush(segment.Count, messageType, bytes, messageAction, partitionKey);
+                Flush(segment.Count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, segment.Count));
             }
         }
     }
@@ -712,9 +735,15 @@ public class SerializationBlock : BaseBlock<Message>
         MessageType messageType,
         byte[] bytes,
         MessageAction messageAction,
-        PartitionKey? partitionKey = null)
+        PartitionKey? partitionKey = null,
+        OmfResourceCounts resourceCounts = default)
     {
-        _flushAction(new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey));
+        _flushAction(new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey)
+        {
+            // OMF 1.3 also uses instance messages, but per-resource egress rates are only published for OMF 2.0 and later.
+            // Deletes still count toward IORate through ItemCount, but not toward the resource rates, matching EventCount.
+            ResourceCounts = _omfVersion >= OmfVersion.Omf20 && messageAction != MessageAction.Delete ? resourceCounts : default,
+        });
     }
 
     private void SetTuningParameters<T>(
