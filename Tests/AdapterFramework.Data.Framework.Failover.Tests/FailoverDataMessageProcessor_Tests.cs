@@ -43,6 +43,32 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
     private bool _disposed;
 
     [Fact]
+    public void FailoverDataMessageProcessor_HotMode_PreservesRangeDeleteMetadata()
+    {
+        var endpoint = GetMockOmfDataEndpointManager();
+        using var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider("RangeDeleteMetadata").Object, endpoint.Object);
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.UpdateState(FailoverRole.Secondary, default);
+        var message = new AdapterFramework.Data.Framework.Messages.SerializedOmfMessage(
+            MessageType.Instance, System.Text.Encoding.UTF8.GetBytes("{\"streamingdata\":[]}"),
+            MessageAction.Delete, 0, OmfVersion.Omf20, PartitionKey.Key7);
+        processor.ProcessOmfMessage(message);
+        Assert.Empty(_sentMessages);
+
+        processor.UpdateState(FailoverRole.Primary, default);
+        Assert.True(SpinWait.SpinUntil(() => _sentMessages.Count == 1, 1500));
+        var restored = Assert.Single(_sentMessages);
+        Assert.Equal(message.MessageBody, restored.MessageBody);
+        Assert.Equal(MessageAction.Delete, restored.MessageAction);
+        Assert.Equal(OmfVersion.Omf20, restored.OmfVersion);
+        Assert.Equal(PartitionKey.Key7, restored.PartitionKey);
+        Assert.Equal(0, restored.ItemCount);
+        processor.UpdateMode(FailoverMode.NotConfigured);
+    }
+
+    [Fact]
     public void FailoverDataMessageProcessor_Initialize_Test()
     {
         var mockLogger = new Mock<ILogger>();

@@ -69,6 +69,50 @@ All packages share the `AdapterFramework.Data` prefix and can be installed with 
 | **AdapterFramework.Data.Framework.DataProtector** | Encryption and decryption of sensitive configuration values using ASP.NET Core Data Protection. |
 | **AdapterFramework.Data.Framework.Extensions** | Low-level utility and extension methods with unsafe code support. |
 
+## Deleting a time range of streaming data
+
+Adapters targeting OMF 2.0 can enqueue a bounded range delete for a time-indexed stream:
+
+```csharp
+messageProcessor.DeleteDynamicValuesInRange(
+    dataSelectionItem,
+    new StreamingDataRange(startTime, endTime),
+    PartitionKey.Key7);
+```
+
+`startTime` and `endTime` are `DateTimeOffset` values, normalized to UTC. Both bounds are
+required, and the end must be greater than or equal to the start. Each call emits a separate
+`instance` message with `action: delete` and a `streamingdata` entry containing `id` and `range`,
+without `values`. The endpoint must support the OMF 2.0 range-delete contract. OMF 1.2 and 1.3
+processors reject this method with `NotSupportedException`. A delete whose serialized payload
+exceeds the message-size limit (after configured compression) throws `ArgumentException` before
+enqueueing; a range cannot be split.
+
+Deletes bypass data filters, clear the selection's filter cache, and do not increment written-value
+counts because the number of deleted values is unknown. Pending values are flushed before the
+delete. Use the same partition key for related writes and deletes. This preserves local enqueue
+order, but does not establish server-completion ordering. The API exposes no completion signal.
+Immediately writing replacement values is unsafe unless the destination guarantees ordered
+completion; using the same partition key alone is not that guarantee. Otherwise, confirm deletion
+through the destination (for example, read back the affected range) before rewriting. The functional
+test uses readback between the delete and replacement writes; it does not prove ordered completion
+for back-to-back requests.
+
+Range deletes use the existing compression, retry, and persistent buffering paths. Hot failover
+now preserves OMF version and partition key in a V3 buffer record; existing V2 records remain
+readable. Drain hot-failover buffers before downgrading to a framework version that does not read
+this V3 layout. Legacy OMF 1.2 messages without partition keys continue to use V2 records.
+
+Hot failover trims its secondary queue using the primary's reported processing timestamp, not a
+server acknowledgment. A secondary taking over can replay an old delete after the primary has
+already written replacement values, removing those replacements. Retries can also repeat deletes.
+Readback alone does not prevent a later replay. Coordinate recovery across the failover group and
+reapply replacements after replay has finished, or avoid range replacement when that coordination
+cannot be guaranteed. This API does not provide an atomic delete-and-rewrite operation.
+
+The metadata preservation also fixes replay of other OMF 2.0 traffic: previously the hot-failover
+buffer restored it as OMF 1.2 without its partition key.
+
 ## Target framework
 
 These packages target **.NET 10**.
