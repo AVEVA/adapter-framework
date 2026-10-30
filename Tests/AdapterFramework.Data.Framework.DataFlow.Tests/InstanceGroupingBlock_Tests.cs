@@ -1053,26 +1053,25 @@ public class InstanceGroupingBlock_Tests
         var mockLogger = new Mock<ILogger>();
         var maxBatchCount = 50_000;
         var capacity = 1000;
+        const int count = 10;
 
-        var block = new InstanceGroupingBlock(
+        using (var block = new InstanceGroupingBlock(
             mockLogger.Object,
             capacity,
             DummyFlushAction,
             DummyFlushTypesStreamsAction,
             maxBatchCount,
             int.MaxValue,
-            CancellationToken.None);
-
-        const int count = 10;
-        for (var i = 0; i < count; i++)
+            CancellationToken.None))
         {
-            block.Post(_dataMessage);
+            for (var i = 0; i < count; i++)
+            {
+                block.Post(_dataMessage);
+            }
+
+            Thread.Sleep(WaitTime);
+            Assert.False(_flushCalled);
         }
-
-        Thread.Sleep(WaitTime);
-        Assert.False(_flushCalled);
-
-        block.Dispose();
 
         Assert.True(_flushCalled);
         Assert.NotNull(_lastFlushedInstanceMessage);

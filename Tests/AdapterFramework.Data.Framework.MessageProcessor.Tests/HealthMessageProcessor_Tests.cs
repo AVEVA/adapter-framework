@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -319,18 +320,12 @@ public class HealthMessageProcessor_Tests
     [Fact]
     public void HealthMessageProcessor_DisposeBeforeFlushTimer_SendsTypeAndContainerBeforeData()
     {
-        var sentMessageTypes = new List<MessageType>();
+        var sentMessageTypes = new ConcurrentQueue<MessageType>();
         var mockEndpointManager = new Mock<IOmfHealthEndpointManager>();
         var mockSerializer = new Mock<ISerializer>();
 
         mockEndpointManager.Setup(em => em.SendMessage(It.IsAny<ISerializedOmfMessage>()))
-            .Callback<ISerializedOmfMessage>(message =>
-            {
-                lock (sentMessageTypes)
-                {
-                    sentMessageTypes.Add(message.MessageType);
-                }
-            });
+            .Callback<ISerializedOmfMessage>(message => sentMessageTypes.Enqueue(message.MessageType));
         mockSerializer.Setup(serializer => serializer.Serialize(It.IsAny<It.IsAnyType>())).Returns([1]);
 
         // A 10-minute flush time keeps every batch buffered until Dispose, so the test always detects a reverted dispose order.
@@ -343,11 +338,7 @@ public class HealthMessageProcessor_Tests
         // Only the producers-first dispose order delivers the pending batches, definitions first.
         Assert.Null(Record.Exception(messageProcessor.Dispose));
 
-        List<MessageType> order;
-        lock (sentMessageTypes)
-        {
-            order = [.. sentMessageTypes];
-        }
+        List<MessageType> order = [.. sentMessageTypes];
 
         Assert.Contains(MessageType.Type, order);
         Assert.Contains(MessageType.Container, order);

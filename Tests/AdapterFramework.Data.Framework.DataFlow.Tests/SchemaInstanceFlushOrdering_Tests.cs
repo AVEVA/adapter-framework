@@ -313,7 +313,6 @@ public class SchemaInstanceFlushOrdering_Tests
     public void DefinitionFlushFailure_WhenPayloadDisposalThrows_ReportsFlushFailure(bool schema)
     {
         var logger = CreateLogger();
-        var payload = new DisposableMessage(throwOnDispose: true);
         using var definitions = CreateDefinitionsBlock(schema, logger.Object, message =>
         {
             (message as IDisposable)?.Dispose();
@@ -321,6 +320,7 @@ public class SchemaInstanceFlushOrdering_Tests
         });
 
         Assert.True(definitions.Post(CreateStreamMessage("S1")));
+        var payload = new DisposableMessage(throwOnDispose: true);
         Assert.True(definitions.Post(new FlushThenForwardMessage(payload, _ =>
             throw new InvalidOperationException("A discarded batch must not be forwarded."))));
 
@@ -378,7 +378,6 @@ public class SchemaInstanceFlushOrdering_Tests
         using var cancellation = new CancellationTokenSource();
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
-        var payload = new DisposableMessage();
         using var definitions = CreateDefinitionsBlock(schema, logger.Object, message =>
         {
             (message as IDisposable)?.Dispose();
@@ -395,6 +394,7 @@ public class SchemaInstanceFlushOrdering_Tests
             Assert.True(definitions.Post(CreateStreamMessage("S1")));
             Assert.True(definitions.Post(new CommandMessage(true)));
             Assert.True(entered.Wait(WaitTimeout));
+            var payload = new DisposableMessage();
             Assert.True(definitions.Post(new FlushThenForwardMessage(payload, _ =>
                 throw new InvalidOperationException("A discarded batch must not be forwarded."))));
             if (cancel)
@@ -675,7 +675,7 @@ public class SchemaInstanceFlushOrdering_Tests
             recorder.Add(message);
         });
         var payload = new DisposableMessage();
-        var envelope = new FlushThenForwardMessage(payload, recorder.Add);
+        using var envelope = new FlushThenForwardMessage(payload, recorder.Add);
 
         try
         {
