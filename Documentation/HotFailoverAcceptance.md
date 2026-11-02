@@ -62,7 +62,7 @@ fencing, cross-node checkpoint sharing, deduplication, or exactly-once delivery 
 
 | Buffer | Unscoped body | Scoped body | Earlier releases wrote |
 | --- | --- | --- | --- |
-| Endpoint (writer) buffer | V3 | V4: V3 plus a 16-byte ID | V3 |
+| Endpoint (writer) buffer | V3, or V4 when the body carries resource counts | V5: V3 plus resource counts and a 16-byte serialized message ID | V3 or V4 |
 | Failover buffer | V3 | V3, without the ID | V2 |
 
 This release reads every format in the table. Persisted IDs from a previous process do not
@@ -70,8 +70,9 @@ reattach to new scopes, so scoped bodies read back after a restart are delivered
 
 Earlier releases can't read these buffers correctly:
 
-- **V4 endpoint buffer records** have a record marker that earlier releases don't know. They
-  treat each one as a corrupt record and skip it, so that body is lost.
+- **V5 endpoint buffer records** have a record marker that earlier releases don't know, including
+  releases that can read V4. They treat each one as a corrupt record and skip it, so that body is lost.
+  V3 and V4 endpoint buffer records stay readable.
 - **V3 failover records** are read with the V2 layout. No error is raised. Each body gets two extra
   bytes at the end, and its action is read from the OMF version byte, so an OMF 2.0 body is sent
   as `Update`. The endpoint receives a broken body with the wrong action.
