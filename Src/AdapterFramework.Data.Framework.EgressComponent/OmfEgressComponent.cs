@@ -77,7 +77,8 @@ public class OmfEgressComponent : ISinkProvider, IDisposable
         _baseHierarchyCreator = new AdapterBaseHierarchyCreator(applicationManifest);
         _baseHierarchyCreator.CreateAndSendBaseHierarchy(healthMessageProcessor);
         _healthService = new EgressHealthService(healthMessageProcessor, _logger, applicationManifest, ComponentId);
-        _diagnosticsService = new EgressDiagnosticsService(diagnosticsMessageProcessor, _logger, ComponentId, _omfDataEndpointManager, _healthService.GetHealthLinkNode(), _healthService);
+        _diagnosticsService = new EgressDiagnosticsService(diagnosticsMessageProcessor, _logger, ComponentId, _omfDataEndpointManager, _healthService.GetHealthLinkNode(), _healthService,
+            applicationManifest.OmfVersion);
     }
 
     public string ComponentId { get; private set; }

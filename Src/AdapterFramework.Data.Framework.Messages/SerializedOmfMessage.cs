@@ -59,6 +59,9 @@ public class SerializedOmfMessage : Message, ISerializedOmfMessage
     public int ItemCount { get; }
 
     /// <inheritdoc/>
+    public OmfResourceCounts ResourceCounts { get; init; }
+
+    /// <inheritdoc/>
     public MessageAction MessageAction { get; }
 
     /// <inheritdoc/>
