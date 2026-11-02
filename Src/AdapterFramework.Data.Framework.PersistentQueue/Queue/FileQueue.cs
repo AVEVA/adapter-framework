@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -304,8 +304,9 @@ public class FileQueue : IPersistentQueue
         {
             // Possible performance improvement: make copy and clear _enqueuedButNotFlushed while locked then use the copy to
             // flush to disk while accepting more enequeues
-            foreach (var item in _enqueuedButNotFlushed)
+            for (var i = 0; i < _enqueuedButNotFlushed.Count; i++)
             {
+                var item = _enqueuedButNotFlushed[i];
                 if (TooLargeForCurrentWriterFile(item))
                 {
                     MoveWriterToNewDataFile();
@@ -321,6 +322,7 @@ public class FileQueue : IPersistentQueue
                 catch
                 {
                     UntrackItem(item);
+                    CommitWrittenItems(i);
                     throw;
                 }
             }
@@ -518,18 +520,29 @@ public class FileQueue : IPersistentQueue
             UntrackItem(item);
             TrackItem(item, _writeStream.Position);
 
-            try
-            {
-                _serializer.SerializeDataItem(_writeStream, item);
-                _logger?.LogInformation("Successfully persisted item by removing oldest data file.");
-            }
-            catch (IOException) when (ExceptionChecker.IsOutOfDiskSpaceException(ex))
-            {
-                FlushWriteStreamAndUpdateWriterState();
-                _enqueuedButNotFlushed.RemoveRange(0, _enqueuedButNotFlushed.IndexOf(item));
-                throw;
-            }
+            _serializer.SerializeDataItem(_writeStream, item);
+            _logger?.LogInformation("Successfully persisted item by removing oldest data file.");
         }
+    }
+
+    /// <summary>
+    /// After a failed write, persists the items already written so the next flush doesn't write them again.
+    /// </summary>
+    /// <param name="writtenCount">The number of items at the start of the pending list that were written.</param>
+    private void CommitWrittenItems(int writtenCount)
+    {
+        try
+        {
+            FlushWriteStreamAndUpdateWriterState();
+        }
+        catch (Exception flushException)
+        {
+            // The written items aren't persisted, so keep them pending and let the caller see the original failure.
+            _logger?.LogError(flushException, "Failed to persist items written before a failed write.");
+            return;
+        }
+
+        _enqueuedButNotFlushed.RemoveRange(0, writtenCount);
     }
 
     /// <summary>
