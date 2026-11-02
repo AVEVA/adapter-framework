@@ -487,7 +487,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
     private void PrepareDataStream(DataStream dataStream)
     {
-        // Callers rewrite the same object once per partition key; prefixing it again would change its ID.
+        // Callers may rewrite the same object once per partition key; prefixing it again would change its ID.
         // Weak-table operations do not make preparation atomic; concurrent writes of the same object are unsupported.
         if (!_preparedStreamIds.TryGetValue(dataStream, out var preparedId) || !string.Equals(preparedId, dataStream.Id, StringComparison.Ordinal))
         {
