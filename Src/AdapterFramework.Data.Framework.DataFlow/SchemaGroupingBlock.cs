@@ -30,13 +30,12 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// <summary>
 /// Provides a dataFlow block that will group every <see cref="DataType"/> or <see cref="DataStream"/> item received to one bulked <see cref="OmfMessage{T}"/>.
 /// </summary>
-public sealed class SchemaGroupingBlock : BaseBlock<Message>
+public sealed class SchemaGroupingBlock : DefinitionsBlock
 {
     #region Private Constants
 
     private const int MinimumBatchCount = 1;
     private const int MinimumFlushTime = 15;
-    private const int DisposalDelay = 15 * 1000;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
 
     #endregion
@@ -70,6 +69,11 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
     /// <param name="maxTypesBatchCount">Maximum number of <see cref="DataType"/> that can be batched.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">Cancellation token.</param>
+    /// <remarks>
+    /// In addition to schema messages, this block accepts <see cref="FlushThenForwardMessage"/> envelopes: it flushes its
+    /// buffered items and then forwards the envelope's payload from its own thread. It owns each accepted envelope and
+    /// releases the payload if the envelope is rejected, faulted or canceled before being forwarded.
+    /// </remarks>
     public SchemaGroupingBlock(ILogger logger,
         int capacity,
         Action<Message> flush,
@@ -134,6 +138,10 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
             case StateMessage state:
                 ProcessState(state);
                 break;
+            case FlushThenForwardMessage forward:
+                Flush();
+                Forward(forward);
+                break;
         }
     }
 
@@ -151,13 +159,9 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        MessageHandler.Complete();
-        SpinWait.SpinUntil(() => MessageHandler.Completion.IsCompleted, DisposalDelay);
-        Flush();
         _flushTimer.Dispose();
 
+        DrainAndFlush(Flush);
         base.Dispose(true);
     }
 

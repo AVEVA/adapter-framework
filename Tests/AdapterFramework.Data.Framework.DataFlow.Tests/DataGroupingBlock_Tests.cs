@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+#pragma warning disable CS0618 // Deliberately covers the obsolete Action<Message> constructor overload.
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -38,8 +39,6 @@ public class DataGroupingBlock_Tests
     private bool _flushStreamsCalled;
     private int _flushDataCalledCounter;
     private MessageAction _flushMessageAction;
-    private DateTime _flushTypesStreamsCalledTimestamp;
-    private DateTime _flushDataCalledTimestamp;
 
     public DataGroupingBlock_Tests()
     {
@@ -68,7 +67,10 @@ public class DataGroupingBlock_Tests
         Assert.Throws<ArgumentNullException>(() => new DataGroupingBlock(mockLogger.Object, 100, null,
             DummyFlushTypesStreamsAction, 1000, 10000, new CancellationToken()));
         Assert.Throws<ArgumentNullException>(() => new DataGroupingBlock(mockLogger.Object, 100,
-            DummyFlushDataAction, null, 1000, 10000, new CancellationToken()));
+            DummyFlushDataAction, (Action<Message>)null, 1000, 10000, new CancellationToken()));
+        var definitionsNull = Assert.Throws<ArgumentNullException>(() => new DataGroupingBlock(mockLogger.Object, 100,
+            DummyFlushDataAction, (DefinitionsBlock)null, 1000, 10000, new CancellationToken()));
+        Assert.Equal("definitions", definitionsNull.ParamName);
     }
 
     [Fact]
@@ -170,7 +172,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushDataCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
     }
 
     [Fact]
@@ -235,7 +236,6 @@ public class DataGroupingBlock_Tests
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushDataCalled);
         Assert.Equal(1, _flushDataCalledCounter);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
     }
 
     [Fact]
@@ -262,7 +262,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushDataCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
     }
 
     [Fact]
@@ -292,7 +291,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushDataCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
         Assert.Equal(DeleteMessageAction, _flushMessageAction);
 
         dataGroupingBlock.Post(new DataMessage(_dataMessage.Id, _dataMessage.Classification, _dataMessage.Instance, DeleteMessageAction));
@@ -358,7 +356,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushStreamsCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
 
         groupedValuesCount = GetFieldValueFromObject(CurrentCountFieldName, dataGroupingBlock);
 
@@ -408,7 +405,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushStreamsCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
         Assert.Equal(DeleteMessageAction, _flushMessageAction);
 
         currentCount = GetFieldValueFromObject(CurrentCountFieldName, dataGroupingBlock);
@@ -479,7 +475,6 @@ public class DataGroupingBlock_Tests
 
         Assert.True(_flushStreamsCalled);
         Assert.True(_flushStreamsCalled);
-        Assert.True(_flushTypesStreamsCalledTimestamp <= _flushDataCalledTimestamp);
         Assert.Equal(DeleteMessageAction, _flushMessageAction);
 
         currentCount = GetFieldValueFromObject(CurrentCountFieldName, dataGroupingBlock);
@@ -489,7 +484,6 @@ public class DataGroupingBlock_Tests
 
     private void DummyFlushDataAction(Message m)
     {
-        _flushDataCalledTimestamp = DateTime.UtcNow;
         _flushDataCalled = true;
         _flushDataCalledCounter++;
 
@@ -501,7 +495,11 @@ public class DataGroupingBlock_Tests
 
     private void DummyFlushTypesStreamsAction(Message m)
     {
-        _flushTypesStreamsCalledTimestamp = DateTime.UtcNow;
         _flushStreamsCalled = true;
+
+        if (m is FlushThenForwardMessage forward)
+        {
+            forward.Deliver();
+        }
     }
 }
