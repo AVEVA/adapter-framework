@@ -29,6 +29,7 @@ using AdapterFramework.Data.Framework.DataFlow.Strategy;
 using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
+using Microsoft.Extensions.Logging;
 using static AdapterFramework.Data.Framework.Abstractions.Constants.EdgeSystemConstants;
 
 namespace AdapterFramework.Data.Framework.EgressComponent;
@@ -64,6 +65,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     private readonly TypesStreamsGroupingBlock _typesStreamsGroupingBlock;
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
+    private readonly ILogger _logger;
     private bool _disposed;
 
     #endregion
@@ -86,6 +88,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
         ThrowHelper.ThrowIfArgumentNull(configurationProvider, nameof(configurationProvider));
 
         var logger = logManager.GetOrCreateLogger(egressComponentIdService.ComponentId);
+        _logger = logger;
 
         var processMessageAction = GetProcessMessageAction(dataEndpointManager, failoverDataMessageProcessor);
 
@@ -126,13 +129,13 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             _serializationBlock = new SerializationBlock(dataBatchingStrategyOptimizer, streamsBatchingStrategyOptimizer, maximumMessageSizeBytes,
                 logger, BlockCapacity, serializer, compressor, processMessageAction, CancellationToken.None, omfVersion);
 
-            _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
+            _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
                 MaxStreamsBatchCount, MaxTypesBatchCount, DefaultDataBulkTime, CancellationToken.None);
 
-            _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.Post(msg),
-                msg => _typesStreamsGroupingBlock.Post(msg), maximumDataBatchCount, flushTime, CancellationToken.None);
+            _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.PostOrThrow(msg),
+                _typesStreamsGroupingBlock, maximumDataBatchCount, flushTime, CancellationToken.None);
 
-            _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg), CancellationToken.None);
+            _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg), CancellationToken.None);
         }
         else
         {
@@ -145,11 +148,11 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             _serializationBlock = new SerializationBlock(dataBatchingStrategyOptimizer, schemaBatchingStrategyOptimizer, maximumMessageSizeBytes,
                 logger, BlockCapacity, serializer, compressor, processMessageAction, CancellationToken.None, omfVersion);
 
-            _schemaGroupingBlock = new SchemaGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
+            _schemaGroupingBlock = new SchemaGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
                 MaxStreamsBatchCount, MaxTypesBatchCount, DefaultDataBulkTime * 4, CancellationToken.None);
 
-            _instanceGroupingBlock = new InstanceGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
-                msg => _schemaGroupingBlock.Post(msg), maximumDataBatchCount, flushTime, CancellationToken.None);
+            _instanceGroupingBlock = new InstanceGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
+                _schemaGroupingBlock, maximumDataBatchCount, flushTime, CancellationToken.None);
         }
     }
 
@@ -335,12 +338,14 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             return;
         }
 
-        _schemaGroupingBlock?.Dispose();
-        _typesStreamsGroupingBlock?.Dispose();
-        _instanceGroupingBlock?.Dispose();
-        _dataGroupingBlock?.Dispose();
-        _omfDataMessageBlock?.Dispose();
-        _serializationBlock?.Dispose();
+        // Producers must be disposed before the definitions and downstream blocks they feed.
+        // Each block is disposed in isolation so one failure cannot leave the rest running.
+        Safely(() => _instanceGroupingBlock?.Dispose());
+        Safely(() => _dataGroupingBlock?.Dispose());
+        Safely(() => _schemaGroupingBlock?.Dispose());
+        Safely(() => _typesStreamsGroupingBlock?.Dispose());
+        Safely(() => _omfDataMessageBlock?.Dispose());
+        Safely(() => _serializationBlock?.Dispose());
 
         _disposed = true;
     }
@@ -349,7 +354,8 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
 
     #region Private Methods
 
-    private static Action<ISerializedOmfMessage> GetProcessMessageAction(IOmfDataEndpointManager dataEndpointManager,
+    private static Action<ISerializedOmfMessage> GetProcessMessageAction(
+        IOmfDataEndpointManager dataEndpointManager,
         IFailoverDataMessageProcessor failoverDataMessageProcessor)
     {
         if (failoverDataMessageProcessor == null)
@@ -360,6 +366,19 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
 
         failoverDataMessageProcessor.Initialize();
         return failoverDataMessageProcessor.ProcessOmfMessage;
+    }
+
+    // Kept in this type so CA2213 can see each field being disposed.
+    private void Safely(Action dispose)
+    {
+        try
+        {
+            dispose();
+        }
+        catch (Exception exception)
+        {
+            DataflowDisposal.ReportDisposeFailure(_logger, exception);
+        }
     }
 
     #endregion

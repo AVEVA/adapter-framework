@@ -617,12 +617,11 @@ public sealed class SchemaGroupingBlock_Tests : IDisposable
     [Fact]
     public void Dispose_FlushesRemainingData()
     {
-        var block = CreateSchemaGroupingBlock();
-
-        var dataType = CreateDataType("Type1");
-        block.Post(new OmfMessage<DataType>(1, new DataType[] { dataType }, MessageAction.Create));
-
-        block.Dispose();
+        using (var block = CreateSchemaGroupingBlock())
+        {
+            var dataType = CreateDataType("Type1");
+            block.Post(new OmfMessage<DataType>(1, new DataType[] { dataType }, MessageAction.Create));
+        }
 
         SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
 
@@ -643,15 +642,14 @@ public sealed class SchemaGroupingBlock_Tests : IDisposable
     [Fact]
     public void Dispose_FlushesRelationships_WhenOnlyRelationshipsPending()
     {
-        var block = CreateSchemaGroupingBlock();
-
         var link1 = CreateLink("Source1", "Target1");
         var link2 = CreateLink("Source2", "Target2");
 
-        block.Post(new RelationshipMessage(link1, MessageAction.Create));
-        block.Post(new RelationshipMessage(link2, MessageAction.Create));
-
-        block.Dispose();
+        using (var block = CreateSchemaGroupingBlock())
+        {
+            block.Post(new RelationshipMessage(link1, MessageAction.Create));
+            block.Post(new RelationshipMessage(link2, MessageAction.Create));
+        }
 
         SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
 

@@ -111,6 +111,9 @@ public class SerializationBlock : BaseBlock<Message>
             case OmfMessage<DynamicStreamData> dynamicStreamData:
                 Process(dynamicStreamData.Count, dynamicStreamData.Values, MessageType.DynamicData, dynamicStreamData.MessageAction, dynamicStreamData.PartitionKey);
                 break;
+            case FlushThenForwardMessage envelope:
+                envelope.ReleaseMisrouted(Logger);
+                break;
         }
     }
 
