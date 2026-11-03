@@ -38,6 +38,8 @@ public static class EgressComponentExtensions
         var egressComponentId = componentIdService.GetEdgeComponentId(EdgeSystemConstants.OmfEgressComponentType);
 
         services.AddSingleton<IEgressComponentIdService>(new EgressComponentIdService(egressComponentId));
+        // Fallback only: the host registers the coordinator with the configured scope limit before components are added,
+        // so this applies only when the egress component is used without the host, such as in tests.
         services.TryAddSingleton(_ => new OmfAwaitableCoordinator());
         services.AddSingleton<IMessageProcessor, DataMessageProcessor>();
         services.AddSingleton<IDiagnosticsMessageProcessor, DiagnosticsMessageProcessor>();

@@ -78,6 +78,9 @@ or with warm/cold failover. Hot failover retains legacy writer hand-off timestam
 not support scoped acceptance. Entering hot mode logs a warning, discards unfinished scope
 observations without cancelling data delivery, and rejects new scopes. Writers must not advance
 source checkpoints on discarded observations or silently fall back to unscoped writes.
+At startup, hot mode takes effect only after the failover configuration loads. A scope created
+before then is accepted and then discarded with `AcceptanceTrackingDisabled` when hot mode is
+applied; its data is still delivered.
 
 Hot failover buffers now keep each body's OMF version and partition key, and use a new record
 format. Drain endpoint and failover buffers before rolling back to an earlier release:

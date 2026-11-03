@@ -186,6 +186,10 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <returns><c>true</c> if the scope was created; otherwise <c>false</c>.</returns>
     /// <exception cref="NotSupportedException">The pipeline isn't OMF 2.0, or hot failover is configured.</exception>
     /// <exception cref="ObjectDisposedException">The coordinator is shut down.</exception>
+    /// <remarks>
+    /// Hot mode is known only after the failover configuration loads at startup. A scope created before then is accepted,
+    /// then discarded with <see cref="OmfReasonCode.AcceptanceTrackingDisabled"/> when hot mode is applied. Its data is still delivered.
+    /// </remarks>
     public bool TryCreateScope(OmfAwaitableScopeOptions options, out OmfAwaitableScopeState scope)
     {
         ArgumentNullException.ThrowIfNull(options);
