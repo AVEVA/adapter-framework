@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ internal class Serializer : ISerializer
     private static readonly byte[] _dataItemStartBytesV3 = new byte[DataItemStartByteCount] { 0x32, 0x4c, 0x42, 0x92, 0x23, 0x32, 0x13, 0x42 };
     private static readonly byte[] _dataItemStartBytesV4 = new byte[DataItemStartByteCount] { 0x7a, 0x13, 0xe4, 0x5c, 0x0b, 0x9d, 0x61, 0xc8 };
     private static readonly byte[] _dataItemStartBytesV5 = new byte[DataItemStartByteCount] { 0x5a, 0x17, 0xc3, 0x6e, 0x94, 0x2b, 0x7d, 0xe1 };
+    private static readonly byte[] _dataItemStartBytesV6 = new byte[DataItemStartByteCount] { 0xc6, 0x3e, 0x91, 0x0d, 0x6b, 0xf2, 0x58, 0xa4 };
     private static readonly Encoding _payloadEncoding = new UTF8Encoding(false);
 
     #region Public Methods
@@ -237,6 +238,10 @@ internal class Serializer : ISerializer
         {
             stream.Write(_dataItemStartBytesV5, 0, DataItemStartByteCount);
         }
+        else if (dataItemVersion == DataItemVersion.V6)
+        {
+            stream.Write(_dataItemStartBytesV6, 0, DataItemStartByteCount);
+        }
         else
         {
             throw new ArgumentException("Failed to serialize data item start bytes due to invalid data item version");
@@ -283,7 +288,11 @@ internal class Serializer : ISerializer
     private static DataItemVersion GetDataItemVersion(byte[] dataItemStartBytes)
     {
         DataItemVersion dataItemVersion;
-        if (_dataItemStartBytesV5.SequenceEqual(dataItemStartBytes))
+        if (_dataItemStartBytesV6.SequenceEqual(dataItemStartBytes))
+        {
+            dataItemVersion = DataItemVersion.V6;
+        }
+        else if (_dataItemStartBytesV5.SequenceEqual(dataItemStartBytes))
         {
             dataItemVersion = DataItemVersion.V5;
         }

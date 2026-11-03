@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,26 +29,31 @@ namespace AdapterFramework.Data.Framework.Failover.Messages;
 
 public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<IFailoverSerializedOmfMessage>
 {
+    private readonly ILogger _logger;
+    private readonly string _targetIdentifier;
+
     public FailoverPersistentOmfMessageQueue(string targetIdentifier, IPersistentQueue persistentQueue, ILogger logger)
         : base(targetIdentifier, persistentQueue, logger)
     {
+        _logger = logger;
+        _targetIdentifier = targetIdentifier;
     }
 
     #region Protected overrides
 
     /// <summary>
-    /// Writes the V3 failover layout, which adds the partition key and OMF version to the V2 layout.
+    /// Writes the V6 failover layout, which adds the partition key and OMF version to the V2 layout.
     /// </summary>
     /// <remarks>
-    /// Known rollback limitation, accepted by design: earlier releases don't check the record version and misread V3 records
-    /// as V2 (wrong message action and process time, two extra bytes in the body). The release notes require failover
-    /// buffers to drain fully before rolling back to an earlier adapter version.
+    /// V6 uses a marker earlier releases don't recognize, so they skip these records as corrupt instead of misreading
+    /// them with the V2 layout. Known rollback limitation, accepted by design: buffered bodies are lost, so the release
+    /// notes require failover buffers to drain fully before rolling back to an earlier adapter version.
     /// </remarks>
     protected override DataItem CreateDataItem(IFailoverSerializedOmfMessage message)
     {
         if (message == null)
         {
-            return new DataItem(DataItemVersion.V3, Array.Empty<byte>());
+            return new DataItem(DataItemVersion.V6, Array.Empty<byte>());
         }
 
         var dataBuffer = new byte[FailoverSerializedOmfMessage.GetRecordSizeInBytes(message.MessageBody.Length)];
@@ -67,23 +72,29 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
         dataBuffer[^2] = (byte)message.MessageAction;
         dataBuffer[^1] = (byte)message.OmfVersion;
 
-        return new DataItem(DataItemVersion.V3, dataBuffer);
+        return new DataItem(DataItemVersion.V6, dataBuffer);
     }
 
     /// <summary>
-    /// Reads V2 and V3 failover records, preserving timestamps.
+    /// Reads V2 and V6 failover records, preserving timestamps.
     /// </summary>
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
-        var hasOmfTrailer = dataItem?.Version == DataItemVersion.V3;
+        var hasOmfTrailer = dataItem?.Version == DataItemVersion.V6;
         var trailerLength = hasOmfTrailer
             ? PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize
             : MessageActionEnumSize;
 
-        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V3)
+        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V6)
             || serializedWithType == null || serializedWithType.Length < MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + trailerLength)
         {
+            if (serializedWithType is { Length: > 0 })
+            {
+                _logger?.LogWarning("Dropped a failover buffer record with unsupported version {Version} or length {Length} in buffer for {TargetIdentifier}.",
+                    dataItem.Version, serializedWithType.Length, _targetIdentifier);
+            }
+
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 

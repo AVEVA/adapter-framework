@@ -80,8 +80,12 @@ observations without cancelling data delivery, and rejects new scopes. Writers m
 source checkpoints on discarded observations or silently fall back to unscoped writes.
 
 Hot failover buffers now keep each body's OMF version and partition key, and use a new record
-format. Drain endpoint and failover buffers before rolling back to an earlier release.
+format. Drain endpoint and failover buffers before rolling back to an earlier release:
 
-- [Documentation/HotFailoverAcceptance.md](Documentation/HotFailoverAcceptance.md) - Supported scope configurations, hot-mode restrictions, hot failover changes, and buffer compatibility.
+- Scoped bodies in endpoint buffers are written as V5 records (resource counts plus a 16-byte
+  serialized message ID). Earlier releases skip V5 records as corrupt, so those bodies are lost.
+- Hot failover buffer records are written as V6. Earlier releases skip V6 records as corrupt, so
+  those bodies are lost.
+
 - [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute changes, tests, and documentation.
 - [SECURITY.md](SECURITY.md) - How to report suspected vulnerabilities responsibly.

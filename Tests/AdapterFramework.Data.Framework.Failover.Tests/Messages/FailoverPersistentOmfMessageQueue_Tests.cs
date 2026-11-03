@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ public class FailoverPersistentOmfMessageQueue_Tests
 
         queue.Enqueue(message);
 
-        Assert.Equal(DataItemVersion.V3, enqueued.Version);
+        Assert.Equal(DataItemVersion.V6, enqueued.Version);
         Assert.Null(enqueued.TrackingId);
         Assert.Equal(body.Length + 16, enqueued.Data.Length);
         Assert.Equal(enqueued.Data.Length, message.GetMessageSizeInBytes());
@@ -96,17 +96,17 @@ public class FailoverPersistentOmfMessageQueue_Tests
     }
 
     /// <summary>
-    /// Verifies raw legacy V3 bytes load with their timestamp, partition, and OMF version, without inventing a scoped ID.
+    /// Verifies raw V6 bytes load with their timestamp, partition, and OMF version, without inventing a scoped ID.
     /// </summary>
     [Fact]
-    public void FailoverPersistentOmfMessageQueue_LegacyV3Record_PreservesMetadata()
+    public void FailoverPersistentOmfMessageQueue_V6Record_PreservesMetadata()
     {
         var payload = new byte[] { (byte)MessageType.Instance, 4, 3, 2, 1, 0x11, 0x22, 8, 7, 6, 5, 4, 3, 2, 1,
             (byte)PartitionKey.Key7, (byte)MessageAction.Update, (byte)OmfVersion.Omf20 };
         var persistentQueue = new Mock<IPersistentQueue>();
         using var queue = new FailoverMessageQueueWrapper(persistentQueue.Object);
 
-        var restored = queue.CreateSerializedOmfMessageExternal(new DataItem(DataItemVersion.V3, payload));
+        var restored = queue.CreateSerializedOmfMessageExternal(new DataItem(DataItemVersion.V6, payload));
 
         Assert.Equal(MessageType.Instance, restored.MessageType);
         Assert.Equal(0x01020304, restored.ItemCount);
@@ -120,11 +120,12 @@ public class FailoverPersistentOmfMessageQueue_Tests
     }
 
     /// <summary>
-    /// Verifies truncated V3 records and unsupported record versions cannot be mistaken for failover bodies.
+    /// Verifies truncated V6 records and unsupported record versions cannot be mistaken for failover bodies.
     /// </summary>
     [Theory]
-    [InlineData(DataItemVersion.V3, 0)]
-    [InlineData(DataItemVersion.V3, 15)]
+    [InlineData(DataItemVersion.V6, 0)]
+    [InlineData(DataItemVersion.V6, 15)]
+    [InlineData(DataItemVersion.V3, 40)]
     [InlineData(DataItemVersion.V4, 40)]
     [InlineData(DataItemVersion.V5, 48)]
     [InlineData(DataItemVersion.V1, 40)]
@@ -234,7 +235,7 @@ public class FailoverPersistentOmfMessageQueue_Tests
 
         var dataItem = failoverQueueWrapper.CreateDataItemExternal(serializedMessage);
 
-        Assert.Equal(DataItemVersion.V3, dataItem.Version);
+        Assert.Equal(DataItemVersion.V6, dataItem.Version);
         Assert.NotNull(dataItem.Data);
 
         var retreivedMessage = failoverQueueWrapper.CreateSerializedOmfMessageExternal(dataItem);
@@ -267,7 +268,7 @@ public class FailoverPersistentOmfMessageQueue_Tests
         var dataItem = failoverQueueWrapper.CreateDataItemExternal(serializedMessage);
         var retrievedMessage = failoverQueueWrapper.CreateSerializedOmfMessageExternal(dataItem);
 
-        Assert.Equal(DataItemVersion.V3, dataItem.Version);
+        Assert.Equal(DataItemVersion.V6, dataItem.Version);
         Assert.Equal(serializedMessage.GetMessageSizeInBytes(), dataItem.Data.Length);
         Assert.Equal(messageType, retrievedMessage.MessageType);
         Assert.Equal(messageAction, retrievedMessage.MessageAction);

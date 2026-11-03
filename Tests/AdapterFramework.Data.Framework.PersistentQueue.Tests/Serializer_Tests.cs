@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -139,6 +139,7 @@ public class Serializer_Tests : IDisposable
     [InlineData(DataItemVersion.V3)]
     [InlineData(DataItemVersion.V4)]
     [InlineData(DataItemVersion.V5)]
+    [InlineData(DataItemVersion.V6)]
     public void Serializer_SerializeDeserializeDataItem_Success(DataItemVersion dataItemVersion)
     {
         var rnd = new Random();
@@ -165,6 +166,7 @@ public class Serializer_Tests : IDisposable
     [InlineData(DataItemVersion.V3, "324C429223321342")]
     [InlineData(DataItemVersion.V4, "7A13E45C0B9D61C8")]
     [InlineData(DataItemVersion.V5, "5A17C36E942B7DE1")]
+    [InlineData(DataItemVersion.V6, "C63E910D6BF258A4")]
     public void Serializer_SerializeDataItem_PreservesVersionMarkerAndFraming(DataItemVersion version, string marker)
     {
         using var stream = new MemoryStream();
@@ -189,7 +191,7 @@ public class Serializer_Tests : IDisposable
     public void Serializer_MixedVersionsAndCorruptV5_RecoversNextValidRecord()
     {
         using var stream = new MemoryStream();
-        var versions = new[] { DataItemVersion.V1, DataItemVersion.V2, DataItemVersion.V3, DataItemVersion.V4, DataItemVersion.V5 };
+        var versions = new[] { DataItemVersion.V1, DataItemVersion.V2, DataItemVersion.V3, DataItemVersion.V4, DataItemVersion.V5, DataItemVersion.V6 };
         foreach (var version in versions)
         {
             _serializer.SerializeDataItem(stream, new DataItem(version, new byte[] { (byte)version }));

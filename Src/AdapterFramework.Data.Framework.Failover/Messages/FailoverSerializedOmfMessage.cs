@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     public override int GetMessageSizeInBytes() => GetRecordSizeInBytes(MessageBody.Length);
 
     /// <summary>
-    /// Gets the size of a V3 failover buffer record, which always stores the process time.
+    /// Gets the size of a V6 failover buffer record, which always stores the process time.
     /// </summary>
     /// <param name="bodyLength">The length of the message body in bytes.</param>
     /// <returns>The record size in bytes.</returns>
