@@ -95,7 +95,7 @@ public static class BaseBlockExtensions
     internal static void ReleaseMisrouted(this FlushThenForwardMessage message, ILogger logger)
     {
         message.Dispose();
-        DataflowLog.Write(logger, LogMisroutedEnvelope, null, "A flush-then-forward envelope was posted to a block that does not own definitions; its payload was released.");
+        DataflowLog.Write(logger, LogMisroutedEnvelope, null);
     }
 
     internal static Action<Message> PostTo(DefinitionsBlock definitions)

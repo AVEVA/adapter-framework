@@ -143,7 +143,7 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
             // Downstream may be permanently stopped, so report at most once a minute instead of once per batch.
             if (_forwardFailures.Increment(out var failedCount))
             {
-                DataflowLog.Write(Logger, LogForwardFailed, failedCount, exception, "Batch forwarding failed; the untransferred payload was released and will not be retried.");
+                DataflowLog.Write(Logger, LogForwardFailed, failedCount, exception);
             }
         }
     }
@@ -155,7 +155,7 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
         {
             if (_pendingForwards.TryRemove(forward, out _))
             {
-                Log(LogDiscardedForward, null, "The dataflow block stopped before forwarding an accepted batch; releasing its payload.");
+                Log(LogDiscardedForward, null);
                 try
                 {
                     forward.Dispose();
@@ -163,7 +163,7 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
                 catch (Exception exception)
                 {
                     // Report and continue so one failing payload does not leave the remaining batches unreleased.
-                    Log(LogReleaseForwardFailed, exception, "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
+                    Log(LogReleaseForwardFailed, exception);
                 }
             }
         }
@@ -211,11 +211,11 @@ public abstract class DefinitionsBlock : BaseBlock<Message>
             catch (Exception exception)
             {
                 // Report rather than throw so a cleanup failure cannot mask a definitions failure being propagated.
-                Log(LogReleaseForwardFailed, exception, "Releasing the payload of a discarded batch failed; continuing with the remaining batches.");
+                Log(LogReleaseForwardFailed, exception);
             }
         }
     }
 
-    private void Log(Action<ILogger, Exception> log, Exception exception, string fallback) =>
-        DataflowLog.Write(Logger, log, exception, fallback);
+    private void Log(Action<ILogger, Exception> log, Exception exception) =>
+        DataflowLog.Write(Logger, log, exception);
 }

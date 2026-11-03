@@ -13,52 +13,53 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
 
 /// <summary>
-/// Writes dataflow diagnostics without ever throwing, falling back to <see cref="Trace"/> when there is no logger
-/// or the log provider fails. Used on worker, disposal and cleanup paths where a logging failure must not mask the original problem.
+/// Writes dataflow diagnostics to the injected logger from paths that must not throw, such as the worker-stopped continuation,
+/// <c>Dispose</c>, and cleanup in <c>catch</c> and <c>finally</c> blocks. An exception from the logger there would make
+/// <c>Dispose</c> throw, stop the remaining payloads from being released, or replace the original failure.
 /// </summary>
+/// <remarks>
+/// A <see langword="null"/> logger writes nothing, like the <c>Logger?.</c> calls elsewhere in these blocks. The framework's
+/// component logger writes through Serilog, which does not throw when a sink fails, but these public blocks accept any
+/// <see cref="ILogger"/>; if that logger throws, the entry is dropped.
+/// </remarks>
 internal static class DataflowLog
 {
-    internal static void Write(ILogger logger, Action<ILogger, Exception> log, Exception exception, string fallback)
+    internal static void Write(ILogger logger, Action<ILogger, Exception> log, Exception exception)
     {
+        if (logger == null)
+        {
+            return;
+        }
+
         try
         {
-            if (logger != null)
-            {
-                log(logger, exception);
-            }
-            else
-            {
-                Trace.TraceError("{0} {1}", fallback, exception);
-            }
+            log(logger, exception);
         }
-        catch (Exception loggingException)
+        catch (Exception)
         {
-            Trace.TraceError("{0} {1} Logging also failed: {2}", fallback, exception, loggingException);
+            // Nothing else can record it, and rethrowing would break the caller's no-throw guarantee.
         }
     }
 
-    internal static void Write<T>(ILogger logger, Action<ILogger, T, Exception> log, T value, Exception exception, string fallback)
+    internal static void Write<T>(ILogger logger, Action<ILogger, T, Exception> log, T value, Exception exception)
     {
+        if (logger == null)
+        {
+            return;
+        }
+
         try
         {
-            if (logger != null)
-            {
-                log(logger, value, exception);
-            }
-            else
-            {
-                Trace.TraceError("{0} ({1}) {2}", fallback, value, exception);
-            }
+            log(logger, value, exception);
         }
-        catch (Exception loggingException)
+        catch (Exception)
         {
-            Trace.TraceError("{0} ({1}) {2} Logging also failed: {3}", fallback, value, exception, loggingException);
+            // Nothing else can record it, and rethrowing would break the caller's no-throw guarantee.
         }
     }
 }

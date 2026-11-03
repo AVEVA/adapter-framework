@@ -36,5 +36,5 @@ public static class DataflowDisposal
     /// Owners call <c>Dispose()</c> on their own fields inside their own <c>try</c> block, so that CA2213 can verify it, and call this from the <c>catch</c>.
     /// </remarks>
     public static void ReportDisposeFailure(ILogger logger, Exception exception) =>
-        DataflowLog.Write(logger, LogBlockDisposeFailed, exception, "Disposing a dataflow block failed; continuing with the remaining blocks.");
+        DataflowLog.Write(logger, LogBlockDisposeFailed, exception);
 }

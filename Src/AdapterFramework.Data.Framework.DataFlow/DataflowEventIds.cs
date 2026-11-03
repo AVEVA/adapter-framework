@@ -18,8 +18,10 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// Event IDs of the log messages written by the dataflow blocks and their owners. Keep every ID unique.
 /// </summary>
 /// <remarks>
-/// The dataflow blocks log through the owning component's logger, so their IDs use a dedicated range (5000-5099)
-/// to avoid colliding with IDs used elsewhere in that component.
+/// The IDs identify these events in tests and in hosts whose <see cref="Microsoft.Extensions.Logging.ILogger"/> records event IDs.
+/// The framework's component logger writes only the level and message, so in its log files each event is identified by its
+/// message text, which is distinct for every ID. The IDs use a dedicated range (5000-5099) so that they do not collide with
+/// other IDs written to the same component logger.
 /// </remarks>
 internal static class DataflowEventIds
 {
@@ -37,4 +39,5 @@ internal static class DataflowEventIds
     public const int BlockDisposeFailed = 5009;
     public const int ReleaseForwardFailed = 5010;
     public const int MessagesRejected = 5011;
+    public const int WorkerCleanupFailed = 5012;
 }

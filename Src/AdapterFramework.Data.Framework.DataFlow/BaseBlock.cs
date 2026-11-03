@@ -13,7 +13,6 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -32,16 +31,19 @@ public abstract class BaseBlock<T> : IDisposable
 
     private static readonly Action<ILogger, int, Exception> LogDrainTimeout =
         LoggerMessage.Define<int>(LogLevel.Error, new EventId(DataflowEventIds.DrainTimeout, nameof(LogDrainTimeout)),
-            "Dataflow drain timed out after {DrainTimeout} ms; the final flush was skipped and downstream disposal must not rely on it.");
+            "Dataflow drain timed out after {DrainTimeout} ms; the worker is still running, so disposal continues without a final flush and data it has not yet sent may be lost.");
     private static readonly Action<ILogger, Exception> LogDrainFaulted =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.DrainFaulted, nameof(LogDrainFaulted)),
-            "The dataflow block faulted before it drained; the final flush was skipped.");
+            "The dataflow block faulted before it drained; any messages still queued were dropped.");
     private static readonly Action<ILogger, Exception> LogWorkerFaulted =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.WorkerFaulted, nameof(LogWorkerFaulted)),
             "The dataflow block faulted and no longer accepts messages.");
+    private static readonly Action<ILogger, Exception> LogWorkerCleanupFailed =
+        LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.WorkerCleanupFailed, nameof(LogWorkerCleanupFailed)),
+            "Releasing resources after the dataflow block stopped failed.");
     private static readonly Action<ILogger, Exception> LogDrainCanceled =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.DrainCanceled, nameof(LogDrainCanceled)),
-            "The dataflow block was canceled before it drained; the final flush was skipped.");
+            "The dataflow block was canceled before it drained; any messages still queued were dropped.");
     private static readonly Action<ILogger, Exception> LogFinalFlushFailed =
         LoggerMessage.Define(LogLevel.Error, new EventId(DataflowEventIds.FinalFlushFailed, nameof(LogFinalFlushFailed)),
             "The final flush during disposal failed; the batch was not delivered.");
@@ -93,13 +95,13 @@ public abstract class BaseBlock<T> : IDisposable
                 }
                 catch (Exception exception)
                 {
-                    Trace.TraceError("Releasing resources after the dataflow block stopped failed. {0}", exception);
+                    DataflowLog.Write(Logger, LogWorkerCleanupFailed, exception);
                 }
 
                 // Report the fault when it happens, not only when the block is disposed.
                 if (completion.IsFaulted)
                 {
-                    DataflowLog.Write(Logger, LogWorkerFaulted, completion.Exception?.GetBaseException(), "The dataflow block faulted and no longer accepts messages.");
+                    DataflowLog.Write(Logger, LogWorkerFaulted, completion.Exception?.GetBaseException());
                 }
             },
             CancellationToken.None,
@@ -239,10 +241,12 @@ public abstract class BaseBlock<T> : IDisposable
     /// </summary>
     /// <param name="disposing">true if called by user. False if called by finalizer.</param>
     /// <remarks>
-    /// Behaviour change: earlier versions always ran the final flush on disposal. Blocks now flush only if the worker drains
-    /// within <see cref="DrainTimeoutMilliseconds"/> (15 s by default) and did not fault or get canceled; otherwise the
-    /// buffered data is dropped and the reason is logged, because flushing while the worker may still be running could
-    /// reorder batches or send data before its definitions.
+    /// Behaviour change: earlier versions always ran the final flush, even if the worker was still running when the 15 s wait
+    /// expired. Blocks now run it once the worker has stopped, whether it drained, faulted or was canceled. If the worker is
+    /// still running after <see cref="DrainTimeoutMilliseconds"/> (15 s by default), the final flush is skipped and the timeout
+    /// is logged: the batch buffers are not thread-safe, so flushing them while the worker uses them could corrupt, duplicate
+    /// or reorder a batch. Producers hand the final batch to the definitions block like any other batch, so it is never sent
+    /// before its definitions; if that block has stopped, the batch is released and the failure is logged.
     /// </remarks>
     protected virtual void Dispose(bool disposing)
     {
@@ -297,21 +301,21 @@ public abstract class BaseBlock<T> : IDisposable
         // The continuation never faults or cancels, so Wait only reports whether it finished in time.
         if (!_drainCompletion.Wait(millisecondsTimeout))
         {
-            DataflowLog.Write(Logger, LogDrainTimeout, millisecondsTimeout, null, "Dataflow drain timed out (ms); the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainTimeout, millisecondsTimeout, null);
             return SetDrainResult(DrainResult.TimedOut);
         }
 
         var completion = MessageHandler.Completion;
         if (completion.IsCanceled)
         {
-            DataflowLog.Write(Logger, LogDrainCanceled, null, "The dataflow block was canceled before it drained; the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainCanceled, null);
             return SetDrainResult(DrainResult.Canceled);
         }
 
         if (completion.IsFaulted)
         {
             // The exception itself was already logged when the worker faulted.
-            DataflowLog.Write(Logger, LogDrainFaulted, null, "The dataflow block faulted before it drained; the final flush was skipped.");
+            DataflowLog.Write(Logger, LogDrainFaulted, null);
             return SetDrainResult(DrainResult.Faulted);
         }
 
@@ -319,24 +323,28 @@ public abstract class BaseBlock<T> : IDisposable
     }
 
     /// <summary>
-    /// Waits for the worker to stop and, only if it drained cleanly, runs <paramref name="flush"/> on the caller thread.
+    /// Waits for the worker to stop and then runs <paramref name="flush"/> on the caller thread, unless the drain timed out.
     /// Never throws; a failing flush is logged.
     /// </summary>
     /// <param name="flush">The final flush.</param>
+    /// <remarks>
+    /// After a fault or cancellation the flush is a best-effort attempt: the worker no longer touches the batch buffers, so
+    /// flushing them is safe. After a timeout the worker may still be using them, so the flush is skipped.
+    /// </remarks>
     protected void DrainAndFlush(Action flush)
     {
         ArgumentNullException.ThrowIfNull(flush);
 
         try
         {
-            if (CompleteAndWait() == DrainResult.Drained)
+            if (CompleteAndWait() != DrainResult.TimedOut)
             {
                 flush();
             }
         }
         catch (Exception exception)
         {
-            DataflowLog.Write(Logger, LogFinalFlushFailed, exception, "The final flush during disposal failed; the batch was not delivered.");
+            DataflowLog.Write(Logger, LogFinalFlushFailed, exception);
         }
     }
 
@@ -351,7 +359,7 @@ public abstract class BaseBlock<T> : IDisposable
         // Rejections after disposal started are expected (for example late batch-size updates) and are not reported.
         if (!accepted && !_completionRequested && _rejections.Increment(out var rejectedCount))
         {
-            DataflowLog.Write(Logger, LogMessagesRejected, rejectedCount, null, "The dataflow block has stopped and rejected messages; they were dropped.");
+            DataflowLog.Write(Logger, LogMessagesRejected, rejectedCount, null);
         }
 
         return accepted;

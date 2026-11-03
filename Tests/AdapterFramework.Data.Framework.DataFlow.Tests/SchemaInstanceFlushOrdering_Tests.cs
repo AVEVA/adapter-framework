@@ -32,9 +32,11 @@ public class SchemaInstanceFlushOrdering_Tests
 {
     private const int DrainTimeoutEventId = DataflowEventIds.DrainTimeout;
     private const int DrainFaultedEventId = DataflowEventIds.DrainFaulted;
+    private const int DrainCanceledEventId = DataflowEventIds.DrainCanceled;
     private const int FinalFlushFailedEventId = DataflowEventIds.FinalFlushFailed;
     private const int MisroutedEnvelopeEventId = DataflowEventIds.MisroutedEnvelope;
     private const int WorkerFaultedEventId = DataflowEventIds.WorkerFaulted;
+    private const int WorkerCleanupFailedEventId = DataflowEventIds.WorkerCleanupFailed;
     private const int BlockDisposeFailedEventId = DataflowEventIds.BlockDisposeFailed;
     private const int ForwardFailedEventId = DataflowEventIds.ForwardFailed;
     private const int MessagesRejectedEventId = DataflowEventIds.MessagesRejected;
@@ -538,28 +540,143 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.Throws<ArgumentNullException>(() => new FlushThenForwardMessage(new CommandMessage(false), null));
     }
 
-    [Fact]
-    public void DrainTimeout_DoesNotFlushOnCallerThreadWhileWorkerIsActive()
+    [Theory]
+    [InlineData("Drained", true, 0)]
+    [InlineData("Faulted", true, DrainFaultedEventId)]
+    [InlineData("Canceled", true, DrainCanceledEventId)]
+    [InlineData("TimedOut", false, DrainTimeoutEventId)]
+    public void FinalFlush_RunsOnceTheWorkerHasStopped_AndIsSkippedOnlyOnDrainTimeout(string outcome, bool expectFlush, int expectedEventId)
     {
         var logger = CreateLogger();
+        using var cancellation = new CancellationTokenSource();
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         using var block = new DrainTestBlock(logger.Object, () =>
         {
             entered.Set();
             Assert.True(release.Wait(WaitTimeout), "Timed out releasing the drain-test worker.");
-        });
-        Assert.True(block.Post(new CommandMessage(false)));
-        Assert.True(entered.Wait(WaitTimeout));
+            if (outcome == "Faulted")
+            {
+                throw new InvalidOperationException("Injected worker failure.");
+            }
+        }, token: cancellation.Token);
+
+        // Only the timeout case may expire; the others wait for the worker to stop.
+        block.DrainTimeoutMilliseconds = outcome == "TimedOut" ? 100 : (int)WaitTimeout.TotalMilliseconds;
         try
         {
+            Assert.True(block.Post(new CommandMessage(false)));
+            Assert.True(entered.Wait(WaitTimeout));
+            if (outcome == "Canceled")
+            {
+                cancellation.Cancel();
+            }
+
+            if (outcome != "TimedOut")
+            {
+                release.Set();
+            }
+
             Assert.Null(Record.Exception(block.Dispose));
-            Assert.False(block.Flushed);
-            VerifyError(logger, Times.Once());
+
+            Assert.Equal(expectFlush, block.Flushed);
+            Assert.Equal(0, CountLogs(logger, FinalFlushFailedEventId));
+            if (expectedEventId == 0)
+            {
+                VerifyError(logger, Times.Never());
+            }
+            else
+            {
+                Assert.Equal(1, CountLogs(logger, expectedEventId));
+            }
         }
         finally
         {
             release.Set();
+        }
+    }
+
+    [Fact]
+    public void WorkerStoppedCleanupFailure_IsLoggedAndDisposeStillFlushes()
+    {
+        var logger = CreateLogger();
+        using var block = new DrainTestBlock(logger.Object, () => { }, onWorkerStopped: () => throw new InvalidOperationException("Injected cleanup failure."));
+
+        Assert.True(block.Post(new CommandMessage(false)));
+        Assert.Null(Record.Exception(block.Dispose));
+
+        Assert.True(block.Flushed);
+        Assert.Equal(1, CountLogs(logger, WorkerCleanupFailedEventId));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ProducerFault_FinalFlushHandsTheBufferedBatchToDefinitionsInOrder(bool schema)
+    {
+        using var recorder = new Recorder();
+        var logger = CreateLogger();
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, recorder.Add);
+        var handoffs = 0;
+        using var producer = CreateProducer(schema, logger.Object, recorder.Add, message =>
+        {
+            if (Interlocked.Increment(ref handoffs) == 1)
+            {
+                throw new InvalidOperationException("Injected transient handoff failure.");
+            }
+
+            definitions.PostOrThrow(message);
+        }, 1, 60000);
+
+        Assert.True(definitions.Post(CreateStreamMessage("S1")));
+        Assert.True(producer.Post(CreateDataMessage("S1")));
+        Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout), "The producer did not fault.");
+
+        producer.Dispose();
+        definitions.Dispose();
+
+        var messages = recorder.Snapshot();
+        Assert.Equal(2, messages.Count);
+        AssertDefinitionsThenData(schema, messages);
+        Assert.Equal(1, CountLogs(logger, DrainFaultedEventId));
+        Assert.Equal(0, CountLogs(logger, FinalFlushFailedEventId));
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public void ProducerCanceled_FinalFlushGoesThroughDefinitionsOrIsReleased(bool schema, bool definitionsCanceled)
+    {
+        using var recorder = new Recorder();
+        var logger = CreateLogger();
+        using var cancellation = new CancellationTokenSource();
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, recorder.Add, definitionsCanceled ? cancellation.Token : CancellationToken.None);
+        using var producer = CreateProducer(schema, logger.Object, recorder.Add, message => definitions.PostOrThrow(message), 1000, 60000, cancellation.Token);
+
+        Assert.True(definitions.Post(CreateStreamMessage("S1")));
+        Assert.True(producer.Post(CreateDataMessage("S1")));
+
+        // A dequeued message is still handled after cancellation, so empty queues mean both items are batched rather than dropped.
+        Assert.True(SpinWait.SpinUntil(() => definitions.InputCount == 0 && producer.InputCount == 0, WaitTimeout));
+        cancellation.Cancel();
+        producer.Dispose();
+        definitions.Dispose();
+
+        var messages = recorder.Snapshot();
+        Assert.Equal(definitionsCanceled ? 2 : 1, CountLogs(logger, DrainCanceledEventId));
+        if (definitionsCanceled)
+        {
+            // The stopped definitions block rejects the batch, so it is released instead of being sent without its definitions.
+            Assert.IsType(schema ? typeof(SchemaMessage) : typeof(OmfMessage<DataStream>), Assert.Single(messages));
+            Assert.Equal(1, CountLogs(logger, FinalFlushFailedEventId));
+        }
+        else
+        {
+            Assert.Equal(2, messages.Count);
+            AssertDefinitionsThenData(schema, messages);
+            Assert.Equal(0, CountLogs(logger, FinalFlushFailedEventId));
         }
     }
 
@@ -600,7 +717,7 @@ public class SchemaInstanceFlushOrdering_Tests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void IgnoredDefinitionsCallback_FaultsProducerAndLogsHandoffFailureOnce(bool schema)
+    public void IgnoredDefinitionsCallback_FaultsProducerAndFinalFlushCannotBypassIt(bool schema)
     {
         using var recorder = new Recorder();
         var logger = CreateLogger();
@@ -613,8 +730,9 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.False(producer.Post(CreateDataMessage("S2")));
         Assert.Null(Record.Exception(producer.Dispose));
 
+        // The best-effort final flush retries the same handoff, which fails the same way, so nothing is delivered.
         Assert.Empty(recorder.Snapshot());
-        AssertHandoffFailureLoggedOnce(logger, WorkerFaultedEventId);
+        AssertHandoffFailuresLogged(logger, WorkerFaultedEventId, FinalFlushFailedEventId);
     }
 
     [Theory]
@@ -630,14 +748,15 @@ public class SchemaInstanceFlushOrdering_Tests
 
         Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout), "The misrouted handoff did not fault the producer.");
         Assert.False(producer.Post(CreateDataMessage("S2")));
-        AssertHandoffFailureLoggedOnce(logger, WorkerFaultedEventId);
+        AssertHandoffFailuresLogged(logger, WorkerFaultedEventId);
         Assert.Equal(1, CountLogs(logger, MisroutedEnvelopeEventId));
 
         // Widest race window: the wrong block has already released the envelope before the producer checks the handoff.
         void PostToWrongBlockAndWaitForRelease(Message message)
         {
+            var released = CountLogs(logger, MisroutedEnvelopeEventId);
             wrongBlock.PostOrThrow(message);
-            Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, MisroutedEnvelopeEventId) == 1, WaitTimeout), "The wrong block did not release the envelope.");
+            Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, MisroutedEnvelopeEventId) > released, WaitTimeout), "The wrong block did not release the envelope.");
         }
     }
 
@@ -655,7 +774,7 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.True(producer.Post(CreateDataMessage("S1")));
 
         Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout), "The rejected handoff did not fault the producer.");
-        AssertHandoffFailureLoggedOnce(logger, WorkerFaultedEventId);
+        AssertHandoffFailuresLogged(logger, WorkerFaultedEventId);
     }
 
     [Theory]
@@ -749,7 +868,15 @@ public class SchemaInstanceFlushOrdering_Tests
     public void DefinitionsWorkerFault_IsLoggedWhenItHappensWithExceptionOnlyOnce(bool schema)
     {
         var logger = CreateLogger();
-        using var definitions = CreateDefinitionsBlock(schema, logger.Object, _ => throw new InvalidOperationException("Injected definitions failure."));
+        var failures = 0;
+        using var definitions = CreateDefinitionsBlock(schema, logger.Object, _ =>
+        {
+            // Only the worker's flush fails, so the best-effort final flush in Dispose adds no further log entry.
+            if (Interlocked.Increment(ref failures) == 1)
+            {
+                throw new InvalidOperationException("Injected definitions failure.");
+            }
+        });
 
         Assert.True(definitions.Post(CreateStreamMessage("S1")));
         Assert.True(definitions.Post(new CommandMessage(true)));
@@ -776,7 +903,7 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.Null(Record.Exception(producer.Dispose));
 
         Assert.Empty(recorder.Snapshot());
-        AssertHandoffFailureLoggedOnce(logger, FinalFlushFailedEventId);
+        AssertHandoffFailuresLogged(logger, FinalFlushFailedEventId);
         Assert.Equal(0, CountLogs(logger, WorkerFaultedEventId));
     }
 
@@ -788,8 +915,10 @@ public class SchemaInstanceFlushOrdering_Tests
 
         Assert.Throws<ArgumentOutOfRangeException>(() => block.DrainTimeoutMilliseconds = -2);
         Assert.Throws<ArgumentOutOfRangeException>(() => block.CompleteAndWaitFor(-2));
-        block.DrainTimeoutMilliseconds = Timeout.Infinite;
+
+        // Infinite last: Dispose drains with this value.
         block.DrainTimeoutMilliseconds = 0;
+        block.DrainTimeoutMilliseconds = Timeout.Infinite;
 
         // The rejected values changed no state: the block still drains and disposes cleanly.
         Assert.True(block.Post(new CommandMessage(false)));
@@ -901,14 +1030,14 @@ public class SchemaInstanceFlushOrdering_Tests
         Assert.Equal(3, accumulated);
     }
 
-    private static void AssertHandoffFailureLoggedOnce(Mock<ILogger> logger, int expectedEventId)
+    private static void AssertHandoffFailuresLogged(Mock<ILogger> logger, params int[] expectedEventIds)
     {
         var withException = logger.Invocations.ToArray()
             .Where(invocation => invocation.Method.Name == nameof(ILogger.Log) && invocation.Arguments[3] is Exception)
             .ToList();
-        var logged = Assert.Single(withException);
-        Assert.Equal(expectedEventId, ((EventId)logged.Arguments[1]).Id);
-        Assert.Contains(HandoffFailureMessage, ((Exception)logged.Arguments[3]).Message, StringComparison.Ordinal);
+        Assert.Equal(expectedEventIds, withException.Select(invocation => ((EventId)invocation.Arguments[1]).Id));
+        Assert.All(withException, invocation =>
+            Assert.Contains(HandoffFailureMessage, ((Exception)invocation.Arguments[3]).Message, StringComparison.Ordinal));
     }
 
     private static int CountErrors(Mock<ILogger> logger)
@@ -938,11 +1067,11 @@ public class SchemaInstanceFlushOrdering_Tests
         return block;
     }
 
-    private static BaseBlock<Message> CreateProducer(bool schema, ILogger logger, Action<Message> flush, Action<Message> postDefinitions, int maxBatchCount, int maxFlushTime)
+    private static BaseBlock<Message> CreateProducer(bool schema, ILogger logger, Action<Message> flush, Action<Message> postDefinitions, int maxBatchCount, int maxFlushTime, CancellationToken token = default)
     {
         return schema
-            ? new InstanceGroupingBlock(logger, DataflowBlockOptions.Unbounded, flush, postDefinitions, maxBatchCount, maxFlushTime, CancellationToken.None)
-            : new DataGroupingBlock(logger, DataflowBlockOptions.Unbounded, flush, postDefinitions, maxBatchCount, maxFlushTime, CancellationToken.None);
+            ? new InstanceGroupingBlock(logger, DataflowBlockOptions.Unbounded, flush, postDefinitions, maxBatchCount, maxFlushTime, token)
+            : new DataGroupingBlock(logger, DataflowBlockOptions.Unbounded, flush, postDefinitions, maxBatchCount, maxFlushTime, token);
     }
 
     private static void AssertDefinitionsThenData(bool schema, List<Message> messages)
@@ -1029,11 +1158,13 @@ public class SchemaInstanceFlushOrdering_Tests
     private sealed class DrainTestBlock : BaseBlock<Message>
     {
         private readonly Action _handle;
+        private readonly Action _onWorkerStopped;
 
-        public DrainTestBlock(ILogger logger, Action handle)
-            : base(logger, DataflowBlockOptions.Unbounded, false, false, CancellationToken.None)
+        public DrainTestBlock(ILogger logger, Action handle, Action onWorkerStopped = null, CancellationToken token = default)
+            : base(logger, DataflowBlockOptions.Unbounded, false, false, token)
         {
             _handle = handle;
+            _onWorkerStopped = onWorkerStopped;
         }
 
         public bool Flushed { get; private set; }
@@ -1044,6 +1175,8 @@ public class SchemaInstanceFlushOrdering_Tests
 
         public string CompleteAndWaitFor(int millisecondsTimeout) => CompleteAndWait(millisecondsTimeout).ToString();
 
+        private protected override void OnWorkerStopped() => _onWorkerStopped?.Invoke();
+
         protected override void Dispose(bool disposing)
         {
             if (!disposing || Disposed)
@@ -1051,10 +1184,7 @@ public class SchemaInstanceFlushOrdering_Tests
                 return;
             }
 
-            if (CompleteAndWait(100) == DrainResult.Drained)
-            {
-                Flushed = true;
-            }
+            DrainAndFlush(() => Flushed = true);
 
             // Like the production blocks, always continue into the base disposal after the caller-thread drain.
             base.Dispose(disposing);
