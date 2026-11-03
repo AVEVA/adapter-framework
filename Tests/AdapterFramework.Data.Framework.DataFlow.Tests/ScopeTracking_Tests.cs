@@ -20,6 +20,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Messages;
@@ -294,6 +295,37 @@ public class ScopeTracking_Tests
         await a.DisposeAsync();
     }
 
+    /// <summary>
+    /// Verifies that scoped items whose chunk serializes to an empty body are discarded with <see cref="OmfReasonCode.EmptyBody"/>
+    /// instead of being dropped silently and later reported as a count mismatch.
+    /// </summary>
+    [Fact]
+    public async Task SerializationBlock_EmptyChunkBody_DiscardsWithEmptyBody()
+    {
+        using var coordinator = CreateCoordinator();
+        var a = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+
+        // The whole message, the streaming data, and the instance chunk are oversized, so the block splits down to
+        // FlushInChunks, whose chunk then serializes to "[]".
+        var serializer = new EmptyAfterSerializer(oversizedCalls: 3);
+        using var block = CreateSerializationBlock(coordinator, 300, bodies, serializer);
+
+        var stream = new StreamingDataInstance { Id = "s", Values = [1] };
+        coordinator.RecordAdmitted(a, 1);
+        block.Post(new InstanceMessage([stream], null, null, null, 1, 1, 0, 0, 0, MessageAction.Default) { Sidecar = new InstanceScopeSidecar([a], [[new ScopeRange(0, 0, 1)]], null, null, null) });
+        block.Post(new ScopeMaterializationBarrier(a, 1));
+        a.Seal();
+
+        var result = await a.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfReasonCode.EmptyBody, result.Reason.Code);
+        Assert.Empty(bodies);
+        Assert.Equal(4, serializer.Calls);
+        await a.DisposeAsync();
+    }
+
     private static Dictionary<ScopeToken, int> Membership(ScopeSidecar sidecar, ScopeSidecarKind kind, int count)
     {
         Assert.NotNull(sidecar);
@@ -315,8 +347,8 @@ public class ScopeTracking_Tests
         return scope;
     }
 
-    private static SerializationBlock CreateSerializationBlock(OmfAwaitableCoordinator coordinator, int maxByteCount, ConcurrentQueue<ISerializedOmfMessage> bodies) =>
-        new(null, null, maxByteCount, new TestLogger(), -1, new OmfJsonSerializer(), null,
+    private static SerializationBlock CreateSerializationBlock(OmfAwaitableCoordinator coordinator, int maxByteCount, ConcurrentQueue<ISerializedOmfMessage> bodies, ISerializer serializer = null) =>
+        new(null, null, maxByteCount, new TestLogger(), -1, serializer ?? new OmfJsonSerializer(), null,
             body =>
             {
                 bodies.Enqueue(body);
@@ -332,5 +364,31 @@ public class ScopeTracking_Tests
 
     private sealed class TestScope : ScopeToken
     {
+    }
+
+    /// <summary>
+    /// Returns oversized output for the first calls, then the empty JSON array, so a test can reach the empty-body branch.
+    /// </summary>
+    private sealed class EmptyAfterSerializer(int oversizedCalls) : ISerializer
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+
+        public string Format => "json";
+
+        public byte[] Serialize(object objectToBeSerialized) => Next();
+
+        public byte[] Serialize<T>(T objectToBeSerialized) => Next();
+
+        public object Deserialize(byte[] bytes) => throw new NotSupportedException();
+
+        public T Deserialize<T>(byte[] bytes) => throw new NotSupportedException();
+
+        public object Deserialize(string content) => throw new NotSupportedException();
+
+        public T Deserialize<T>(string content) => throw new NotSupportedException();
+
+        private byte[] Next() => Interlocked.Increment(ref _calls) <= oversizedCalls ? new byte[1000] : "[]"u8.ToArray();
     }
 }

@@ -92,6 +92,7 @@ public class OmfWriter : IOmfWriter
     private long _eventCount;
     private MessageType _messageType;
     private bool _shouldRetry404 = true;
+    private bool _nonAcceptedSuccessWarned;
     private EndpointResponse _cachedResponse;
     private Guid? _cachedResponseBodyId;
 
@@ -197,7 +198,23 @@ public class OmfWriter : IOmfWriter
     public string Id { get; }
 
     /// <inheritdoc/>
-    public Uri TargetUri => _client.Uri;
+    public Uri TargetUri => SanitizeTargetUri(_client.Uri);
+
+    /// <summary>
+    /// Removes user info, query string and fragment, so acceptance results never expose credentials or tokens from the endpoint URL.
+    /// </summary>
+    /// <param name="uri">The endpoint URL.</param>
+    /// <returns>The URL without user info, query string and fragment, or <paramref name="uri"/> if it isn't absolute.</returns>
+    internal static Uri SanitizeTargetUri(Uri uri)
+    {
+        if (uri is not { IsAbsoluteUri: true }
+            || (uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0))
+        {
+            return uri;
+        }
+
+        return new UriBuilder(uri) { UserName = string.Empty, Password = string.Empty, Query = string.Empty, Fragment = string.Empty }.Uri;
+    }
 
     private bool EndpointInError
     {
@@ -698,6 +715,15 @@ public class OmfWriter : IOmfWriter
         }
         else
         {
+            if (!_nonAcceptedSuccessWarned)
+            {
+                _nonAcceptedSuccessWarned = true;
+                _logger.LogWarning(
+                    "Endpoint {Endpoint} returned {StatusCode} instead of 202 Accepted. Data was delivered, but awaitable scopes that include this endpoint are reported as rejected with NonAcceptedSuccess. This warning is logged once per endpoint.",
+                    TargetUri,
+                    (int?)response.StatusCode);
+            }
+
             var reason = new OmfOutcomeReason(
                 OmfReasonCode.NonAcceptedSuccess,
                 string.Create(CultureInfo.InvariantCulture, $"The endpoint returned {(int?)response.StatusCode} instead of 202 Accepted."));

@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -577,6 +577,38 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
 
         Assert.Equal(0, _coordinator.TrackedBodyCount);
         Assert.Equal(0, _coordinator.ActiveScopeCount);
+    }
+
+    /// <summary>
+    /// A long-lived scope keeps only the most recent fully accepted bodies; pending bodies are never pruned.
+    /// </summary>
+    [Fact]
+    public async Task RecordDisposition_ManyAcceptedBodies_PrunesOldestAndKeepsPending()
+    {
+        const int AcceptedCount = OmfAwaitableCoordinator.MaxRetainedAcceptedBodies + 10;
+        await using var scope = CreateScope();
+        scope.EnterWrite();
+        _coordinator.RecordAdmitted(scope, AcceptedCount + 1);
+        scope.ExitWrite();
+
+        var pendingId = Guid.NewGuid();
+        _coordinator.RegisterBody(pendingId, new Dictionary<ScopeToken, int> { [scope] = 1 });
+        _coordinator.RegisterDeliveries(pendingId, new[] { TargetA });
+        for (var i = 0; i < AcceptedCount; i++)
+        {
+            var bodyId = Guid.NewGuid();
+            _coordinator.RegisterBody(bodyId, new Dictionary<ScopeToken, int> { [scope] = 1 });
+            _coordinator.RegisterDeliveries(bodyId, new[] { TargetA });
+            _coordinator.RecordDisposition(bodyId, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
+        }
+
+        _coordinator.CloseMaterialization(scope);
+
+        Assert.Equal(OmfAwaitableCoordinator.MaxRetainedAcceptedBodies + 1, _coordinator.TrackedBodyCount);
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, result.Outcome);
+        Assert.Equal(OmfAwaitableCoordinator.MaxRetainedAcceptedBodies + 1, result.Deliveries.Count);
+        Assert.Equal(OmfDeliveryState.Pending, result.Deliveries.Single(delivery => delivery.SerializedMessageId == pendingId).State);
     }
 
     [Fact]

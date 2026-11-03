@@ -43,6 +43,12 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     public const int DefaultMaxActiveScopes = 1000;
 
     /// <summary>
+    /// The number of fully accepted bodies a scope keeps for its result. Older accepted bodies are pruned so a long-lived scope
+    /// doesn't grow without limit; pending and failed bodies are always kept.
+    /// </summary>
+    public const int MaxRetainedAcceptedBodies = 100;
+
+    /// <summary>
     /// The name of the meter that publishes awaitable scope metrics.
     /// </summary>
     public const string MeterName = "AdapterFramework.Data.Framework.Awaitable";
@@ -510,9 +516,37 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             {
                 Evaluate(tracking, failureOutcome, reason, ref completed);
             }
+
+            if (succeeded && body.Deliveries.TrueForAll(candidate => candidate.State == OmfDeliveryState.Accepted))
+            {
+                RetainAcceptedBody(body);
+            }
         }
 
         SignalCompleted(completed);
+    }
+
+    /// <summary>
+    /// Records a fully accepted body on each of its scopes and prunes each scope's oldest accepted bodies beyond
+    /// <see cref="MaxRetainedAcceptedBodies"/>. Callers hold <see cref="_lock"/>.
+    /// </summary>
+    /// <param name="body">The fully accepted body.</param>
+    private void RetainAcceptedBody(BodyTracking body)
+    {
+        foreach (var tracking in body.Membership.Keys.ToList())
+        {
+            tracking.AcceptedBodies.Enqueue(body);
+            while (tracking.AcceptedBodies.Count > MaxRetainedAcceptedBodies)
+            {
+                var pruned = tracking.AcceptedBodies.Dequeue();
+                tracking.Bodies.Remove(pruned);
+                pruned.Membership.Remove(tracking);
+                if (pruned.Membership.Count == 0)
+                {
+                    _bodies.Remove(pruned.Id);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -786,6 +820,8 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         public bool Materialized { get; set; }
 
         public List<BodyTracking> Bodies { get; } = new();
+
+        public Queue<BodyTracking> AcceptedBodies { get; } = new();
 
         public OmfAcceptanceOutcome? Outcome { get; set; }
 

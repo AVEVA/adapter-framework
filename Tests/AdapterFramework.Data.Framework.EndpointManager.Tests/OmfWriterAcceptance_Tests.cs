@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -87,6 +87,16 @@ public sealed class OmfWriterAcceptance_Tests : IDisposable
         Assert.Equal(OmfAcceptanceOutcome.Rejected, result.Outcome);
         Assert.Equal(reason, result.Reason.Code);
         Assert.Equal(status, Assert.Single(result.Deliveries).LastStatusCode);
+    }
+
+    /// <summary>User info, query string and fragment are removed from the target URI reported in acceptance results.</summary>
+    [Theory]
+    [InlineData("https://user:secret@example.com/api/omf?token=abc#frag", "https://example.com/api/omf")]
+    [InlineData("https://example.com:8443/api/omf?sig=1", "https://example.com:8443/api/omf")]
+    [InlineData("https://example.com/api/omf", "https://example.com/api/omf")]
+    public void SanitizeTargetUri_RemovesCredentialsAndQuery(string input, string expected)
+    {
+        Assert.Equal(new Uri(expected), OmfWriter.SanitizeTargetUri(new Uri(input)));
     }
 
     /// <summary>

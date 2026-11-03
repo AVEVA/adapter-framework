@@ -682,6 +682,7 @@ public class SerializationBlock : BaseBlock<Message>
                 // do not flush [] message
                 if (bytes.Length <= EmptyMessageLength)
                 {
+                    DiscardEmptyBody(slice.Membership(segment.Offset, segment.Count));
                     return;
                 }
 
@@ -805,6 +806,20 @@ public class SerializationBlock : BaseBlock<Message>
         var reason = new OmfOutcomeReason(
             OmfReasonCode.ItemTooLarge,
             string.Create(CultureInfo.InvariantCulture, $"An item serializes to {byteCount} bytes, more than the maximum of {_maxByteCount}."));
+        foreach (var (scope, itemCount) in membership)
+        {
+            _coordinator.RecordItemsDiscarded(scope, itemCount, reason);
+        }
+    }
+
+    private void DiscardEmptyBody(Dictionary<ScopeToken, int> membership)
+    {
+        if (_coordinator is null || membership is null)
+        {
+            return;
+        }
+
+        var reason = new OmfOutcomeReason(OmfReasonCode.EmptyBody, "Items serialized to an empty body, which isn't sent.");
         foreach (var (scope, itemCount) in membership)
         {
             _coordinator.RecordItemsDiscarded(scope, itemCount, reason);

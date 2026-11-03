@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,10 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// The acceptance result of an awaitable scope.
 /// </summary>
 /// <param name="Outcome">The acceptance outcome.</param>
-/// <param name="Deliveries">Every delivery of every body that carries the scope's items.</param>
+/// <param name="Deliveries">
+/// The deliveries of the bodies that carry the scope's items. Pending and failed deliveries are always included; only the
+/// most recent fully accepted bodies are kept, so a long-lived scope may omit older accepted deliveries.
+/// </param>
 /// <param name="Reason">
 /// Null for <see cref="OmfAcceptanceOutcome.Accepted"/> and <see cref="OmfAcceptanceOutcome.Filtered"/>.
 /// For a failure, the first recorded failure that made acceptance unsatisfiable. For <see cref="OmfAcceptanceOutcome.TimedOut"/>,
