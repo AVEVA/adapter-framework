@@ -37,6 +37,7 @@ public interface IMessageProcessor
     /// through the destination before rewriting. Retries and hot failover may replay a delete after
     /// replacement values were written; coordinate replay or avoid range replacement in that case.
     /// Range deletes bypass data filters and do not count as written values.
+    /// The built-in processor throws if disposed or if its processing block rejects the delete.
     /// </remarks>
     void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
         => throw new NotSupportedException("This message processor does not support range deletes.");

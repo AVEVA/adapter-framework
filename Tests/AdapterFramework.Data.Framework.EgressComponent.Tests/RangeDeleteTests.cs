@@ -20,6 +20,7 @@ using System.Text.Json;
 using System.Threading;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
+using AdapterFramework.Data.Framework.Abstractions.DataFilters;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
@@ -36,6 +37,7 @@ using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using AdapterFramework.Data.Framework.Serialization;
 using AdapterFramework.Data.Framework.Tests.Helper;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
@@ -113,6 +115,136 @@ public class RangeDeleteTests
         Assert.All(messages, m => Assert.Equal(PartitionKey.Key7, m.PartitionKey));
         AssertRange(messages[1], Start, Start.AddHours(1));
         AssertRange(messages[2], Start.AddHours(2), Start.AddHours(3));
+    }
+
+    [Theory]
+    [InlineData(9, 10, false)]
+    [InlineData(13, 14, false)]
+    [InlineData(11, 12, true)]
+    [InlineData(12, 13, true)]
+    [InlineData(12, 12, true)]
+    public void RangeDelete_PreservesFilteringOnlyForUnaffectedReadings(int startHour, int endHour, bool overlaps)
+    {
+        var sink = new Mock<IMessageProcessor>();
+        var adapter = new AdapterMessageProcessor(sink.Object, OmfVersion.Omf20);
+        adapter.ProcessDataFiltersConfigurationChanges([new DataFiltersConfiguration { Id = "Filter", AbsoluteDeadband = 1 }]);
+        var selection = new TestDataSelectionItem("Stream") { DataFilterId = "Filter" };
+        var first = new TimeIndexedValue<int> { Timestamp = Start.AddHours(12).UtcDateTime, Value = 100 };
+        adapter.WriteDynamicValue(selection, first, MessageAction.Create);
+        var cache = selection.DataFilterCache;
+        var range = new StreamingDataRange(Start.AddHours(startHour), Start.AddHours(endHour));
+
+        adapter.DeleteDynamicValuesInRange(selection, range);
+        if (overlaps)
+        {
+            Assert.Null(selection.DataFilterCache);
+        }
+        else
+        {
+            Assert.Same(cache, selection.DataFilterCache);
+        }
+
+        var next = new TimeIndexedValue<int> { Timestamp = first.Timestamp.AddMinutes(1), Value = 100 };
+        adapter.WriteDynamicValue(selection, next, MessageAction.Create);
+        sink.Verify(p => p.WriteDynamicValue("Stream", It.IsAny<TimeIndexedValue<int>>(), MessageAction.Create, null), Times.Exactly(overlaps ? 2 : 1));
+        sink.Verify(p => p.DeleteDynamicValuesInRange("Stream", range, null), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(12)]
+    [InlineData(13)]
+    [InlineData(11)]
+    public void RangeDelete_InvalidatesLastPreviousAndCurrentReadings(int deletedHour)
+    {
+        var sink = new Mock<IMessageProcessor>();
+        var adapter = new AdapterMessageProcessor(sink.Object, OmfVersion.Omf20);
+        adapter.ProcessDataFiltersConfigurationChanges([new DataFiltersConfiguration { Id = "Filter", AbsoluteDeadband = 1 }]);
+        var selection = new TestDataSelectionItem("Stream") { DataFilterId = "Filter" };
+        // The transmitted reading is at 12:00, the suppressed previous reading is at 13:00,
+        // and the out-of-order current reading is at 11:00. Each can independently overlap.
+        foreach (var hour in new[] { 12, 13, 11 })
+        {
+            adapter.WriteDynamicValue(selection, new TimeIndexedValue<int> { Timestamp = Start.AddHours(hour).UtcDateTime, Value = 100 }, MessageAction.Create);
+        }
+
+        var timestamp = Start.AddHours(deletedHour);
+        adapter.DeleteDynamicValuesInRange(selection, new StreamingDataRange(timestamp, timestamp));
+        Assert.Null(selection.DataFilterCache);
+        adapter.WriteDynamicValue(selection, new TimeIndexedValue<int> { Timestamp = Start.AddHours(14).UtcDateTime, Value = 100 }, MessageAction.Create);
+        sink.Verify(p => p.WriteDynamicValue("Stream", It.IsAny<TimeIndexedValue<int>>(), MessageAction.Create, null), Times.Exactly(3));
+    }
+
+    [Fact]
+    public void RangeDelete_UnknownCacheIsClearedOnlyAfterSuccessfulAdmission()
+    {
+        var sink = new Mock<IMessageProcessor>();
+        var adapter = new AdapterMessageProcessor(sink.Object, OmfVersion.Omf20);
+        var cache = new Mock<IDataFilterCache>().Object;
+        var selection = new TestDataSelectionItem("Stream") { DataFilterCache = cache };
+        var range = new StreamingDataRange(Start, Start);
+        sink.Setup(p => p.DeleteDynamicValuesInRange("Stream", range, null)).Throws(new InvalidOperationException("Rejected"));
+        Assert.Throws<InvalidOperationException>(() => adapter.DeleteDynamicValuesInRange(selection, range));
+        Assert.Same(cache, selection.DataFilterCache);
+
+        sink.Setup(p => p.DeleteDynamicValuesInRange("Stream", range, null));
+        adapter.DeleteDynamicValuesInRange(selection, range);
+        Assert.Null(selection.DataFilterCache);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Utc, true)]
+    [InlineData(DateTimeKind.Local, true)]
+    [InlineData(DateTimeKind.Unspecified, false)]
+    public void RangeDelete_PreservesOnlyKnownTimestampOffsets(DateTimeKind kind, bool preserve)
+    {
+        var adapter = new AdapterMessageProcessor(new Mock<IMessageProcessor>().Object, OmfVersion.Omf20);
+        adapter.ProcessDataFiltersConfigurationChanges([new DataFiltersConfiguration { Id = "Filter", AbsoluteDeadband = 1 }]);
+        var selection = new TestDataSelectionItem("Stream") { DataFilterId = "Filter" };
+        var utc = Start.AddHours(12).UtcDateTime;
+        var timestamp = kind == DateTimeKind.Local ? utc.ToLocalTime() : DateTime.SpecifyKind(utc, kind);
+        adapter.WriteDynamicValue(selection, new TimeIndexedValue<int> { Timestamp = timestamp, Value = 100 }, MessageAction.Create);
+        var cache = selection.DataFilterCache;
+        adapter.DeleteDynamicValuesInRange(selection, new StreamingDataRange(Start.AddHours(9), Start.AddHours(10)));
+        Assert.Same(preserve ? cache : null, selection.DataFilterCache);
+    }
+
+    [Fact]
+    public void RangeDelete_AfterDisposalThrows()
+    {
+        using var processor = CreateProcessor(new ConcurrentQueue<ISerializedOmfMessage>());
+        processor.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => processor.DeleteDynamicValuesInRange("Stream", new StreamingDataRange(Start, Start)));
+    }
+
+    [Fact]
+    public void RangeDelete_AfterWorkerFaultThrows()
+    {
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        using var processor = CreateProcessor(new ConcurrentQueue<ISerializedOmfMessage>(), logger: logger.Object);
+        var values = new Mock<IReadOnlyList<object>>();
+        values.SetupGet(v => v.Count).Throws(new InvalidOperationException("Injected value-list failure"));
+        processor.WriteDynamicValues("Stream", values.Object, MessageAction.Create);
+        Assert.True(SpinWait.SpinUntil(() => logger.Invocations.ToArray().Any(i =>
+            i.Method.Name == nameof(ILogger.Log) && ((EventId)i.Arguments[1]).Id == 5008), TimeSpan.FromSeconds(10)), "The instance worker did not fault.");
+        Assert.Throws<InvalidOperationException>(() => processor.DeleteDynamicValuesInRange("Stream", new StreamingDataRange(Start, Start)));
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf20, 1, 5013, "RangeDeleteTooLarge")]
+    [InlineData(OmfVersion.Omf12, 4096, 5014, "UnsupportedRangeDelete")]
+    public void RangeDelete_RejectionsHaveDistinctLogEvents(OmfVersion version, int maximumBytes, int eventId, string eventName)
+    {
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(LogLevel.Error)).Returns(true);
+        using (var block = new SerializationBlock(null, null, maximumBytes, logger.Object, -1,
+            new OmfJsonSerializer(), null, _ => Assert.Fail("Rejected delete was forwarded"), CancellationToken.None, version))
+        {
+            Assert.True(block.Post(new RangeDeleteMessage("Stream", new StreamingDataRange(Start, Start))));
+        }
+
+        logger.Verify(l => l.Log(LogLevel.Error, It.Is<EventId>(e => e.Id == eventId && e.Name == eventName),
+            It.IsAny<It.IsAnyType>(), It.IsAny<Exception>(), It.IsAny<Func<It.IsAnyType, Exception, string>>()), Times.Once);
     }
 
     [Fact]
@@ -248,12 +380,12 @@ public class RangeDeleteTests
             compressed.MessageAction, compressed.ItemCount, compressed.OmfVersion, compressed.PartitionKey), Start, Start);
     }
 
-    private static DataMessageProcessor CreateProcessor(ConcurrentQueue<ISerializedOmfMessage> sent, OmfVersion version = OmfVersion.Omf20, ICompressor compressor = null)
+    private static DataMessageProcessor CreateProcessor(ConcurrentQueue<ISerializedOmfMessage> sent, OmfVersion version = OmfVersion.Omf20, ICompressor compressor = null, ILogger logger = null)
     {
         var endpoints = new Mock<IOmfDataEndpointManager>();
         endpoints.Setup(e => e.SendMessage(It.IsAny<ISerializedOmfMessage>())).Callback<ISerializedOmfMessage>(sent.Enqueue);
         var logs = new Mock<ILogManager>();
-        logs.Setup(l => l.GetOrCreateLogger(It.IsAny<string>())).Returns(NullLogger.Instance);
+        logs.Setup(l => l.GetOrCreateLogger(It.IsAny<string>())).Returns(logger ?? NullLogger.Instance);
         var manifest = new Mock<IApplicationManifest>();
         manifest.SetupGet(m => m.OmfVersion).Returns(version);
         return new DataMessageProcessor(logs.Object, new OmfJsonSerializer(), compressor, endpoints.Object,

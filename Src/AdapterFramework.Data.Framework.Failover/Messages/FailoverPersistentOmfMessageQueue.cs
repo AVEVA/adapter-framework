@@ -28,9 +28,15 @@ namespace AdapterFramework.Data.Framework.Failover.Messages;
 
 public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<IFailoverSerializedOmfMessage>
 {
+    private static readonly Action<ILogger, DataItemVersion, int, Exception> LogInvalidRecord =
+        LoggerMessage.Define<DataItemVersion, int>(LogLevel.Warning, new EventId(5100, nameof(LogInvalidRecord)),
+            "A failover buffer record could not be read. Version {RecordVersion}, byte length {ByteLength}.");
+    private readonly ILogger _logger;
+
     public FailoverPersistentOmfMessageQueue(string targetIdentifier, IPersistentQueue persistentQueue, ILogger logger)
         : base(targetIdentifier, persistentQueue, logger)
     {
+        _logger = logger;
     }
 
     #region Protected overrides
@@ -84,11 +90,18 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 
+        // Failover V3 includes process-time ticks before the trailer; regular-buffer V3 does not.
+        // This queue does not write the regular buffer's V4 resource-count layout.
         var hasMetadata = dataItem.Version == DataItemVersion.V3;
         var metadataSize = hasMetadata ? OmfVersionEnumSize + PartitionKeyEnumSize : 0;
         var minimumLength = MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + MessageActionEnumSize + metadataSize;
         if (dataItem.Version is not (DataItemVersion.V2 or DataItemVersion.V3) || serializedWithType.Length < minimumLength)
         {
+            if (_logger != null)
+            {
+                LogInvalidRecord(_logger, dataItem.Version, serializedWithType.Length, null);
+            }
+
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
         }
 

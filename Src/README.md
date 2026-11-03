@@ -88,15 +88,16 @@ processors reject this method with `NotSupportedException`. A delete whose seria
 exceeds the message-size limit (after configured compression) throws `ArgumentException` before
 enqueueing; a range cannot be split.
 
-Deletes bypass data filters, clear the selection's filter cache, and do not increment written-value
-counts because the number of deleted values is unknown. Pending values are flushed before the
-delete. Use the same partition key for related writes and deletes. This preserves local enqueue
+Deletes bypass data filters and clear cached filter state only when a cached reading falls within
+the inclusive deleted range or the cache cannot establish that it is unaffected. Deletes do not
+increment written-value counts because the number of deleted values is unknown. Calls after disposal
+or rejection by the processing block throw instead of silently dropping the delete. Pending values are
+flushed before the delete. Use the same partition key for related writes and deletes. This preserves local enqueue
 order, but does not establish server-completion ordering. The API exposes no completion signal.
 Immediately writing replacement values is unsafe unless the destination guarantees ordered
 completion; using the same partition key alone is not that guarantee. Otherwise, confirm deletion
-through the destination (for example, read back the affected range) before rewriting. The functional
-test uses readback between the delete and replacement writes; it does not prove ordered completion
-for back-to-back requests.
+through the destination (for example, read back the affected range) before rewriting. Readback does
+not prove ordered completion for back-to-back requests.
 
 Range deletes use the existing compression, retry, and persistent buffering paths. Hot failover
 now preserves OMF version and partition key in a V3 buffer record; existing V2 records remain

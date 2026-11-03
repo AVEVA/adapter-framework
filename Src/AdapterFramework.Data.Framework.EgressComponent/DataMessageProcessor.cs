@@ -216,6 +216,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
     /// <inheritdoc/>
     public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (_omfVersion != OmfVersion.Omf20)
         {
             throw new NotSupportedException("Range deletes require OMF 2.0.");
@@ -232,7 +233,7 @@ public class DataMessageProcessor : IMessageProcessor, IDisposable
             throw new ArgumentException("The range delete exceeds the maximum message size and cannot be split.", nameof(id));
         }
 
-        _instanceGroupingBlock.Post(message);
+        _instanceGroupingBlock.PostOrThrow(message);
     }
 
     /// <inheritdoc/>

@@ -13,12 +13,15 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using Moq;
+using System.Collections.Generic;
+using System.Linq;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
+using Microsoft.Extensions.Logging;
+using Moq;
 using Xunit;
 using MessageType = AdapterFramework.Data.DataModel.MessageType;
 
@@ -111,6 +114,30 @@ public class FailoverPersistentOmfMessageQueue_Tests
         Assert.Equal(expectedMessageAction, peekedMessage.MessageAction);
         Assert.Equal(long.MaxValue, peekedMessage.ProcessTimeTicks);
         Assert.Equal(int.MaxValue, peekedMessage.ItemCount);
+    }
+
+    [Theory]
+    [InlineData(DataItemVersion.V2, 1)]
+    [InlineData(DataItemVersion.V3, 15)]
+    [InlineData(DataItemVersion.V1, 20)]
+    [InlineData((DataItemVersion)99, 20)]
+    public void FailoverPersistentOmfMessageQueue_InvalidRecordsLogVersionAndLength(DataItemVersion version, int length)
+    {
+        var queue = new Mock<IPersistentQueue>();
+        queue.Setup(q => q.Dequeue()).Returns(new DataItem(version, new byte[length]));
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(LogLevel.Warning)).Returns(true);
+        using var buffer = new FailoverPersistentOmfMessageQueue(TestTargetIdentifier, queue.Object, logger.Object);
+        Assert.True(buffer.TryDequeue(out var message));
+        Assert.Empty(message.MessageBody);
+
+        var log = Assert.Single(logger.Invocations, i => i.Method.Name == nameof(ILogger.Log));
+        Assert.Equal(LogLevel.Warning, log.Arguments[0]);
+        Assert.Equal(5100, ((EventId)log.Arguments[1]).Id);
+        var properties = Assert.IsAssignableFrom<IEnumerable<KeyValuePair<string, object>>>(log.Arguments[2]).ToDictionary(p => p.Key, p => p.Value);
+        Assert.Equal(version, properties["RecordVersion"]);
+        Assert.Equal(length, properties["ByteLength"]);
+        Assert.Equal(3, properties.Count); // Version, length, and the message template; no payload.
     }
 
     [Fact]

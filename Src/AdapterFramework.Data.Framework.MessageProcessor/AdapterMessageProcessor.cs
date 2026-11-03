@@ -151,7 +151,10 @@ public class AdapterMessageProcessor : IAdapterMessageProcessor
         }
 
         _messageProcessor.DeleteDynamicValuesInRange(dataSelectionItem.StreamId, range, partitionKey);
-        dataSelectionItem.DataFilterCache = null;
+        if (dataSelectionItem.DataFilterCache is not IRangeDeleteFilterCache cache || !cache.CanPreserveForRangeDelete(range))
+        {
+            dataSelectionItem.DataFilterCache = null;
+        }
     }
 
     /// <inheritdoc/>
