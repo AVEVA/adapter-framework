@@ -626,10 +626,14 @@ public class SchemaInstanceFlushOrdering_Tests
             }
 
             definitions.PostOrThrow(message);
-        }, 1, 60000);
+        }, 3, 60000);
 
         Assert.True(definitions.Post(CreateStreamMessage("S1")));
         Assert.True(producer.Post(CreateDataMessage("S1")));
+        Assert.True(producer.Post(CreateEntityMessage("Entity1")));
+
+        // The third item fills the batch, so the failed handoff carries a stream value, an entity and an event.
+        Assert.True(producer.Post(CreateEventMessage("Event1", new Link(new RelationshipLinkNode("Event1"), new RelationshipLinkNode("Entity1")))));
         Assert.True(SpinWait.SpinUntil(() => CountLogs(logger, WorkerFaultedEventId) == 1, WaitTimeout), "The producer did not fault.");
 
         producer.Dispose();
@@ -638,6 +642,25 @@ public class SchemaInstanceFlushOrdering_Tests
         var messages = recorder.Snapshot();
         Assert.Equal(2, messages.Count);
         AssertDefinitionsThenData(schema, messages);
+        if (schema)
+        {
+            var batch = (InstanceMessage)messages[1];
+            Assert.Equal(1, batch.StreamingDataObjectCount);
+            Assert.Equal(1, batch.EntitiesCount);
+            Assert.Equal("Entity1", batch.Entities[0].InstanceId);
+            Assert.Equal(1, batch.EventsCount);
+            Assert.Equal("Event1", batch.Events[0].Id);
+            Assert.Equal(1, batch.RelationshipCount);
+        }
+        else
+        {
+            var batch = (GroupedDataMessage)messages[1];
+            Assert.Equal(3, batch.Count);
+            Assert.True(batch.Groupings.ContainsKey("S1"));
+            Assert.Equal("Entity1", Assert.Single(batch.StaticGroupings).InstanceId);
+            Assert.Equal(Classification.Static, batch.Groupings["EventType"].Classification);
+        }
+
         Assert.Equal(1, CountLogs(logger, DrainFaultedEventId));
         Assert.Equal(0, CountLogs(logger, FinalFlushFailedEventId));
     }
@@ -1109,6 +1132,16 @@ public class SchemaInstanceFlushOrdering_Tests
     private static DataMessage CreateDataMessage(string id)
     {
         return new DataMessage(id, Classification.Dynamic, new Dictionary<string, string>(), MessageAction.Create);
+    }
+
+    private static StaticDataMessage CreateEntityMessage(string id)
+    {
+        return new StaticDataMessage("EntityType", id, id, null, null, null, null, null, null, new Dictionary<string, string>(), MessageAction.Create);
+    }
+
+    private static EventMessage CreateEventMessage(string id, Link relationship)
+    {
+        return new EventMessage("EventType", id, id, null, null, DateTime.UtcNow, null, null, null, null, null, new Dictionary<string, string>(), [relationship], MessageAction.Create);
     }
 
     private static Mock<ILogger> CreateLogger()

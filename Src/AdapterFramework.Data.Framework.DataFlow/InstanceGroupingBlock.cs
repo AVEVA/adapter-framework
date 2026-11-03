@@ -451,16 +451,12 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
         {
             entitiesArray = ArrayPool<StaticStreamData>.Shared.Rent(entitiesCount);
             _staticMessages.CopyTo(entitiesArray);
-            _staticMessages.Clear();
-            _staticMessages = null;
         }
 
         if (linkCount > 0)
         {
             relationshipsArray = ArrayPool<Link>.Shared.Rent(linkCount);
             _relationships.CopyTo(relationshipsArray);
-            _relationships.Clear();
-            _relationships = null;
         }
 
         if (eventsCount > 0)
@@ -486,9 +482,6 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
                 eventsArray[i] = eventInstance;
             }
-
-            _eventMessages.Clear();
-            _eventMessages = null;
         }
 
 #pragma warning disable CA2000 // Dispose objects before losing scope
@@ -507,6 +500,11 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _flush(instanceMessage);
+
+        // Cleared only after a successful handoff, so a final flush after a failed one resends the whole batch.
+        _staticMessages = null;
+        _eventMessages = null;
+        _relationships = null;
         _totalStreamingDataCount = 0;
         _totalInstanceCount = 0;
         _dynamicMessages.Clear();
