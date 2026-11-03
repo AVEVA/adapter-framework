@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -321,4 +321,27 @@ public class FailoverBackedUpOmfMessageQueue_Tests
         // make sure second dispose call doesn't throw
         backedUpMessageQueue.Dispose();
     }
+
+    [Fact]
+    public void FailoverBackedUpOmfMessageQueue_UnreadablePersistentRecord_IsSkipped_Test()
+    {
+        var readable = new FailoverSerializedOmfMessage(MessageType.Data, new byte[] { 0x20 }, MessageAction.Default);
+        var records = new System.Collections.Generic.Queue<IFailoverSerializedOmfMessage>(new IFailoverSerializedOmfMessage[] { null, readable, null });
+        var mockPersistentQueue = new Mock<IPersistentMessageQueue<IFailoverSerializedOmfMessage>>();
+        mockPersistentQueue.Setup(queue => queue.TryPeek(out It.Ref<IFailoverSerializedOmfMessage>.IsAny))
+            .Returns(new TryMessageDelegate((out IFailoverSerializedOmfMessage message) => records.TryPeek(out message)));
+        mockPersistentQueue.Setup(queue => queue.TryDequeue(out It.Ref<IFailoverSerializedOmfMessage>.IsAny))
+            .Returns(new TryMessageDelegate((out IFailoverSerializedOmfMessage message) => records.TryDequeue(out message)));
+
+        using var backedUpMessageQueue = new FailoverBackedUpOmfMessageQueue(MaxQueueSize, _messageExpirationTime, mockPersistentQueue.Object, new Mock<ILogger>().Object);
+
+        Assert.True(backedUpMessageQueue.TryPeek(out var peeked));
+        Assert.Same(readable, peeked);
+        Assert.True(backedUpMessageQueue.TryDequeue(out var dequeued));
+        Assert.Same(readable, dequeued);
+        Assert.False(backedUpMessageQueue.TryDequeue(out _));
+        Assert.Empty(records);
+    }
+
+    private delegate bool TryMessageDelegate(out IFailoverSerializedOmfMessage message);
 }

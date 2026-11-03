@@ -297,12 +297,6 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             {
                 if (_internalBackedUpMessageQueue.TryDequeue(out var message))
                 {
-                    if (message is null)
-                    {
-                        // The queue already logged the unreadable record; it is dropped instead of sent.
-                        continue;
-                    }
-
                     try
                     {
                         _dataEndpointManager.SendMessage(message);
@@ -333,7 +327,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         if (_internalBackedUpMessageQueue != null)
         {
             while (_internalBackedUpMessageQueue.TryPeek(out var message)
-                    && (message is null || message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks))
+                    && message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks)
             {
                 _internalBackedUpMessageQueue.TryDequeue(out _);
             }

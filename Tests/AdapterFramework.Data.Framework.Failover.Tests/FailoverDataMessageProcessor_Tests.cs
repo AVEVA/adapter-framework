@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Moq;
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
@@ -282,6 +283,44 @@ public class FailoverDataMessageProcessor_Tests : IDisposable
 
         failoverDataMessageProcessor.UpdateMode(FailoverMode.NotConfigured);
     }
+
+    /// <summary>Verifies the secondary trims past an unreadable record at the head of the persistent buffer instead of stopping there.</summary>
+    [Fact]
+    public void UpdateState_HotSecondary_TrimsPastUnreadableRecord()
+    {
+        var processor = new FailoverDataMessageProcessor(new Mock<ILogger>().Object,
+            GetMockConfigurationProvider(nameof(UpdateState_HotSecondary_TrimsPastUnreadableRecord)).Object,
+            GetMockOmfDataEndpointManager().Object);
+        using var processorLifetime = processor;
+        processor.Initialize();
+        processor.UpdateMode(FailoverMode.Hot);
+        processor.UpdateState(FailoverRole.Secondary, default);
+
+        var trimTime = DateTime.UtcNow;
+        var records = new Queue<IFailoverSerializedOmfMessage>(new IFailoverSerializedOmfMessage[]
+        {
+            null,
+            new FailoverSerializedOmfMessage(MessageType.Data, new byte[] { 1 }, MessageAction.Default) { ProcessTimeTicks = trimTime.Ticks - 1 },
+            new FailoverSerializedOmfMessage(MessageType.Data, new byte[] { 2 }, MessageAction.Default) { ProcessTimeTicks = trimTime.Ticks + 1 },
+        });
+        var persistentQueue = new Mock<IPersistentMessageQueue<IFailoverSerializedOmfMessage>>();
+        persistentQueue.Setup(queue => queue.TryPeek(out It.Ref<IFailoverSerializedOmfMessage>.IsAny))
+            .Returns(new TryMessageDelegate((out IFailoverSerializedOmfMessage message) => records.TryPeek(out message)));
+        persistentQueue.Setup(queue => queue.TryDequeue(out It.Ref<IFailoverSerializedOmfMessage>.IsAny))
+            .Returns(new TryMessageDelegate((out IFailoverSerializedOmfMessage message) => records.TryDequeue(out message)));
+
+        var queueField = typeof(FailoverDataMessageProcessor).GetField("_internalBackedUpMessageQueue", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        using var originalQueue = (FailoverBackedUpOmfMessageQueue)queueField.GetValue(processor);
+        using var queueWithUnreadableHead = new FailoverBackedUpOmfMessageQueue(10, TimeSpan.FromMinutes(5), persistentQueue.Object, new Mock<ILogger>().Object);
+        queueField.SetValue(processor, queueWithUnreadableHead);
+
+        processor.UpdateState(FailoverRole.Secondary, trimTime);
+
+        var remaining = Assert.Single(records);
+        Assert.Equal(new byte[] { 2 }, remaining.MessageBody);
+    }
+
+    private delegate bool TryMessageDelegate(out IFailoverSerializedOmfMessage message);
 
     [Fact]
     public void FailoverDataMessageProcessor_ProcessOmfMessage_HotMode_SecondaryToSecondary_DefaultTimeReceived_NoTrimBuffer_Test()

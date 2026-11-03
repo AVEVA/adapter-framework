@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -131,13 +131,20 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
         lock (_lock)
         {
-            if (_persistentQueue == null || !_persistentQueue.TryDequeue(out message))
+            // The persistent queue returns true with a null message for an unreadable record it has already removed and logged.
+            while (_persistentQueue != null && _persistentQueue.TryDequeue(out message))
             {
-                if (_volatileQueue.TryDequeue(out var timestampedMessage))
+                if (message != null)
                 {
-                    message = timestampedMessage.SerializedOmfMessage;
-                    _currentVolatileQueueSize -= message.GetMessageSizeInBytes();
+                    return true;
                 }
+            }
+
+            message = default;
+            if (_volatileQueue.TryDequeue(out var timestampedMessage))
+            {
+                message = timestampedMessage.SerializedOmfMessage;
+                _currentVolatileQueueSize -= message.GetMessageSizeInBytes();
             }
 
             return message != null;
@@ -151,12 +158,24 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
         lock (_lock)
         {
-            if (_persistentQueue == null || !_persistentQueue.TryPeek(out message))
+            while (_persistentQueue != null && _persistentQueue.TryPeek(out message))
             {
-                if (_volatileQueue.TryPeek(out var timestampedMessage))
+                if (message != null)
                 {
-                    message = timestampedMessage.SerializedOmfMessage;
+                    return true;
                 }
+
+                // An unreadable record at the head would otherwise hide every record behind it, so it is dropped.
+                if (!_persistentQueue.TryDequeue(out _))
+                {
+                    break;
+                }
+            }
+
+            message = default;
+            if (_volatileQueue.TryPeek(out var timestampedMessage))
+            {
+                message = timestampedMessage.SerializedOmfMessage;
             }
 
             return message != null;
