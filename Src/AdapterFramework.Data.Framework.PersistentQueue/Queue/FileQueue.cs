@@ -60,6 +60,9 @@ public class FileQueue : IPersistentQueue
     private readonly object _trackingLock = new();
     private readonly Dictionary<int, LinkedList<(long Position, Guid Id)>> _trackedItems = new();
 
+    // Each tracked ID's entry in _trackedItems, so re-tracking an ID replaces its stale entry.
+    private readonly Dictionary<Guid, (int FileNumber, LinkedListNode<(long Position, Guid Id)> Node)> _trackedById = new();
+
     // Maximum bytes of a single queue file - the queue will store more bytes than this as it uses multiple files.
     private readonly long _maxFileSizeBytes;
    
@@ -559,13 +562,35 @@ public class FileQueue : IPersistentQueue
 
         lock (_trackingLock)
         {
+            // An item kept pending after a failed flush is written again, so only its latest record is tracked.
+            RemoveTrackedEntry(trackingId);
+
             if (!_trackedItems.TryGetValue(_queueState.WriterFileNumber, out var items))
             {
                 items = new LinkedList<(long Position, Guid Id)>();
                 _trackedItems[_queueState.WriterFileNumber] = items;
             }
 
-            items.AddLast((position, trackingId));
+            _trackedById[trackingId] = (_queueState.WriterFileNumber, items.AddLast((position, trackingId)));
+        }
+    }
+
+    /// <summary>
+    /// Removes the tracked entry of an ID, if any. Callers hold <see cref="_trackingLock"/>.
+    /// </summary>
+    /// <param name="trackingId">The tracking ID.</param>
+    private void RemoveTrackedEntry(Guid trackingId)
+    {
+        if (!_trackedById.Remove(trackingId, out var entry))
+        {
+            return;
+        }
+
+        var items = entry.Node.List;
+        items?.Remove(entry.Node);
+        if (items is { Count: 0 })
+        {
+            _trackedItems.Remove(entry.FileNumber);
         }
     }
 
@@ -582,14 +607,7 @@ public class FileQueue : IPersistentQueue
 
         lock (_trackingLock)
         {
-            if (_trackedItems.TryGetValue(_queueState.WriterFileNumber, out var items) && items.Last?.Value.Id == trackingId)
-            {
-                items.RemoveLast();
-                if (items.Count == 0)
-                {
-                    _trackedItems.Remove(_queueState.WriterFileNumber);
-                }
-            }
+            RemoveTrackedEntry(trackingId);
         }
     }
 
@@ -618,11 +636,13 @@ public class FileQueue : IPersistentQueue
             while (items.First?.Value.Position < start)
             {
                 (skipped ??= new List<Guid>()).Add(items.First.Value.Id);
+                _trackedById.Remove(items.First.Value.Id);
                 items.RemoveFirst();
             }
 
             if (items.First?.Value.Position == start)
             {
+                _trackedById.Remove(items.First.Value.Id);
                 items.RemoveFirst();
             }
 
@@ -657,6 +677,7 @@ public class FileQueue : IPersistentQueue
                 foreach (var (_, id) in _trackedItems[fileNumber])
                 {
                     lost.Add(id);
+                    _trackedById.Remove(id);
                 }
 
                 _trackedItems.Remove(fileNumber);

@@ -78,6 +78,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
     /// <summary>
     /// Reads V2 and V6 failover records, preserving timestamps.
     /// </summary>
+    /// <returns>The message, or <see langword="null"/> if the record is unreadable and must be dropped.</returns>
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
@@ -95,7 +96,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
                     dataItem.Version, serializedWithType.Length, _targetIdentifier);
             }
 
-            return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
+            return null;
         }
 
         var messageType = (MessageType)serializedWithType[0];

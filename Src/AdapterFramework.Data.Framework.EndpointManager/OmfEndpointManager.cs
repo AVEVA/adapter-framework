@@ -122,6 +122,14 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
                     // Tracking failures must not stop delivery to the endpoints.
                     _logger.LogError(ex, "Failed to register endpoint deliveries for acceptance tracking. The message will still be sent.");
                     serializedMessageId = null;
+                    try
+                    {
+                        _dispatchCoordinator.RecordBodyDiscarded(bodyId, new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                    }
+                    catch (Exception trackingEx)
+                    {
+                        _logger.LogError(trackingEx, "Failed to discard the body for acceptance tracking.");
+                    }
                 }
             }
 

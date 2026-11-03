@@ -97,7 +97,8 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
     }
 
     /// <summary>
-    /// A delivery registration failure is logged and doesn't stop the body from reaching every writer.
+    /// A delivery registration failure is logged, discards the body's scope with <see cref="OmfReasonCode.EnqueueFailed"/>,
+    /// and doesn't stop the body from reaching every writer.
     /// </summary>
     [Fact]
     public async Task SendMessage_RegisterDeliveriesThrows_AllWritersStillReceiveBody()
@@ -113,6 +114,10 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
 
             _writers["A"].Verify(writer => writer.SendMessage(message), Times.Exactly(2));
             _writers["B"].Verify(writer => writer.SendMessage(message), Times.Exactly(2));
+
+            var result = await scope.WaitForAcceptanceAsync(NoWait);
+            Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+            Assert.Equal(OmfReasonCode.EnqueueFailed, result.Reason.Code);
         }
     }
 

@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -393,6 +393,32 @@ public sealed class OmfAwaitableCoordinator : IDisposable
                 {
                     Evaluate(tracking, OmfAcceptanceOutcome.Discarded, body.DiscardReason, ref completed);
                 }
+            }
+        }
+
+        SignalCompleted(completed);
+    }
+
+    /// <summary>
+    /// Discards a registered body whose deliveries couldn't be tracked, so its scopes complete instead of waiting until timeout.
+    /// </summary>
+    /// <param name="serializedMessageId">The ID of the serialized body.</param>
+    /// <param name="reason">Why the body is discarded.</param>
+    public void RecordBodyDiscarded(Guid serializedMessageId, OmfOutcomeReason reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        List<OmfAwaitableScopeState> completed = null;
+        lock (_lock)
+        {
+            if (!_bodies.TryGetValue(serializedMessageId, out var body))
+            {
+                return;
+            }
+
+            body.DiscardReason ??= reason;
+            foreach (var tracking in body.Membership.Keys)
+            {
+                Evaluate(tracking, OmfAcceptanceOutcome.Discarded, body.DiscardReason, ref completed);
             }
         }
 

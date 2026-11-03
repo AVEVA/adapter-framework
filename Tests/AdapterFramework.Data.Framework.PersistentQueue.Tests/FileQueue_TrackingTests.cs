@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -161,6 +161,26 @@ public sealed class FileQueue_TrackingTests : IDisposable
         queue.FlushEnqueues();
 
         Assert.Equal(SmallItemBytes, queue.Dequeue().Data.Length);
+        Assert.Empty(_lost);
+    }
+
+    /// <summary>
+    /// Tracking is idempotent per ID: when an item is written again, only its latest record is tracked, so evicting
+    /// the file holding the stale record doesn't report an item whose newer record is still queued.
+    /// </summary>
+    [Fact]
+    public void FlushEnqueues_SameIdWrittenTwice_StaleRecordEvictionNotReported()
+    {
+        var id = Guid.NewGuid();
+        var queue = CreateQueue(maxQueueFiles: 2);
+        queue.Enqueue(Tracked(id, FileSizeBytes));
+        queue.Enqueue(Tracked(id, FileSizeBytes)); // Second file.
+        queue.Enqueue(Untracked(FileSizeBytes)); // Third file evicts the first.
+        queue.FlushEnqueues();
+
+        Assert.Empty(_lost);
+        Assert.NotNull(queue.Dequeue());
+        Assert.NotNull(queue.Dequeue());
         Assert.Empty(_lost);
     }
 

@@ -129,16 +129,14 @@ public class FailoverPersistentOmfMessageQueue_Tests
     [InlineData(DataItemVersion.V4, 40)]
     [InlineData(DataItemVersion.V5, 48)]
     [InlineData(DataItemVersion.V1, 40)]
-    public void FailoverPersistentOmfMessageQueue_InvalidRecord_ReturnsEmptyMessage(DataItemVersion version, int length)
+    public void FailoverPersistentOmfMessageQueue_InvalidRecord_ReturnsNull(DataItemVersion version, int length)
     {
         var persistentQueue = new Mock<IPersistentQueue>();
         using var queue = new FailoverMessageQueueWrapper(persistentQueue.Object);
 
         var restored = queue.CreateSerializedOmfMessageExternal(new DataItem(version, new byte[length]));
 
-        Assert.Empty(restored.MessageBody);
-        Assert.Null(restored.SerializedMessageId);
-        Assert.Equal(0, restored.ProcessTimeTicks);
+        Assert.Null(restored);
     }
 
     [Fact]

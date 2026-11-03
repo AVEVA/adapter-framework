@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -297,6 +297,12 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
             {
                 if (_internalBackedUpMessageQueue.TryDequeue(out var message))
                 {
+                    if (message is null)
+                    {
+                        // The queue already logged the unreadable record; it is dropped instead of sent.
+                        continue;
+                    }
+
                     try
                     {
                         _dataEndpointManager.SendMessage(message);
@@ -327,7 +333,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         if (_internalBackedUpMessageQueue != null)
         {
             while (_internalBackedUpMessageQueue.TryPeek(out var message)
-                    && message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks)
+                    && (message is null || message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks))
             {
                 _internalBackedUpMessageQueue.TryDequeue(out _);
             }
