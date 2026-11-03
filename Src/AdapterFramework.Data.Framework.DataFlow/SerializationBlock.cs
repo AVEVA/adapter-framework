@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -761,8 +761,17 @@ public class SerializationBlock : BaseBlock<Message>
         };
         if (_coordinator is not null && membership?.Count > 0)
         {
-            message.SerializedMessageId = Guid.NewGuid();
-            _coordinator.RegisterBody(message.SerializedMessageId.Value, membership);
+            var serializedMessageId = Guid.NewGuid();
+            try
+            {
+                _coordinator.RegisterBody(serializedMessageId, membership);
+                message.SerializedMessageId = serializedMessageId;
+            }
+            catch (Exception ex)
+            {
+                // Tracking failures must not stop delivery. The unregistered items surface as a count mismatch when the scope materializes.
+                _logger.LogError(ex, "Failed to register a serialized message for acceptance tracking. The message will still be sent.");
+            }
         }
 
         _flushAction(message);

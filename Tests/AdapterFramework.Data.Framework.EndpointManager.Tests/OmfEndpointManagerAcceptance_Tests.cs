@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -93,6 +93,26 @@ public sealed class OmfEndpointManagerAcceptance_Tests : IDisposable
             Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
             Assert.Equal(OmfReasonCode.EnqueueFailed, result.Reason.Code);
             Assert.Equal(OmfDeliveryState.Discarded, result.Deliveries.Single(delivery => delivery.EndpointId == "B").State);
+        }
+    }
+
+    /// <summary>
+    /// A delivery registration failure is logged and doesn't stop the body from reaching every writer.
+    /// </summary>
+    [Fact]
+    public async Task SendMessage_RegisterDeliveriesThrows_AllWritersStillReceiveBody()
+    {
+        using var manager = CreateManager(EdgeSystemConstants.DataEndpointsFacetName);
+        var (scope, message) = CreateScopedBody();
+        await using (scope)
+        {
+            manager.SendMessage(message);
+
+            // The body's deliveries are already registered, so the coordinator throws on the second dispatch.
+            manager.SendMessage(message);
+
+            _writers["A"].Verify(writer => writer.SendMessage(message), Times.Exactly(2));
+            _writers["B"].Verify(writer => writer.SendMessage(message), Times.Exactly(2));
         }
     }
 

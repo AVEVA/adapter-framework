@@ -113,7 +113,16 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
             var serializedMessageId = _dispatchCoordinator is null ? null : serializedMessage.SerializedMessageId;
             if (serializedMessageId is { } bodyId)
             {
-                _dispatchCoordinator.RegisterDeliveries(bodyId, writers.Select(writer => new OmfDeliveryTarget(writer.Id, writer.TargetUri)).ToList());
+                try
+                {
+                    _dispatchCoordinator.RegisterDeliveries(bodyId, writers.Select(writer => new OmfDeliveryTarget(writer.Id, writer.TargetUri)).ToList());
+                }
+                catch (Exception ex)
+                {
+                    // Tracking failures must not stop delivery to the endpoints.
+                    _logger.LogError(ex, "Failed to register endpoint deliveries for acceptance tracking. The message will still be sent.");
+                    serializedMessageId = null;
+                }
             }
 
             foreach (var writer in writers)
@@ -132,8 +141,15 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
                     if (serializedMessageId is { } failedId)
                     {
-                        _dispatchCoordinator.RecordDisposition(
-                            failedId, writer.Id, OmfDeliveryState.Discarded, null, new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                        try
+                        {
+                            _dispatchCoordinator.RecordDisposition(
+                                failedId, writer.Id, OmfDeliveryState.Discarded, null, new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                        }
+                        catch (Exception trackingEx)
+                        {
+                            _logger.LogError(trackingEx, "Failed to record a discarded delivery for acceptance tracking.");
+                        }
                     }
                 }
             }
@@ -263,6 +279,8 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         {
             // Reset replaces every writer, so sends wait instead of finding no writers mid-reset.
             // The new writers reuse the old writers' buffer files, so they can't be created until the old ones are disposed.
+            // Trade-off: sends block for the whole reset, including writer disposal, which is acceptable for a rare operator action.
+            // A writer whose disposal hangs (for example, on stuck file I/O) blocks every send until it finishes.
             lock (_dispatchLock)
             {
                 return ResetDataBuffersCore();

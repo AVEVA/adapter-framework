@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -210,11 +210,13 @@ public sealed class FailoverPipelineAcceptance_Tests
             scope.Seal();
         }
 
-        /// <summary>Hands off normally and reads the processor-assigned timestamp without changing its clock or queues.</summary>
+        /// <summary>Hands off normally and returns the processor's timestamp once the body is dispatched; in hot mode that happens on the buffer consumer.</summary>
         public DateTime Process(ISerializedOmfMessage body)
         {
+            var previous = Processor.LastDataProcessedTime;
             Processor.ProcessOmfMessage(body);
-            return new DateTime((long)TestUtilities.GetFieldValueFromObject("_lastReceivedTimeTicks", Processor), DateTimeKind.Utc);
+            Assert.True(global::System.Threading.SpinWait.SpinUntil(() => Processor.LastDataProcessedTime != previous, TimeSpan.FromSeconds(10)));
+            return Processor.LastDataProcessedTime;
         }
 
         /// <summary>Returns an exact 202 with a receipt.</summary>

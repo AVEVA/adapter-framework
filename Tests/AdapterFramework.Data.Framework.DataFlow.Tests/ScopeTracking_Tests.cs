@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -251,6 +251,46 @@ public class ScopeTracking_Tests
         block.Post(new ScopeMaterializationBarrier(a, 2));
 
         Assert.Equal(OmfAcceptanceOutcome.Accepted, (await wait).Outcome);
+        await a.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a body registration failure doesn't stop the body from being sent, and the scope is discarded with
+    /// <see cref="OmfReasonCode.CountMismatch"/> instead of waiting forever.
+    /// </summary>
+    [Fact]
+    public async Task SerializationBlock_RegisterBodyThrows_BodyStillSentAndScopeDiscarded()
+    {
+        using var coordinator = CreateCoordinator();
+        var a = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+        using var block = CreateSerializationBlock(coordinator, 10000, bodies);
+
+        // Clearing the coordinator's body table makes RegisterBody throw; nothing else used by this test reads it.
+        var bodiesField = typeof(OmfAwaitableCoordinator).GetField("_bodies", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        var originalBodies = bodiesField.GetValue(coordinator);
+        bodiesField.SetValue(coordinator, null);
+        try
+        {
+            var stream = new StreamingDataInstance { Id = "s", Values = [1] };
+            coordinator.RecordAdmitted(a, 1);
+            block.Post(new InstanceMessage([stream], null, null, null, 1, 1, 0, 0, 0, MessageAction.Default) { Sidecar = new InstanceScopeSidecar([a], [[new ScopeRange(0, 0, 1)]], null, null, null) });
+            block.Post(new ScopeMaterializationBarrier(a, 1));
+            a.Seal();
+
+            var result = await a.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+
+            Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+            Assert.Equal(OmfReasonCode.CountMismatch, result.Reason.Code);
+            var body = Assert.Single(bodies);
+            Assert.Equal(1, body.ItemCount);
+            Assert.Null(Assert.IsType<SerializedOmfMessage>(body).SerializedMessageId);
+        }
+        finally
+        {
+            bodiesField.SetValue(coordinator, originalBodies);
+        }
+
         await a.DisposeAsync();
     }
 
