@@ -180,6 +180,11 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     {
         switch (message)
         {
+            case RangeDeleteMessage rangeDelete:
+                // A delete is an ordering boundary, even when the previous batch also deletes values.
+                Flush(_messageAction);
+                _flush(rangeDelete);
+                break;
             case CommandMessage command:
                 ProcessCommand(command);
                 break;

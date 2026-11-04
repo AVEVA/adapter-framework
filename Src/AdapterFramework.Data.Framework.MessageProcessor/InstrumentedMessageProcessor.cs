@@ -150,6 +150,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    {
+        _messageProcessor.DeleteDynamicValuesInRange(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), range, partitionKey);
+    }
+
+    /// <inheritdoc/>
     public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
     {
         _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey);

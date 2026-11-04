@@ -34,9 +34,20 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     {
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="FailoverSerializedOmfMessage"/> class,
+    /// preserving delivery metadata from the original message.
+    /// </summary>
+    /// <param name="message">The original serialized message.</param>
+    public FailoverSerializedOmfMessage(ISerializedOmfMessage message)
+        : base(message?.MessageType ?? throw new System.ArgumentNullException(nameof(message)), message.MessageBody, message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
+    {
+    }
+
     /// <inheritdoc/>
     public long ProcessTimeTicks { get; set; }
 
     public override int GetMessageSizeInBytes() =>
-        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength;
+        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength
+        + (OmfVersion == OmfVersion.Omf12 && PartitionKey == null ? 0 : OmfVersionEnumSize + PartitionKeyEnumSize);
 }
