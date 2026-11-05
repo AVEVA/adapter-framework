@@ -76,7 +76,7 @@ The following shows where the new streams appear in the existing health hierarch
       - **ErrorRate** (dynamic Diagnostics.Adapter.ErrorRate)
       - **StreamCount** (dynamic Diagnostics.StreamCount)
       - **IORate** (dynamic Diagnostics.IORate)
-      - **AssetCount** (dynamic Diagnostics.AssetCount), OMF 2.0
+      - **EntityCount** (dynamic Diagnostics.EntityCount), OMF 2.0
       - **EventCount** (dynamic Diagnostics.EventCount), OMF 2.0
       - **StreamIORate** (dynamic Diagnostics.IORate), OMF 2.0, **New**
       - **EntityIORate** (dynamic Diagnostics.IORate), OMF 2.0, **New**
