@@ -23,7 +23,23 @@ namespace AdapterFramework.Data.Framework.Abstractions.Buffering;
 public interface IPersistentMessageQueue<TMessage> : IMessageQueue<TMessage>, IDisposable
 {
     /// <summary>
+    /// Gets a value that changes whenever retention discards unread messages from the head of the queue.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation always returns 0, so <see cref="TryDequeueIfEpoch"/> provides no fencing.
+    /// Implementations that can discard unread messages should override this to keep leases safe.
+    /// </remarks>
+    long ReaderEpoch => 0;
+
+    /// <summary>
     /// Removes all persisted messages from the <see cref="IPersistentMessageQueue{TMessage}"/>.
     /// </summary>
     void Clear();
+
+    /// <summary>
+    /// Removes the head message only if <see cref="ReaderEpoch"/> still equals <paramref name="expectedEpoch"/>.
+    /// </summary>
+    /// <param name="expectedEpoch">The <see cref="ReaderEpoch"/> observed before the head message was read.</param>
+    /// <returns>true if the head message was removed; otherwise, false.</returns>
+    bool TryDequeueIfEpoch(long expectedEpoch) => ReaderEpoch == expectedEpoch && TryDequeue(out _);
 }

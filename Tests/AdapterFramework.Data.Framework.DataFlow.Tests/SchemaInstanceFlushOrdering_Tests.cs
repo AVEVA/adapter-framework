@@ -114,6 +114,63 @@ public class SchemaInstanceFlushOrdering_Tests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    public void RangeDelete_WhenSchemasAreStalled_PreservesSchemaAndValueOrder(bool writeBeforeDelete)
+    {
+        using var recorder = new Recorder();
+        var logger = new Mock<ILogger>().Object;
+        using var flushEntered = new ManualResetEventSlim();
+        using var releaseFlush = new ManualResetEventSlim();
+        using var definitions = new SchemaGroupingBlock(logger, DataflowBlockOptions.Unbounded, message =>
+        {
+            flushEntered.Set();
+            Assert.True(releaseFlush.Wait(WaitTimeout), "Timed out releasing the schema flush.");
+            recorder.Add(message);
+        }, 1000, 1000, 60000, CancellationToken.None);
+        using var producer = new InstanceGroupingBlock(logger, DataflowBlockOptions.Unbounded,
+            recorder.Add, definitions, 1000, 60000, CancellationToken.None);
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var firstDelete = new RangeDeleteMessage("S1", new StreamingDataRange(start, start.AddHours(1)), PartitionKey.Key7);
+        var secondDelete = new RangeDeleteMessage("S1", new StreamingDataRange(start.AddHours(2), start.AddHours(3)), PartitionKey.Key7);
+
+        try
+        {
+            Assert.True(definitions.Post(CreateStreamMessage("S1")));
+            if (writeBeforeDelete)
+            {
+                Assert.True(producer.Post(CreateDataMessage("S1")));
+            }
+
+            Assert.True(producer.Post(firstDelete));
+            Assert.True(producer.Post(secondDelete));
+            Assert.True(producer.Post(CreateDataMessage("S1")));
+            producer.Dispose();
+            Assert.True(flushEntered.Wait(WaitTimeout), "The schema flush did not start.");
+            Assert.Empty(recorder.Snapshot());
+            releaseFlush.Set();
+            definitions.Dispose();
+
+            var messages = recorder.Snapshot();
+            Assert.Equal(writeBeforeDelete ? 5 : 4, messages.Count);
+            Assert.IsType<SchemaMessage>(messages[0]);
+            var deleteIndex = writeBeforeDelete ? 2 : 1;
+            if (writeBeforeDelete)
+            {
+                Assert.IsType<InstanceMessage>(messages[1]);
+            }
+
+            Assert.Same(firstDelete, messages[deleteIndex]);
+            Assert.Same(secondDelete, messages[deleteIndex + 1]);
+            Assert.IsType<InstanceMessage>(messages[deleteIndex + 2]);
+        }
+        finally
+        {
+            releaseFlush.Set();
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
     public void Dispose_ProducerBeforeDefinitions_DeliversDefinitionsBeforeFinalBatch(bool schema)
     {
         using var recorder = new Recorder();

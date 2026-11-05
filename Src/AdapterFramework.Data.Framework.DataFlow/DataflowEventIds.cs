@@ -40,4 +40,6 @@ internal static class DataflowEventIds
     public const int ReleaseForwardFailed = 5010;
     public const int MessagesRejected = 5011;
     public const int WorkerCleanupFailed = 5012;
+    public const int RangeDeleteTooLarge = 5013;
+    public const int UnsupportedRangeDelete = 5014;
 }
