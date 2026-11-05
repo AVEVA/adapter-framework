@@ -32,6 +32,7 @@ using AdapterFramework.Data.Framework.EgressComponent.Interfaces;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
+using Microsoft.Extensions.Logging;
 using static AdapterFramework.Data.Framework.Abstractions.Constants.EdgeSystemConstants;
 
 namespace AdapterFramework.Data.Framework.EgressComponent;
@@ -68,6 +69,11 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     private readonly OmfDataMessageBlock _omfDataMessageBlock;
     private readonly SerializationBlock _serializationBlock;
     private readonly OmfAwaitableCoordinator _coordinator;
+    private readonly OmfVersion _omfVersion;
+    private readonly ISerializer _serializer;
+    private readonly ICompressor _compressor;
+    private readonly int _maximumMessageSizeBytes;
+    private readonly ILogger _logger;
     private bool _disposed;
 
     #endregion
@@ -91,6 +97,7 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNull(configurationProvider, nameof(configurationProvider));
 
         var logger = logManager.GetOrCreateLogger(egressComponentIdService.ComponentId);
+        _logger = logger;
 
         var processMessageAction = GetProcessMessageAction(dataEndpointManager, failoverDataMessageProcessor);
 
@@ -101,6 +108,7 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         }
 
         var omfVersion = applicationManifest?.OmfVersion ?? OmfVersion.Omf12;
+        _omfVersion = omfVersion;
 
         // Registers before any block starts, so a second pipeline sharing the coordinator fails without leaving blocks running.
         awaitableCoordinator?.SetOmfVersion(omfVersion);
@@ -126,6 +134,9 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
             };
 
         var maximumMessageSizeBytes = omfVersion == OmfVersion.Omf20 ? MaxMessageSizeBytesOmf13 : MaxMessageSizeBytes;
+        _maximumMessageSizeBytes = maximumMessageSizeBytes;
+        _serializer = serializer;
+        _compressor = compressor;
         var maximumDataBatchCount = omfVersion == OmfVersion.Omf20 ? MaxDataBatchCountOmf13 : MaxDataBatchCount;
 
         if (omfVersion == OmfVersion.Omf12)
@@ -139,13 +150,13 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
             _serializationBlock = new SerializationBlock(dataBatchingStrategyOptimizer, streamsBatchingStrategyOptimizer, maximumMessageSizeBytes,
                 logger, BlockCapacity, serializer, compressor, processMessageAction, CancellationToken.None, omfVersion);
 
-            _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
+            _typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
                 MaxStreamsBatchCount, MaxTypesBatchCount, DefaultDataBulkTime, CancellationToken.None);
 
-            _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.Post(msg),
-                msg => _typesStreamsGroupingBlock.Post(msg), maximumDataBatchCount, flushTime, CancellationToken.None);
+            _dataGroupingBlock = new DataGroupingBlock(logger, BlockCapacity, msg => _omfDataMessageBlock.PostOrThrow(msg),
+                _typesStreamsGroupingBlock, maximumDataBatchCount, flushTime, CancellationToken.None);
 
-            _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg), CancellationToken.None);
+            _omfDataMessageBlock = new OmfDataMessageBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg), CancellationToken.None);
         }
         else
         {
@@ -158,11 +169,11 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
             _serializationBlock = new SerializationBlock(dataBatchingStrategyOptimizer, schemaBatchingStrategyOptimizer, maximumMessageSizeBytes,
                 logger, BlockCapacity, serializer, compressor, processMessageAction, CancellationToken.None, omfVersion, awaitableCoordinator);
 
-            _schemaGroupingBlock = new SchemaGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
+            _schemaGroupingBlock = new SchemaGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
                 MaxStreamsBatchCount, MaxTypesBatchCount, DefaultDataBulkTime * 4, CancellationToken.None);
 
-            _instanceGroupingBlock = new InstanceGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.Post(msg),
-                msg => _schemaGroupingBlock.Post(msg), maximumDataBatchCount, flushTime, CancellationToken.None);
+            _instanceGroupingBlock = new InstanceGroupingBlock(logger, BlockCapacity, msg => _serializationBlock.PostOrThrow(msg),
+                _schemaGroupingBlock, maximumDataBatchCount, flushTime, CancellationToken.None);
 
             _coordinator = awaitableCoordinator;
         }
@@ -210,6 +221,15 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     }
 
     /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null);
 
     /// <inheritdoc/>
@@ -218,6 +238,15 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
 
         Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction), CountTypeItems(dataTypes), scope);
+    }
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -232,6 +261,15 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     }
 
     /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
+    }
+
+    /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null);
 
     /// <inheritdoc/>
@@ -240,6 +278,15 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
 
         Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction), dataStreams.Length, scope);
+    }
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    {
+        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
     }
 
     /// <inheritdoc/>
@@ -252,6 +299,29 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNullEmptyOrWhiteSpace(id, nameof(id));
 
         Post(_dataGroupingBlock, _instanceGroupingBlock, new DataMessage(id, classification, instance, messageAction), 1, scope);
+    }
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Range deletes require OMF 2.0.");
+        }
+
+        var message = new RangeDeleteMessage(id, range, partitionKey);
+        var bytes = _serializer.Serialize(new Dictionary<string, RangeDeleteMessage[]>
+        {
+            ["streamingdata"] = [message],
+        });
+        bytes = _compressor?.Compress(bytes) ?? bytes;
+        if (bytes.Length > _maximumMessageSizeBytes)
+        {
+            throw new ArgumentException("The range delete exceeds the maximum message size and cannot be split.", nameof(id));
+        }
+
+        _instanceGroupingBlock.PostOrThrow(message);
     }
 
     /// <inheritdoc/>
@@ -276,7 +346,8 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNullEmptyOrWhiteSpace(id, nameof(id));
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        Post(_dataGroupingBlock, _instanceGroupingBlock, new BulkDataMessage(id, classification, instances, messageAction), instances.Count, scope);
+        // Unscoped writes leave the collection untouched until the grouping block reads it.
+        Post(_dataGroupingBlock, _instanceGroupingBlock, new BulkDataMessage(id, classification, instances, messageAction), scope is null ? 0 : instances.Count, scope);
     }
 
     /// <inheritdoc/>
@@ -289,7 +360,8 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         ThrowHelper.ThrowIfArgumentNullEmptyOrWhiteSpace(id, nameof(id));
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        Post(_dataGroupingBlock, _instanceGroupingBlock, new BulkDataMessage(id, Classification.Dynamic, instances, messageAction, partitionKey), instances.Count, scope);
+        // Unscoped writes leave the collection untouched until the grouping block reads it.
+        Post(_dataGroupingBlock, _instanceGroupingBlock, new BulkDataMessage(id, Classification.Dynamic, instances, messageAction, partitionKey), scope is null ? 0 : instances.Count, scope);
     }
 
     /// <inheritdoc/>
@@ -371,6 +443,15 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         Post(null, _schemaGroupingBlock, new RelationshipMessage(link, messageAction), 1, scope);
     }
 
+    /// <inheritdoc/>
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    {
+        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
+        ThrowIfSchemaPartitionKeysUnsupported();
+
+        _schemaGroupingBlock.Post(new RelationshipMessage(link, messageAction, partitionKey));
+    }
+
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteInstanceRelationship(link, messageAction, null);
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction, ScopeToken scope)
@@ -395,12 +476,14 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
             return;
         }
 
-        _schemaGroupingBlock?.Dispose();
-        _typesStreamsGroupingBlock?.Dispose();
-        _instanceGroupingBlock?.Dispose();
-        _dataGroupingBlock?.Dispose();
-        _omfDataMessageBlock?.Dispose();
-        _serializationBlock?.Dispose();
+        // Producers must be disposed before the definitions and downstream blocks they feed.
+        // Each block is disposed in isolation so one failure cannot leave the rest running.
+        Safely(() => _instanceGroupingBlock?.Dispose());
+        Safely(() => _dataGroupingBlock?.Dispose());
+        Safely(() => _schemaGroupingBlock?.Dispose());
+        Safely(() => _typesStreamsGroupingBlock?.Dispose());
+        Safely(() => _omfDataMessageBlock?.Dispose());
+        Safely(() => _serializationBlock?.Dispose());
 
         _disposed = true;
     }
@@ -468,7 +551,8 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         }
     }
 
-    private static Action<ISerializedOmfMessage> GetProcessMessageAction(IOmfDataEndpointManager dataEndpointManager,
+    private static Action<ISerializedOmfMessage> GetProcessMessageAction(
+        IOmfDataEndpointManager dataEndpointManager,
         IFailoverDataMessageProcessor failoverDataMessageProcessor)
     {
         if (failoverDataMessageProcessor == null)
@@ -479,6 +563,31 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
 
         failoverDataMessageProcessor.Initialize();
         return failoverDataMessageProcessor.ProcessOmfMessage;
+    }
+
+    /// <summary>
+    /// Rejects keyed schema writes unless the configured protocol is explicitly OMF 2.0.
+    /// A schema grouping block also exists for other versions, so its presence is not a capability check.
+    /// </summary>
+    private void ThrowIfSchemaPartitionKeysUnsupported()
+    {
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            throw new NotSupportedException("Schema partition keys are only supported in OMF 2.0.");
+        }
+    }
+
+    // Kept in this type so CA2213 can see each field being disposed.
+    private void Safely(Action dispose)
+    {
+        try
+        {
+            dispose();
+        }
+        catch (Exception exception)
+        {
+            DataflowDisposal.ReportDisposeFailure(_logger, exception);
+        }
     }
 
     #endregion

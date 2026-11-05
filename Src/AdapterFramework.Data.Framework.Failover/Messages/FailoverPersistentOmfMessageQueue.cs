@@ -19,7 +19,6 @@ using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Buffering;
-using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using static AdapterFramework.Data.Framework.Buffering.BufferingConstants;
@@ -29,14 +28,15 @@ namespace AdapterFramework.Data.Framework.Failover.Messages;
 
 public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<IFailoverSerializedOmfMessage>
 {
+    private static readonly Action<ILogger, DataItemVersion, int, Exception> LogInvalidRecord =
+        LoggerMessage.Define<DataItemVersion, int>(LogLevel.Warning, new EventId(5100, nameof(LogInvalidRecord)),
+            "A failover buffer record could not be read. Version {RecordVersion}, byte length {ByteLength}.");
     private readonly ILogger _logger;
-    private readonly string _targetIdentifier;
 
     public FailoverPersistentOmfMessageQueue(string targetIdentifier, IPersistentQueue persistentQueue, ILogger logger)
         : base(targetIdentifier, persistentQueue, logger)
     {
         _logger = logger;
-        _targetIdentifier = targetIdentifier;
     }
 
     #region Protected overrides
@@ -76,24 +76,27 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
     }
 
     /// <summary>
-    /// Reads V2 and V6 failover records, preserving timestamps.
+    /// Reads V2, V3, and V6 failover records, preserving timestamps.
     /// </summary>
+    /// <remarks>
+    /// Failover V3 records, written by builds before V6, use the same layout as V6. Writer-buffer V3 records lack the
+    /// process time, but they are never stored in a failover buffer.
+    /// </remarks>
     /// <returns>The message, or <see langword="null"/> if the record is unreadable and must be dropped.</returns>
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         byte[] serializedWithType = dataItem?.Data;
-        var hasOmfTrailer = dataItem?.Version == DataItemVersion.V6;
+        var hasOmfTrailer = dataItem?.Version is DataItemVersion.V3 or DataItemVersion.V6;
         var trailerLength = hasOmfTrailer
             ? PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize
             : MessageActionEnumSize;
 
-        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V6)
+        if (dataItem?.Version is not (DataItemVersion.V2 or DataItemVersion.V3 or DataItemVersion.V6)
             || serializedWithType == null || serializedWithType.Length < MessageTypeEnumSize + ValueCountSize + ProcessTimeTicksLength + trailerLength)
         {
-            if (serializedWithType is { Length: > 0 })
+            if (serializedWithType is { Length: > 0 } && _logger != null)
             {
-                _logger?.LogWarning("Dropped a failover buffer record with unsupported version {Version} or length {Length} in buffer for {TargetIdentifier}.",
-                    dataItem.Version, serializedWithType.Length, _targetIdentifier);
+                LogInvalidRecord(_logger, dataItem.Version, serializedWithType.Length, null);
             }
 
             return null;

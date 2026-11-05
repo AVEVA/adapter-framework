@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+#pragma warning disable CS0618 // The Action<Message> constructor lets these tests observe instance output without a schema block.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -49,7 +50,7 @@ public class ScopeTracking_Tests
     public void InstanceGroupingBlock_SealWithFlushOnSeal_FlushesSidecarThenForwardsBarrier()
     {
         var flushed = new ConcurrentQueue<Message>();
-        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, _ => { }, 1000, NoFlushTime, CancellationToken.None);
+        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, DeliverEnvelope, 1000, NoFlushTime, CancellationToken.None);
         var a = new TestScope();
         var b = new TestScope();
 
@@ -83,7 +84,7 @@ public class ScopeTracking_Tests
     public void InstanceGroupingBlock_SealForUnbufferedScope_ForwardsBarrierImmediately()
     {
         var flushed = new ConcurrentQueue<Message>();
-        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, _ => { }, 1000, NoFlushTime, CancellationToken.None);
+        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, DeliverEnvelope, 1000, NoFlushTime, CancellationToken.None);
         var a = new TestScope();
 
         block.Post(new DataMessage("s1", Classification.Dynamic, 1, MessageAction.Default) { Scope = new TestScope() });
@@ -102,7 +103,7 @@ public class ScopeTracking_Tests
     public async Task InstanceGroupingBlock_SealWithoutFlushOnSeal_ForwardsBarrierAfterPartitionedFlush()
     {
         var flushed = new ConcurrentQueue<Message>();
-        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, _ => { }, 1000, NoFlushTime, CancellationToken.None);
+        using var block = new InstanceGroupingBlock(new TestLogger(), -1, flushed.Enqueue, DeliverEnvelope, 1000, NoFlushTime, CancellationToken.None);
         var a = new TestScope();
 
         block.Post(new DataMessage("s1", Classification.Dynamic, 1, MessageAction.Default, PartitionKey.Key2) { Scope = a });
@@ -377,6 +378,9 @@ public class ScopeTracking_Tests
         Assert.Equal(4, serializer.Calls);
         await a.DisposeAsync();
     }
+
+    // Stands in for a schema block with nothing buffered: forwards each batch at once.
+    private static void DeliverEnvelope(Message message) => ((FlushThenForwardMessage)message).Deliver();
 
     private static Dictionary<ScopeToken, int> Membership(ScopeSidecar sidecar, ScopeSidecarKind kind, int count)
     {

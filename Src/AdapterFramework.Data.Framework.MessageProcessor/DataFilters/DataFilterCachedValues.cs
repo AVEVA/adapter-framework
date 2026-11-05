@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration.Attributes;
 using AdapterFramework.Data.Framework.Abstractions.DataFilters;
 using AdapterFramework.Data.Framework.Extensions;
@@ -22,9 +23,10 @@ using AdapterFramework.Data.Framework.MessageProcessor.Reflection;
 
 namespace AdapterFramework.Data.Framework.MessageProcessor.DataFilters;
 
-public class DataFilterCachedValues<T> : IDataFilterCache
+public class DataFilterCachedValues<T> : IDataFilterCache, IRangeDeleteFilterCache
 {
     private readonly int _timestampIndex;
+    private readonly bool _hasTimestamp;
     private readonly int[] _valueIndexes;
     private readonly int[] _dataQualityIndexes;
     private readonly IDataFilter _dataQualityFilter;
@@ -47,6 +49,7 @@ public class DataFilterCachedValues<T> : IDataFilterCache
             if (Attribute.IsDefined(properties[index], typeof(TimestampAttribute)))
             {
                 _timestampIndex = index;
+                _hasTimestamp = true;
             }
             else if (Attribute.IsDefined(properties[index], typeof(ValueAttribute)))
             {
@@ -71,6 +74,14 @@ public class DataFilterCachedValues<T> : IDataFilterCache
     public void SetPreviousValue(T instance) => _previousValue = instance;
 
     public void SetCurrentValue(T instance) => _currentValue = instance;
+
+    bool IRangeDeleteFilterCache.CanPreserveForRangeDelete(StreamingDataRange range)
+    {
+        // All three readings influence filtering or may be emitted later. Preserve only known,
+        // unaffected state; an unspecified time zone cannot establish a safe UTC comparison.
+        return _hasTimestamp && _lastValue != null &&
+            IsOutsideRange(_lastValue, range) && IsOutsideRange(_previousValue, range) && IsOutsideRange(_currentValue, range);
+    }
 
     public bool CheckDataFilter(IDataFilter dataFilter, out bool sendPrevious)
     {
@@ -145,5 +156,22 @@ public class DataFilterCachedValues<T> : IDataFilterCache
         }
 
         return sendCurrentData;
+    }
+
+    private bool IsOutsideRange(T instance, StreamingDataRange range)
+    {
+        if (instance == null)
+        {
+            return true;
+        }
+
+        var getters = PropertyValueGetter.GetPropertyValueGetters(typeof(T));
+        if (getters[_timestampIndex].GetValue(instance) is not DateTime timestamp || timestamp.Kind == DateTimeKind.Unspecified)
+        {
+            return false;
+        }
+
+        var utcTimestamp = timestamp.ToUniversalTime();
+        return utcTimestamp < range.StartTime.UtcDateTime || utcTimestamp > range.EndTime.UtcDateTime;
     }
 }

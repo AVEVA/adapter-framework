@@ -134,7 +134,7 @@ public class AwaitableAdapterMessageScope_Tests
         {
         }
 
-        protected override void WriteDynamicValuesCore<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction,
+        protected internal override void WriteDynamicValuesCore<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction,
             PartitionKey? partitionKey, ScopeToken scope) =>
             base.WriteDynamicValuesCore(dataSelectionItem, instances, messageAction, partitionKey, scope);
     }

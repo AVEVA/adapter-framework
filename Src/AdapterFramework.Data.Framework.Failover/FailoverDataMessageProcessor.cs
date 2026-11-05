@@ -38,6 +38,9 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
     private readonly OmfAwaitableCoordinator _awaitableCoordinator;
     private readonly object _lockObject = new();
 
+    // Separate from _lockObject because StopConsumingInternalDataQueue waits for the consumer while holding _lockObject.
+    private readonly object _internalQueueReadLock = new();
+
     private BufferingConfiguration _bufferingConfiguration;
 
     private FailoverBackedUpOmfMessageQueue _internalBackedUpMessageQueue;
@@ -94,8 +97,7 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
             if (CurrentFailoverMode == FailoverMode.Hot)
             {
-                var failoverMessage = new FailoverSerializedOmfMessage(message.MessageType, message.MessageBody,
-                    message.MessageAction, message.ItemCount, message.OmfVersion, message.PartitionKey)
+                var failoverMessage = new FailoverSerializedOmfMessage(message)
                 {
                     ProcessTimeTicks = messageReceivedTime.Ticks,
                 };
@@ -295,7 +297,14 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
         {
             while (!_internalDataQueueConsumerCts.IsCancellationRequested)
             {
-                if (_internalBackedUpMessageQueue.TryDequeue(out var message))
+                IFailoverSerializedOmfMessage message;
+                bool dequeued;
+                lock (_internalQueueReadLock)
+                {
+                    dequeued = _internalBackedUpMessageQueue.TryDequeue(out message);
+                }
+
+                if (dequeued)
                 {
                     try
                     {
@@ -326,10 +335,13 @@ public class FailoverDataMessageProcessor : IFailoverDataMessageProcessor
 
         if (_internalBackedUpMessageQueue != null)
         {
-            while (_internalBackedUpMessageQueue.TryPeek(out var message)
-                    && message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks)
+            lock (_internalQueueReadLock)
             {
-                _internalBackedUpMessageQueue.TryDequeue(out _);
+                while (_internalBackedUpMessageQueue.TryPeek(out var message)
+                        && message.ProcessTimeTicks <= receivedLastDataProcessedTime.Ticks)
+                {
+                    _internalBackedUpMessageQueue.TryDequeue(out _);
+                }
             }
         }
     }

@@ -39,16 +39,16 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
     private const int MinBatchCount = 1;
     private const int MinFlushTime = 15;
-    private const int DisposalDelay = 15 * 1000;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
+    private const string ObsoleteCallbackOverload = "The callback now receives a FlushThenForwardMessage that must be posted to a definitions block, otherwise this block faults. Use the constructor that takes a DefinitionsBlock.";
     private const int DefaultListCapacity = 5;
 
     #endregion
 
     #region Private Fields
 
+    // All instance output must leave through _flush: it routes every batch through the schema block.
     private readonly Action<Message> _flush;
-    private readonly Action<Message> _flushTypesStreams;
     private readonly Timer _flushTimer;
     private readonly int _maxFlushTime;
     private readonly Dictionary<string, List<object>> _dynamicMessages;
@@ -69,15 +69,48 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     #region Public Constructor
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="InstanceGroupingBlock"/> class that routes every batch through
+    /// <paramref name="definitions"/> so that schemas are always flushed before the instances that use them.
+    /// </summary>
+    /// <param name="logger"><see cref="ILogger"/> instance.</param>
+    /// <param name="capacity"> The max number of messages that may be buffered by the block. Use <see cref="DataflowBlockOptions"/> unbounded capacity.</param>
+    /// <param name="flush">The terminal action for each batch, invoked by the definitions block's thread after it has flushed.</param>
+    /// <param name="definitions">The block that owns schema definitions, normally a <see cref="SchemaGroupingBlock"/>.</param>
+    /// <param name="maxBatchCount">The max number of messages to batch before flushing.</param>
+    /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
+    /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
+    /// <remarks>
+    /// See <see cref="DefinitionsBlock"/> for the ordering, ownership and fail-stop rules. Dispose this block before <paramref name="definitions"/>.
+    /// </remarks>
+    public InstanceGroupingBlock(
+           ILogger logger,
+           int capacity,
+           Action<Message> flush,
+           DefinitionsBlock definitions,
+           int maxBatchCount,
+           int maxFlushTime,
+           CancellationToken token)
+           : this(BaseBlockExtensions.PostTo(definitions), logger, capacity, flush, maxBatchCount, maxFlushTime, token)
+    {
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="InstanceGroupingBlock"/> class.
     /// </summary>
     /// <param name="logger"><see cref="ILogger"/> instance.</param>
     /// <param name="capacity"> The max number of messages that may be buffered by the block. Use <see cref="DataflowBlockOptions"/> unbounded capacity.</param>
-    /// <param name="flush">The action to be performed when <paramref name="maxBatchCount"/> or <paramref name="maxFlushTime"/> has been reached.</param>
-    /// <param name="flushTypesStreams">The action to signal <see cref="TypesStreamsGroupingBlock"/> to flush before <paramref name="flush"/> actions is performed.</param>
+    /// <param name="flush">The terminal action for each batch, invoked by the schema block's thread after it has flushed.</param>
+    /// <param name="flushTypesStreams">The action that posts a <see cref="FlushThenForwardMessage"/> to the block that owns definitions, normally a <see cref="SchemaGroupingBlock"/>.</param>
     /// <param name="maxBatchCount">The max number of messages to batch before flushing.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">A cancellation token to observe while waiting for the task to complete.</param>
+    /// <remarks>
+    /// Breaking behaviour change: this callback used to receive a force-flush <see cref="CommandMessage"/> that it could ignore.
+    /// It now receives a <see cref="FlushThenForwardMessage"/> carrying the batch, which must be posted to the definitions block
+    /// (for example <c>message => schema.PostOrThrow(message)</c>). A callback that ignores, rejects or misroutes it
+    /// faults this block on the first flush and stops all data. See <see cref="DefinitionsBlock"/> for the full rules.
+    /// </remarks>
+    [Obsolete(ObsoleteCallbackOverload)]
     public InstanceGroupingBlock(
            ILogger logger,
            int capacity,
@@ -86,10 +119,26 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
            int maxBatchCount,
            int maxFlushTime,
            CancellationToken token)
+           : this(flushTypesStreams ?? throw new ArgumentNullException(nameof(flushTypesStreams)), logger, capacity, flush, maxBatchCount, maxFlushTime, token)
+    {
+    }
+
+    #endregion
+
+    #region Private Constructor
+
+    private InstanceGroupingBlock(
+           Action<Message> postDefinitions,
+           ILogger logger,
+           int capacity,
+           Action<Message> flush,
+           int maxBatchCount,
+           int maxFlushTime,
+           CancellationToken token)
            : base(logger, capacity, false, false, token)
     {
         ThrowHelper.ThrowIfArgumentNull(flush, nameof(flush));
-        ThrowHelper.ThrowIfArgumentNull(flushTypesStreams, nameof(flushTypesStreams));
+        ThrowHelper.ThrowIfArgumentNull(postDefinitions, nameof(postDefinitions));
 
         if (maxBatchCount < MinBatchCount)
         {
@@ -103,8 +152,7 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             throw new ArgumentOutOfRangeException(nameof(maxFlushTime), string.Format(CultureInfo.InvariantCulture, OutOfRangeExceptionTemplate, MinFlushTime));
         }
 
-        _flush = flush;
-        _flushTypesStreams = flushTypesStreams;
+        _flush = message => BaseBlockExtensions.PostForOrderedFlush(message, postDefinitions, flush);
         _maxFlushTime = maxFlushTime;
 
         _dynamicMessages = new Dictionary<string, List<object>>(maxBatchCount / 4);
@@ -118,12 +166,15 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     private static readonly Action<ILogger, int, int, Exception> _batchSizeChanged =
     LoggerMessage.Define<int, int>(
         LogLevel.Debug,
-        new EventId(1, nameof(LogBatchSizeChanged)),
+        new EventId(DataflowEventIds.BatchSizeChanged, nameof(LogBatchSizeChanged)),
         "Data batch size change. Previous = {PreviousBatchCount}. New size = {NewBatchCount}.");
 
     public static void LogBatchSizeChanged(ILogger logger, int previousBatchCount, int newBatchCount)
     {
-        _batchSizeChanged(logger, previousBatchCount, newBatchCount, null);
+        if (logger != null)
+        {
+            _batchSizeChanged(logger, previousBatchCount, newBatchCount, null);
+        }
     }
 
     #region Protected Methods
@@ -133,6 +184,11 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
     {
         switch (message)
         {
+            case RangeDeleteMessage rangeDelete:
+                // A delete is an ordering boundary, even when the previous batch also deletes values.
+                Flush(_messageAction);
+                _flush(rangeDelete);
+                break;
             case CommandMessage command:
                 ProcessCommand(command);
                 break;
@@ -162,6 +218,9 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             case ScopeSealBarrier seal:
                 ProcessSeal(seal);
                 break;
+            case FlushThenForwardMessage envelope:
+                envelope.ReleaseMisrouted(Logger);
+                break;
         }
     }
 
@@ -179,14 +238,9 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        MessageHandler.Complete();
-        SpinWait.SpinUntil(() => MessageHandler.Completion.IsCompleted, DisposalDelay);
-
-        Flush(_messageAction);
-
         _flushTimer.Dispose();
+
+        DrainAndFlush(() => Flush(_messageAction));
 
         base.Dispose(true);
     }
@@ -381,8 +435,6 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTypesStreams(new CommandMessage(true));
-
         var streamingDataArray = Array.Empty<StreamingDataInstance>();        
         var entitiesArray = Array.Empty<StaticStreamData>();
         var relationshipsArray = Array.Empty<Link>();
@@ -464,16 +516,12 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
         {
             entitiesArray = ArrayPool<StaticStreamData>.Shared.Rent(entitiesCount);
             _staticMessages.CopyTo(entitiesArray);
-            _staticMessages.Clear();
-            _staticMessages = null;
         }
 
         if (linkCount > 0)
         {
             relationshipsArray = ArrayPool<Link>.Shared.Rent(linkCount);
             _relationships.CopyTo(relationshipsArray);
-            _relationships.Clear();
-            _relationships = null;
         }
 
         if (eventsCount > 0)
@@ -499,9 +547,6 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 
                 eventsArray[i] = eventInstance;
             }
-
-            _eventMessages.Clear();
-            _eventMessages = null;
         }
 
 #pragma warning disable CA2000 // Dispose objects before losing scope
@@ -523,6 +568,11 @@ public sealed class InstanceGroupingBlock : BaseBlock<Message>
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _flush(instanceMessage);
+
+        // Cleared only after a successful handoff, so a final flush after a failed one resends the whole batch.
+        _staticMessages = null;
+        _eventMessages = null;
+        _relationships = null;
         _totalStreamingDataCount = 0;
         _totalInstanceCount = 0;
         _dynamicMessages.Clear();

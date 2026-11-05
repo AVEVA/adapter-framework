@@ -31,6 +31,7 @@ namespace AdapterFramework.Data.Framework.DataFlow.Tests;
 public class TypesStreamsGroupingBlock_Tests
 {
     private const int WaitTime = 1000;
+    private const int ProcessingMaxWaitTime = 60_000;
     private const string CurrentTypeCountFieldName = "_currentTypeCount";
     private const string CurrentStreamCountFieldName = "_currentStreamCount";
     private const string StreamsMaximumCountFieldName = "_maxStreamsBatchCount";
@@ -125,14 +126,24 @@ public class TypesStreamsGroupingBlock_Tests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(42)]
-    public async Task TypesStreamsGroupingBlock_Post_Single_FlushDueToSizeLimit_SizeLimits_Test(int excessCount)
+    [InlineData(0, 0)]
+    [InlineData(42, 0)]
+    [InlineData(0, 2_000)]
+    [InlineData(42, 2_000)]
+    public void TypesStreamsGroupingBlock_Post_Single_FlushDueToSizeLimit_SizeLimits_Test(int excessCount, int streamFlushDelay)
     {
         var maximumTypesStreamsCount = 500;
         var blockCapacity = 1000;
 
-        using var typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(null, blockCapacity, DummyFlushAction,
+        using var typesStreamsGroupingBlock = new TypesStreamsGroupingBlock(null, blockCapacity, message =>
+        {
+            if (message is OmfMessage<DataStream>)
+            {
+                Thread.Sleep(streamFlushDelay);
+            }
+
+            DummyFlushAction(message);
+        },
             maximumTypesStreamsCount, maximumTypesStreamsCount, int.MaxValue, CancellationToken.None);
 
         for (int i = 0; i < maximumTypesStreamsCount + excessCount; i++)
@@ -140,7 +151,11 @@ public class TypesStreamsGroupingBlock_Tests
             typesStreamsGroupingBlock.Post(_testDynamicDataTypeMessageCreate);
         }
 
-        await Task.Delay(WaitTime);
+        Assert.True(SpinWait.SpinUntil(
+            () => _flushCalledCounter == 1
+                && (int)GetFieldValueFromObject(CurrentTypeCountFieldName, typesStreamsGroupingBlock) == excessCount
+                && typesStreamsGroupingBlock.InputCount == 0,
+            ProcessingMaxWaitTime), "Type messages did not finish processing with the expected batch counts.");
 
         var currentTypeCountField = GetFieldValueFromObject(CurrentTypeCountFieldName, typesStreamsGroupingBlock);
         Assert.True(_flushCalled);
@@ -154,13 +169,18 @@ public class TypesStreamsGroupingBlock_Tests
             typesStreamsGroupingBlock.Post(_testDataStreamMessageCreate);
         }
 
-        await Task.Delay(WaitTime);
+        var expectedFlushCount = excessCount == 0 ? 2 : 3;
+        Assert.True(SpinWait.SpinUntil(
+            () => _flushCalledCounter == expectedFlushCount
+                && (int)GetFieldValueFromObject(CurrentStreamCountFieldName, typesStreamsGroupingBlock) == excessCount
+                && typesStreamsGroupingBlock.InputCount == 0,
+            ProcessingMaxWaitTime), "Stream messages did not finish processing with the expected batch counts.");
 
         var currentStreamCountField = GetFieldValueFromObject(CurrentStreamCountFieldName, typesStreamsGroupingBlock);
 
         Assert.True(_flushCalled);
         Assert.Equal(excessCount, currentStreamCountField);
-        Assert.True(_flushCalledCounter == (excessCount == 0 ? 2 : 3));
+        Assert.Equal(expectedFlushCount, _flushCalledCounter);
         Assert.Equal(_testDynamicDataTypeMessageCreate.MessageAction, _flushMessageAction);
     }
 

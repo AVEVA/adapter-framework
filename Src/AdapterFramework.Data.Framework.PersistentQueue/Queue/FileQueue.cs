@@ -69,6 +69,7 @@ public class FileQueue : IPersistentQueue
     private int _maxQueueFiles;
     private Stream _writeStream;
     private Stream _readStream;
+    private long _readerEpoch;
     private bool _disposed;
 
     public FileQueue(string directory, string fileNamePrefix, string endpointId = "", int maxFileSizeMb = 20, int maxQueueFiles = 0, ILogger logger = null, IEdgeEventProvider eventProvider = null)
@@ -118,6 +119,8 @@ public class FileQueue : IPersistentQueue
     /// <inheritdoc/>
     public event EventHandler<TrackedItemsLostEventArgs> TrackedItemsLost;
 
+    public long ReaderEpoch => Interlocked.Read(ref _readerEpoch);
+
     public void UpdateMaxQueueFiles(int maxQueueFiles)
     {
         lock (_enqueueOperationLock)
@@ -142,8 +145,16 @@ public class FileQueue : IPersistentQueue
                 _writeStream.Dispose();
                 _readStream.Dispose();
 
+                var readerFileNumber = _queueState.ReaderFileNumber;
+                var readerPosition = _queueState.ReaderPosition;
+
                 // Delete excess files and update queue state
                 _fileManager.RepairDirectoryAndUpdateState(_queueState, _maxQueueFiles);
+
+                if (readerFileNumber != _queueState.ReaderFileNumber || readerPosition != _queueState.ReaderPosition)
+                {
+                    Interlocked.Increment(ref _readerEpoch);
+                }
 
                 // Persist the repaired state
                 using (var stateStream = _fileManager.CreateStateStream())
@@ -215,6 +226,14 @@ public class FileQueue : IPersistentQueue
             }
 
             return null;
+        }
+    }
+
+    public DataItem DequeueIfEpoch(long expectedEpoch)
+    {
+        lock (_dequeueOperationLock)
+        {
+            return ReaderEpoch == expectedEpoch ? Dequeue() : null;
         }
     }
 
@@ -352,6 +371,7 @@ public class FileQueue : IPersistentQueue
             _writeStream.Dispose();
             lock (_dequeueOperationLock)
             {
+                Interlocked.Increment(ref _readerEpoch);
                 _readStream.Dispose();
                 _fileManager.DeleteDirectory();
                 DropTrackedFiles(_ => true, TrackedItemLossReason.Cleared);
@@ -411,7 +431,7 @@ public class FileQueue : IPersistentQueue
 
             if (_maxQueueFiles > 0 && filesInUse >= _maxQueueFiles)
             {
-                MoveReaderToNewDataFile(TrackedItemLossReason.Evicted);
+                SkipReaderToNewDataFile(TrackedItemLossReason.Evicted);
                 _fileManager.DeleteOldestFilePendingDeletion();
             }
         }
@@ -447,6 +467,16 @@ public class FileQueue : IPersistentQueue
             _fileManager.AddPendingDeletion(_queueState.ReaderFileNumber - 1);
             ReportBufferUsage(out _, out _);
             DropTrackedFiles(fileNumber => fileNumber == previousFileNumber, lossReason);
+        }
+    }
+
+    // Moves the reader past unread data, invalidating any head read under the previous epoch.
+    private void SkipReaderToNewDataFile(TrackedItemLossReason lossReason)
+    {
+        lock (_dequeueOperationLock)
+        {
+            Interlocked.Increment(ref _readerEpoch);
+            MoveReaderToNewDataFile(lossReason);
         }
     }
 
@@ -490,7 +520,7 @@ public class FileQueue : IPersistentQueue
                 }
 
                 _logger?.LogInformation("Moving reader to new data file in order to delete oldest data file.");
-                MoveReaderToNewDataFile(TrackedItemLossReason.Evicted);
+                SkipReaderToNewDataFile(TrackedItemLossReason.Evicted);
                 _fileManager.DeleteFilesPendingDeletion();
             }
 
