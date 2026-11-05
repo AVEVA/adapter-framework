@@ -53,7 +53,7 @@ internal static class OmfAwaitableMetrics
     /// Records a completed scope outcome.
     /// </summary>
     /// <param name="outcome">The outcome.</param>
-    /// <param name="reason">The outcome reason, or null for a successful outcome.</param>
+    /// <param name="reason">The failure or oversized-drop reason, or null for accepted and filtered outcomes.</param>
     public static void OutcomeCompleted(OmfAcceptanceOutcome outcome, OmfOutcomeReason reason) =>
         Outcomes.Add(1, new KeyValuePair<string, object>("outcome", outcome.ToString()), ReasonTag(reason));
 

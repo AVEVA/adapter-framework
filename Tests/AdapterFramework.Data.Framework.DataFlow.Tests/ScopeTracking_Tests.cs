@@ -179,10 +179,10 @@ public class ScopeTracking_Tests
     }
 
     /// <summary>
-    /// Verifies that a single value too large to send is discarded with <see cref="OmfReasonCode.ItemTooLarge"/> for its scope.
+    /// Verifies that an oversized value is dropped with ItemTooLarge while its scope succeeds after the smaller value is accepted.
     /// </summary>
     [Fact]
-    public async Task SerializationBlock_OversizedValue_DiscardsWithItemTooLarge()
+    public async Task SerializationBlock_OversizedValue_AcceptedWithDropsWithItemTooLarge()
     {
         using var coordinator = CreateCoordinator();
         var a = CreateScope(coordinator);
@@ -198,16 +198,18 @@ public class ScopeTracking_Tests
 
         var result = await a.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
 
-        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
         Assert.Equal(OmfReasonCode.ItemTooLarge, result.Reason.Code);
+        Assert.Equal(1, Assert.Single(bodies).ItemCount);
+        Assert.Equal(OmfDeliveryState.Accepted, Assert.Single(result.Deliveries).State);
         await a.DisposeAsync();
     }
 
     /// <summary>
-    /// Verifies that a single entity too large to send is discarded with <see cref="OmfReasonCode.ItemTooLarge"/> instead of being split forever.
+    /// Verifies that an oversized entity is dropped rather than split forever, while the remaining entity is accepted with drops.
     /// </summary>
     [Fact]
-    public async Task SerializationBlock_OversizedEntity_DiscardsWithItemTooLarge()
+    public async Task SerializationBlock_OversizedEntity_AcceptedWithDropsWithItemTooLarge()
     {
         using var coordinator = CreateCoordinator();
         var a = CreateScope(coordinator);
@@ -222,10 +224,60 @@ public class ScopeTracking_Tests
 
         var result = await a.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
 
-        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
         Assert.Equal(OmfReasonCode.ItemTooLarge, result.Reason.Code);
         Assert.Single(bodies);
         await a.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that dropping the only oversized value still materializes its scope successfully without emitting a body.
+    /// </summary>
+    [Fact]
+    public async Task SerializationBlock_OnlyOversizedValue_AcceptedWithDropsWithoutBodies()
+    {
+        using var coordinator = CreateCoordinator();
+        await using var scope = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+        using var block = CreateSerializationBlock(coordinator, 300, bodies);
+
+        var stream = new StreamingDataInstance { Id = "s", Values = [new string('x', 1000)] };
+        coordinator.RecordAdmitted(scope, 1);
+        await block.PostAsync(new InstanceMessage([stream], null, null, null, 1, 1, 0, 0, 0, MessageAction.Default)
+        {
+            Sidecar = new InstanceScopeSidecar([scope], [[new ScopeRange(0, 0, 1)]], null, null, null),
+        });
+        await block.PostAsync(new ScopeMaterializationBarrier(scope, 1));
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
+        Assert.Equal(OmfReasonCode.ItemTooLarge, result.Reason.Code);
+        Assert.Empty(bodies);
+        Assert.Empty(result.Deliveries);
+    }
+
+    /// <summary>Verifies schema chunking drops an oversized container while accepting the remaining container with drops.</summary>
+    [Fact]
+    public async Task SerializationBlock_OversizedContainer_AcceptedWithDropsWithItemTooLarge()
+    {
+        using var coordinator = CreateCoordinator();
+        await using var scope = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+        using var block = CreateSerializationBlock(coordinator, 300, bodies);
+
+        var containers = new[] { new DataStream { Id = "small" }, new DataStream { Id = new string('x', 1000) } };
+        coordinator.RecordAdmitted(scope, 2);
+        await block.PostAsync(new SchemaMessage(null, containers, null, 0, 2, 0, MessageAction.Default)
+        {
+            Sidecar = new SchemaScopeSidecar([scope], null, [0, 0], null),
+        });
+        await block.PostAsync(new ScopeMaterializationBarrier(scope, 1));
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
+        Assert.Equal(OmfReasonCode.ItemTooLarge, result.Reason.Code);
+        Assert.Equal(1, Assert.Single(bodies).ItemCount);
+        Assert.Equal(OmfDeliveryState.Accepted, Assert.Single(result.Deliveries).State);
     }
 
     /// <summary>

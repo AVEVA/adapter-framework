@@ -145,7 +145,7 @@ flowchart LR
 | A | 4 | M1 (1), M2 (3) | 4 | Materialization closes; delivery acceptance waits on M1 and M2. |
 | B | 6 | M3 (2), M4 (4) | 6 | Materialization closes; delivery acceptance waits on M3 and M4. |
 
-If B's value at index 8 were too large to send by itself, `FlushInChunksData` would drop it. Since index 8 belongs to the range `(1, 7, 2)`, the coordinator records one discarded item for B with `Serialization/ItemTooLarge`.
+If B's value at index 8 were too large to send by itself, `FlushInChunksData` would drop it. Since index 8 belongs to the range `(1, 7, 2)`, the coordinator records one discarded item for B with `Serialization/ItemTooLarge`. This drop does not fail B's scope: after materialization and acceptance of all remaining deliveries, B completes as `AcceptedWithDrops`, while A can still complete as `Accepted`. Other drop reasons continue to fail the affected scope.
 
 ## 4. Schema example: types, streams, and relationships
 

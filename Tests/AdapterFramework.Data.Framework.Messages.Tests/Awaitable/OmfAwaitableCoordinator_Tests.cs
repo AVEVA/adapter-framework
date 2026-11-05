@@ -334,7 +334,7 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
     public async Task Wait_ItemsDiscardedBeforeSerialization_IsDiscardedWithoutWaitingForMaterialization()
     {
         await using var scope = CreateScope();
-        var reason = new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Value 8 of stream S1 is too large.");
+        var reason = new OmfOutcomeReason(OmfReasonCode.EmptyBody, "Items serialized to an empty body.");
         scope.EnterWrite();
         _coordinator.RecordAdmitted(scope, 3);
         scope.ExitWrite();
@@ -344,6 +344,207 @@ public sealed class OmfAwaitableCoordinator_Tests : IDisposable
 
         Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
         Assert.Equal(reason, result.Reason);
+    }
+
+    /// <summary>Verifies oversized drops do not finalize a scope until materialization and every remaining endpoint delivery succeed.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Wait_OversizedItemsDropped_AcceptedWithDropsAfterMaterializationAndDeliveries(bool materializeBeforeAcceptance)
+    {
+        await using var scope = CreateScope();
+        var reason = new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "An item exceeds the body limit.");
+        _coordinator.RecordAdmitted(scope, 3);
+        _coordinator.RecordItemsDiscarded(scope, 1, reason);
+        _coordinator.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Another oversized item."));
+
+        var buffered = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, buffered.Outcome);
+        Assert.Equal(OmfReasonCode.AwaitingFlush, buffered.Reason.Code);
+
+        var body = Guid.NewGuid();
+        _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
+        _coordinator.RegisterDeliveries(body, new[] { TargetA, TargetB });
+        if (materializeBeforeAcceptance)
+        {
+            _coordinator.CloseMaterialization(scope);
+        }
+
+        var wait = scope.WaitForAcceptanceAsync(LongWait);
+        _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
+        Assert.False(wait.IsCompleted);
+        _coordinator.RecordDisposition(body, EndpointB, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null, Receipt);
+        if (!materializeBeforeAcceptance)
+        {
+            Assert.False(wait.IsCompleted);
+            _coordinator.CloseMaterialization(scope);
+        }
+
+        var result = await wait;
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
+        Assert.Same(reason, result.Reason);
+        Assert.Equal(2, result.Deliveries.Count);
+        Assert.All(result.Deliveries, delivery => Assert.Equal(OmfDeliveryState.Accepted, delivery.State));
+
+        _coordinator.SetFailoverMode(FailoverMode.Hot);
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, (await scope.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
+    }
+
+    /// <summary>Verifies a scope containing only oversized items waits for sealing and materialization, then succeeds with no deliveries.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Wait_AllItemsOversized_AcceptedWithDropsWithoutDeliveries(bool sealBeforeMaterialization)
+    {
+        await using var scope = CreateScope();
+        var reason = new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Every item exceeds the body limit.");
+        _coordinator.RecordAdmitted(scope, 2);
+        _coordinator.RecordItemsDiscarded(scope, 2, reason);
+        if (sealBeforeMaterialization)
+        {
+            scope.Seal();
+        }
+
+        Assert.Equal(OmfAcceptanceOutcome.TimedOut, _coordinator.GetResult(scope).Outcome);
+        _coordinator.CloseMaterialization(scope);
+        if (!sealBeforeMaterialization)
+        {
+            Assert.Equal(OmfAcceptanceOutcome.TimedOut, _coordinator.GetResult(scope).Outcome);
+        }
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, result.Outcome);
+        Assert.Same(reason, result.Reason);
+        Assert.Empty(result.Deliveries);
+    }
+
+    /// <summary>Verifies other item-drop reasons still fail the scope, regardless of whether oversized drops arrive first or later.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Wait_OversizedAndOtherItemsDropped_IsDiscarded(bool oversizedFirst)
+    {
+        await using var scope = CreateScope();
+        var oversized = new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Oversized item.");
+        var failure = new OmfOutcomeReason(OmfReasonCode.EmptyBody, "Empty body.");
+        _coordinator.RecordAdmitted(scope, 2);
+        _coordinator.RecordItemsDiscarded(scope, 1, oversizedFirst ? oversized : failure);
+        _coordinator.RecordItemsDiscarded(scope, 1, oversizedFirst ? failure : oversized);
+        _coordinator.CloseMaterialization(scope);
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Same(failure, result.Reason);
+    }
+
+    /// <summary>Verifies tolerated oversized drops do not hide unaccounted admitted items when materialization closes.</summary>
+    [Fact]
+    public async Task Wait_OversizedDropAndCountShortfall_IsDiscardedWithCountMismatch()
+    {
+        await using var scope = CreateScope();
+        _coordinator.RecordAdmitted(scope, 2);
+        _coordinator.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Oversized item."));
+        _coordinator.CloseMaterialization(scope);
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfReasonCode.CountMismatch, result.Reason.Code);
+    }
+
+    /// <summary>Verifies a remaining delivery's rejection or discard overrides oversized item drops with the original failure outcome.</summary>
+    [Theory]
+    [InlineData(OmfDeliveryState.Rejected, OmfAcceptanceOutcome.Rejected)]
+    [InlineData(OmfDeliveryState.Discarded, OmfAcceptanceOutcome.Discarded)]
+    public async Task Wait_OversizedDropAndFailedDelivery_KeepsFailureOutcome(OmfDeliveryState state, OmfAcceptanceOutcome outcome)
+    {
+        await using var scope = CreateScope();
+        _coordinator.RecordAdmitted(scope, 2);
+        _coordinator.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Oversized item."));
+        var body = Guid.NewGuid();
+        _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
+        _coordinator.RegisterDeliveries(body, new[] { TargetA });
+        var reason = new OmfOutcomeReason(OmfReasonCode.EndpointRemoved, "Delivery failed.");
+        _coordinator.RecordDisposition(body, EndpointA, state, null, reason);
+        _coordinator.CloseMaterialization(scope);
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(outcome, result.Outcome);
+        Assert.Same(reason, result.Reason);
+    }
+
+    /// <summary>Verifies oversized drops do not hide dispatch, tracking, materialization, endpoint removal, or hot-failover failures.</summary>
+    [Theory]
+    [InlineData(OmfReasonCode.NoEndpoints)]
+    [InlineData(OmfReasonCode.EndpointRemoved)]
+    [InlineData(OmfReasonCode.PostRejected)]
+    [InlineData(OmfReasonCode.AcceptanceTrackingDisabled)]
+    [InlineData(OmfReasonCode.ItemTooLarge)]
+    public async Task Wait_OversizedDropAndInfrastructureFailure_IsDiscarded(OmfReasonCode code)
+    {
+        await using var scope = CreateScope();
+        _coordinator.RecordAdmitted(scope, 2);
+        _coordinator.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Oversized item."));
+        var body = Guid.NewGuid();
+        _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [scope] = 1 });
+        var reason = new OmfOutcomeReason(code, "Infrastructure failure.");
+        switch (code)
+        {
+            case OmfReasonCode.NoEndpoints:
+                _coordinator.RegisterDeliveries(body, Array.Empty<OmfDeliveryTarget>());
+                break;
+            case OmfReasonCode.EndpointRemoved:
+                _coordinator.RegisterDeliveries(body, new[] { TargetA });
+                _coordinator.RecordEndpointDiscarded(EndpointA, reason);
+                break;
+            case OmfReasonCode.PostRejected:
+                _coordinator.RecordMaterializationFailed(scope, reason);
+                break;
+            case OmfReasonCode.AcceptanceTrackingDisabled:
+                _coordinator.SetFailoverMode(FailoverMode.Hot);
+                break;
+            default:
+                // The exception is only for items dropped before serialization, not whole bodies with the same reason code.
+                _coordinator.RecordBodyDiscarded(body, reason);
+                break;
+        }
+
+        _coordinator.CloseMaterialization(scope);
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.Zero);
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(code, result.Reason.Code);
+    }
+
+    /// <summary>Verifies oversized drops affect only their own scope when two scopes share a successfully accepted body.</summary>
+    [Fact]
+    public async Task Wait_SharedBodyWithOversizedDrop_OnlyAffectedScopeAcceptedWithDrops()
+    {
+        await using var first = CreateScope();
+        await using var second = CreateScope();
+        _coordinator.RecordAdmitted(first, 2);
+        _coordinator.RecordAdmitted(second, 1);
+        _coordinator.RecordItemsDiscarded(first, 1, new OmfOutcomeReason(OmfReasonCode.ItemTooLarge, "Oversized item."));
+        var body = Guid.NewGuid();
+        _coordinator.RegisterBody(body, new Dictionary<ScopeToken, int> { [first] = 1, [second] = 1 });
+        _coordinator.RegisterDeliveries(body, new[] { TargetA });
+        _coordinator.CloseMaterialization(first);
+        _coordinator.CloseMaterialization(second);
+        _coordinator.RecordDisposition(body, EndpointA, OmfDeliveryState.Accepted, HttpStatusCode.Accepted, null);
+
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, (await first.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
+        Assert.Equal(OmfAcceptanceOutcome.Accepted, (await second.WaitForAcceptanceAsync(TimeSpan.Zero)).Outcome);
+    }
+
+    /// <summary>Verifies adding the successful-with-drops outcome does not renumber any existing public outcome.</summary>
+    [Theory]
+    [InlineData(OmfAcceptanceOutcome.Accepted, 0)]
+    [InlineData(OmfAcceptanceOutcome.Rejected, 1)]
+    [InlineData(OmfAcceptanceOutcome.Discarded, 2)]
+    [InlineData(OmfAcceptanceOutcome.Filtered, 3)]
+    [InlineData(OmfAcceptanceOutcome.TimedOut, 4)]
+    [InlineData(OmfAcceptanceOutcome.AcceptedWithDrops, 5)]
+    public void OmfAcceptanceOutcome_HasStableNumericValues(OmfAcceptanceOutcome outcome, int value)
+    {
+        Assert.Equal(value, (int)outcome);
     }
 
     [Fact]

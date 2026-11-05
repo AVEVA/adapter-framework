@@ -27,6 +27,7 @@ namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitab
 /// </param>
 /// <param name="Reason">
 /// Null for <see cref="OmfAcceptanceOutcome.Accepted"/> and <see cref="OmfAcceptanceOutcome.Filtered"/>.
+/// For <see cref="OmfAcceptanceOutcome.AcceptedWithDrops"/>, the first recorded <see cref="OmfReasonCode.ItemTooLarge"/> reason.
 /// For a failure, the first recorded failure that made acceptance unsatisfiable. For <see cref="OmfAcceptanceOutcome.TimedOut"/>,
 /// the reason of the least-advanced unfinished work.
 /// </param>

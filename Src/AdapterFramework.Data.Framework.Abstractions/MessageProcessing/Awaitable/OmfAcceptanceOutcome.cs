@@ -22,7 +22,7 @@ public enum OmfAcceptanceOutcome
     /// <summary>
     /// Every required delivery received exact 202 Accepted. A body's required deliveries are those to every endpoint
     /// writer active when the body was dispatched. Values that data filters removed never entered the pipeline,
-    /// so a scope whose filters removed only some of its values can still be accepted.
+    /// so a scope whose filters removed only some of its values can still be accepted. No admitted items were dropped.
     /// </summary>
     Accepted,
 
@@ -32,7 +32,7 @@ public enum OmfAcceptanceOutcome
     Rejected,
 
     /// <summary>
-    /// A required delivery or item was dropped without a response.
+    /// A required delivery or item was dropped without a response, other than an item dropped solely because it was too large.
     /// </summary>
     Discarded,
 
@@ -45,4 +45,11 @@ public enum OmfAcceptanceOutcome
     /// The outcome wasn't known when the wait ended. Delivery continues.
     /// </summary>
     TimedOut,
+
+    /// <summary>
+    /// One or more admitted items were dropped during serialization with <see cref="OmfReasonCode.ItemTooLarge"/>,
+    /// and every remaining required delivery received exact 202 Accepted. No other drops or delivery failures occurred.
+    /// This also applies when every admitted item was too large and no bodies were sent.
+    /// </summary>
+    AcceptedWithDrops,
 }

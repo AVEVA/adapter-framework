@@ -253,6 +253,11 @@ public sealed class OmfAwaitableCoordinator : IDisposable
     /// <param name="scope">The scope that wrote the items.</param>
     /// <param name="itemCount">The number of dropped items.</param>
     /// <param name="reason">Why the items were dropped.</param>
+    /// <remarks>
+    /// Items dropped with <see cref="OmfReasonCode.ItemTooLarge"/> do not fail the scope. Once materialization and all
+    /// remaining deliveries complete successfully, the scope reports <see cref="OmfAcceptanceOutcome.AcceptedWithDrops"/>.
+    /// Other reasons still discard the scope immediately.
+    /// </remarks>
     public void RecordItemsDiscarded(ScopeToken scope, int itemCount, OmfOutcomeReason reason)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(itemCount);
@@ -263,7 +268,16 @@ public sealed class OmfAwaitableCoordinator : IDisposable
             if (TryGetTracking(scope, out var tracking))
             {
                 tracking.Discarded += itemCount;
-                Evaluate(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+                if (reason.Code == OmfReasonCode.ItemTooLarge)
+                {
+                    tracking.OversizedDiscarded += itemCount;
+                    tracking.OversizedDiscardReason ??= reason;
+                    Evaluate(tracking, null, null, ref completed);
+                }
+                else
+                {
+                    Evaluate(tracking, OmfAcceptanceOutcome.Discarded, reason, ref completed);
+                }
             }
         }
 
@@ -708,7 +722,9 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         }
         else if (tracking.Materialized && IsSatisfied(tracking))
         {
-            Complete(tracking, OmfAcceptanceOutcome.Accepted, null, ref completed);
+            Complete(tracking,
+                tracking.OversizedDiscarded > 0 ? OmfAcceptanceOutcome.AcceptedWithDrops : OmfAcceptanceOutcome.Accepted,
+                tracking.OversizedDiscardReason, ref completed);
         }
     }
 
@@ -722,7 +738,7 @@ public sealed class OmfAwaitableCoordinator : IDisposable
 
     private static bool IsUnsatisfiable(ScopeTracking tracking)
     {
-        if (tracking.Discarded > 0)
+        if (tracking.Discarded > tracking.OversizedDiscarded)
         {
             return true;
         }
@@ -814,6 +830,10 @@ public sealed class OmfAwaitableCoordinator : IDisposable
         public int Serialized { get; set; }
 
         public int Discarded { get; set; }
+
+        public int OversizedDiscarded { get; set; }
+
+        public OmfOutcomeReason OversizedDiscardReason { get; set; }
 
         public bool Sealed { get; set; }
 

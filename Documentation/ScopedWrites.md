@@ -12,7 +12,7 @@ All types are in the `AdapterFramework.Data.Framework.Abstractions.MessageProces
 | `IAwaitableMessageScope` / `IAwaitableAdapterMessageScope` | A scope. It has the same `Write*` methods as the processor that created it, plus `Seal` and `WaitForAcceptanceAsync`. |
 | `OmfAwaitableScopeOptions` | Sets `DefaultWaitTimeout` (default 15 minutes) and `FlushOnSeal`. |
 | `OmfAcceptanceResult` | Contains `Outcome`, `Deliveries`, `Reason`, and `ObservedAtUtc`. |
-| `OmfAcceptanceOutcome` | `Accepted`, `Rejected`, `Discarded`, `Filtered`, or `TimedOut`. |
+| `OmfAcceptanceOutcome` | `Accepted`, `AcceptedWithDrops`, `Rejected`, `Discarded`, `Filtered`, or `TimedOut`. |
 | `OmfDeliveryResult` | The state of one body sent to one endpoint, including `EndpointId`, `State`, `LastStatusCode`, `Reason`, and `Receipt`. |
 | `OmfOutcomeReason` | Contains a machine-readable `Code` (`OmfReasonCode`) and a `Message`. |
 
@@ -53,6 +53,7 @@ public async Task<bool> WriteBatchAsync(
 		return result.Outcome switch
 		{
 			OmfAcceptanceOutcome.Accepted => true,
+			OmfAcceptanceOutcome.AcceptedWithDrops => true, // oversized items were dropped; remaining deliveries were accepted
 			OmfAcceptanceOutcome.Filtered => true, // filters removed every value, or nothing was written
 			_ => false,
 		};
@@ -68,6 +69,11 @@ var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(30));
 switch (result.Outcome)
 {
 	case OmfAcceptanceOutcome.Accepted:
+		break;
+
+	case OmfAcceptanceOutcome.AcceptedWithDrops:
+		// The scope succeeded, but oversized items were not delivered. Do not retry the entire batch.
+		logger.LogWarning("Scope accepted with oversized drops: {Code} {Message}", result.Reason.Code, result.Reason.Message);
 		break;
 
 	case OmfAcceptanceOutcome.TimedOut:
@@ -128,4 +134,5 @@ var result = await scope.WaitForAcceptanceAsync();
 - **Backpressure:** Writes, `Seal`, and the sealing step of `WaitForAcceptanceAsync` can block while the pipeline is full. The timeout and token apply only after sealing finishes.
 - **Exceptions from `WaitForAcceptanceAsync`:** It throws `OperationCanceledException` when the token, scope disposal, or framework shutdown cancels the wait. It throws `ObjectDisposedException` when the scope is already disposed.
 - **Accepted means exact 202:** Every endpoint writer that's active when a body is dispatched must return `202 Accepted`. Other 2xx statuses report `NonAcceptedSuccess`.
+- **Oversized items are tolerated:** An item that still exceeds the configured body limit after splitting is dropped with `ItemTooLarge`. The scope completes as `AcceptedWithDrops` only after sealing, materialization, and exact-202 acceptance of every remaining required delivery. `Reason` contains the first oversized-drop reason. If every admitted item is oversized, the outcome is still `AcceptedWithDrops`, with no deliveries. Other item drops, body drops, and delivery failures retain their original `Discarded` or `Rejected` outcomes.
 - **Scopes are in-process:** Scopes don't survive a restart or failover. If hot failover becomes active, new scopes are rejected and unfinished scopes complete as `Discarded` with `AcceptanceTrackingDisabled`. Data delivery still continues. For more information, see [HotFailoverAcceptance.md](HotFailoverAcceptance.md).

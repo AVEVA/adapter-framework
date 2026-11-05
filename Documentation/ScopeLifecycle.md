@@ -7,8 +7,11 @@ stateDiagram-v2
     Sealed --> Materializing : "sealHandler posts seal barriers"
     Materializing --> AwaitingDeliveries : "RegisterBody... then CloseMaterialization"
     AwaitingDeliveries --> Accepted : "every delivery Accepted (IsSatisfied)"
+    Materializing --> Materializing : "RecordItemsDiscarded(ItemTooLarge), keep tracking"
+    Materializing --> AcceptedWithDrops : "all items oversized, materialization closes"
+    AwaitingDeliveries --> AcceptedWithDrops : "oversized drops and every remaining delivery Accepted"
 
-    Open --> Discarded : "any failure (IsUnsatisfiable)"
+    Open --> Discarded : "non-oversize failure (IsUnsatisfiable)"
     Materializing --> Discarded : "count mismatch / RecordMaterializationFailed"
     AwaitingDeliveries --> Rejected : "RecordDisposition(Rejected)"
     AwaitingDeliveries --> Discarded : "NoEndpoints / delivery Discarded / RecordEndpointDiscarded"
@@ -17,6 +20,7 @@ stateDiagram-v2
     AwaitingDeliveries --> TimedOut : "GetResult while Outcome is null"
 
     Accepted --> [*]
+    AcceptedWithDrops --> [*]
     Filtered --> [*]
     Rejected --> [*]
     Discarded --> [*]
