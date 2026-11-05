@@ -2,11 +2,13 @@
 
 ## Background
 
-Adapter components already publish diagnostics streams next to their OMF health data. These include `StreamCount`, `ErrorRate`, and `IORate`. They are linked to the component's **DataCollectorHealth** asset. These streams are defined in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs) and published by [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs). Stream names and type IDs are in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs). The existing [IO rate](https://docs.aveva.com/bundle/adapter-for-modbus-tcp/page/1230253.html) diagnostic reports how many data values a component writes per second. It does not show what kind of OMF 2.0 resource was written.
+Adapter components already publish diagnostics streams next to their OMF health data. These include `StreamCount`, `ErrorRate`, and `IORate`, linked to the component's **DataCollectorHealth** asset. The existing [IO rate](https://docs.aveva.com/bundle/adapter-for-modbus-tcp/page/1230253.html) diagnostic reports the component's overall write rate, without separating stream values, assets, and events.
+
+The implementation defines streams and health links in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs), samples and publishes values in [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs), and defines stream names and type IDs in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs).
 
 [PR #7](https://github.com/AVEVA/adapter-framework/pull/7) added OMF 2.0 resource IO rates (`StreamIORate`, `AssetIORate`, `EventIORate`), but only for each **egress endpoint**. When several source servers feed one adapter, the endpoint rates combine their traffic, so you cannot see how much each server produces.
 
-This document describes the per-component rates added in [PR #21](https://github.com/AVEVA/adapter-framework/pull/21). They use the same model as the existing component diagnostics. Because the usual deployment runs one adapter component per source server, these rates show each source server's output.
+This document describes the per-component rates added in [PR #21](https://github.com/AVEVA/adapter-framework/pull/21). They extend the existing component diagnostics rather than introducing a separate diagnostics model. When one component is configured per source server, these rates show each server's contribution; otherwise, they show the combined output of that component's sources.
 
 ## Design
 
@@ -21,7 +23,7 @@ Each adapter component publishes three more diagnostics streams next to its exis
 | Sampling | Every 1 second | Every 1 second |
 | Value | 60-second moving average, per second | 60-second moving average, per second |
 | Publish cadence | Every 60 seconds | Every 60 seconds |
-| Failure handling | A write failure stops the stream | A write failure stops only the failing stream |
+| Failure handling | A write failure stops `IORate` and `StreamCount` publishing | A write failure stops only the failing resource rate stream |
 | OMF version | All | OMF 2.0 only |
 
 `{prefix}` is the diagnostics stream ID prefix: `{health prefix}{host}.{service name}.`.
@@ -44,7 +46,9 @@ Each stream counts one kind of OMF 2.0 resource that the component writes throug
 The counting rules match the egress endpoint rates:
 
 - Messages with `MessageAction.Delete` are not counted. The existing `IORate` still counts deletes.
-- A write that throws is not counted.
+- Counts increase only after the underlying message processor write returns successfully. This does not confirm delivery to an endpoint.
+- Batch writes count individual values, not API calls. For example, a successful batch of 100 stream values adds 100 to the stream counter.
+- These are write rates, not counts of distinct resources. Repeated writes to the same asset or event count again. Type, stream-definition, and relationship writes do not contribute.
 - `AdapterDiagnosticsService` reads and resets the counters on every 1-second tick, adds the sample to a 60-second moving average, and publishes the average every 60 seconds, just like `IORate`.
 
 ### Component rates and egress rates
@@ -54,7 +58,9 @@ Both sets of rates are kept because they measure different points in the pipelin
 - **Component rates** show what each source produced, counted when the component writes.
 - **Egress endpoint rates** show what each endpoint actually accepted, counted when the message is delivered.
 
-Comparing them helps you find backlog or rejected messages. For example, if a component writes 500 values/s but the endpoint accepts only 300 values/s, data is building up between them.
+Compare the same resource kind over comparable time windows and routing. If several components feed an endpoint, compare their combined rate with that endpoint's rate. Do not sum endpoint rates when the same data is sent to multiple endpoints.
+
+For example, if a single component writes 500 stream values/s to one endpoint that accepts only 300 values/s over a sustained period, the difference can indicate backlog or rejected data. The rates are diagnostic signals, not an exact queue-depth or loss measurement.
 
 The PR also considered counting component rates at delivery time. That approach would require carrying the component ID through serialization, the buffer, and the egress writer. The endpoint rates already show delivered totals, so the extra work was not justified.
 
@@ -88,61 +94,14 @@ The following shows where the new streams appear in the existing health hierarch
 - `IInstrumentedMessageProcessor.GetAndResetResourceCounters()` is a default interface member that returns zero counts. Other implementations still compile and report `0`.
 - A failure writing one resource IO rate stream stops only that stream. The other diagnostics streams keep publishing.
 
-## OMF Example - Adapter Component
+## Example - Adapter Component
 
-The following example shows adapter component `Source1` on host `MachineNameX` in service `Adapter` using OMF 2.0.
+For component `Source1` on host `MachineNameX` in service `Adapter`, with no health prefix, the new streams are:
 
-**Types**
+| Stream ID | Example `IORate` value | Meaning |
+| --- | --- | --- |
+| `MachineNameX.Adapter.Source1.StreamIORate` | 512.4 | 512.4 stream values written per second |
+| `MachineNameX.Adapter.Source1.AssetIORate` | 0.2 | 0.2 asset writes per second |
+| `MachineNameX.Adapter.Source1.EventIORate` | 3.5 | 3.5 event writes per second |
 
-No new types. The existing `Diagnostics.IORate` type is reused:
-
-```json
-{
-    "id": "Diagnostics.IORate",
-    "classification": "dynamic",
-    "type": "object",
-    "properties": {
-        "Timestamp": { "type": "string", "format": "date-time", "isindex": true },
-        "IORate":    { "type": "number", "format": "float64" }
-    }
-}
-```
-
-**Streams**
-
-```json
-[
-    { "id": "MachineNameX.Adapter.Source1.IORate",       "typeid": "Diagnostics.IORate", "name": "IORate" },
-    { "id": "MachineNameX.Adapter.Source1.StreamIORate", "typeid": "Diagnostics.IORate", "name": "StreamIORate" },
-    { "id": "MachineNameX.Adapter.Source1.AssetIORate",  "typeid": "Diagnostics.IORate", "name": "AssetIORate" },
-    { "id": "MachineNameX.Adapter.Source1.EventIORate",  "typeid": "Diagnostics.IORate", "name": "EventIORate" }
-]
-```
-
-**Links**
-
-Each new stream is linked to the component health asset in the same way as `IORate`:
-
-```json
-{
-    "typeid": "__Link",
-    "values": [
-        {
-            "source": { "typeid": "DataCollectorHealth", "index": "MachineNameX.Adapter.Source1" },
-            "target": { "containerid": "MachineNameX.Adapter.Source1.StreamIORate" }
-        }
-    ]
-}
-```
-
-**Data**
-
-Each stream receives a value every 60 seconds:
-
-```json
-[
-    { "containerid": "MachineNameX.Adapter.Source1.StreamIORate", "values": [ { "Timestamp": "2026-11-05T12:00:00Z", "IORate": 512.4 } ] },
-    { "containerid": "MachineNameX.Adapter.Source1.AssetIORate",  "values": [ { "Timestamp": "2026-11-05T12:00:00Z", "IORate": 0.2 } ] },
-    { "containerid": "MachineNameX.Adapter.Source1.EventIORate",  "values": [ { "Timestamp": "2026-11-05T12:00:00Z", "IORate": 3.5 } ] }
-]
-```
+All three reuse `Diagnostics.IORate` and link to the component's health asset, alongside `MachineNameX.Adapter.Source1.IORate`. Each published sample contains a UTC `Timestamp` and an `IORate` value representing the moving average, not the total number of writes during that minute.
