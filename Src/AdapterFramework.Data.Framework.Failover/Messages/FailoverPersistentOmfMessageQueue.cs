@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Buffering;
-using AdapterFramework.Data.Framework.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using static AdapterFramework.Data.Framework.Buffering.BufferingConstants;
@@ -70,7 +69,8 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
             MessageTypeEnumSize + ValueCountSize + message.MessageBody.Length,
             ProcessTimeTicksLength);
 
-        if (message.OmfVersion == OmfVersion.Omf12 && message.PartitionKey == null)
+        // Keep the legacy layout for messages that don't need the new metadata.
+        if (message.OmfVersion == OmfVersion.Omf12 && !message.PartitionKey.HasValue)
         {
             dataBuffer[^1] = (byte)message.MessageAction;
             return new DataItem(DataItemVersion.V2, dataBuffer);
@@ -84,7 +84,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
     protected override IFailoverSerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
-        byte[] serializedWithType = dataItem?.Data;
+        var serializedWithType = dataItem?.Data;
         if (serializedWithType == null)
         {
             return new FailoverSerializedOmfMessage(new MessageType(), Array.Empty<byte>(), new MessageAction());
@@ -116,7 +116,7 @@ public class FailoverPersistentOmfMessageQueue : PersistentOmfMessageQueueBase<I
 
         var processTimeTicks = BitConverter.ToInt64(serializedWithType, MessageTypeEnumSize + ValueCountSize + messageBody.Length);
 
-        var serializedOmfMessage = new FailoverSerializedOmfMessage(new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey))
+        var serializedOmfMessage = new FailoverSerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey)
         {
             ProcessTimeTicks = processTimeTicks,
         };

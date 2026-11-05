@@ -586,6 +586,137 @@ public sealed class SchemaGroupingBlock_Tests : IDisposable
 
     #endregion
 
+    #region PartitionKey Tests
+
+    [Fact]
+    public void Handle_AttachesPartitionKeyToFlushedSchemaMessage()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create, PartitionKey.Key2));
+        block.Post(new OmfMessage<DataStream>(1, [CreateDataStream("Stream1")], MessageAction.Create, PartitionKey.Key2));
+        block.Post(new RelationshipMessage(CreateLink("Source1", "Target1"), MessageAction.Create, PartitionKey.Key2));
+        block.Post(new CommandMessage(true));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(1, _flushedMessage.TypeCount);
+        Assert.Equal(1, _flushedMessage.ContainerCount);
+        Assert.Equal(1, _flushedMessage.RelationshipCount);
+        Assert.Equal(PartitionKey.Key2, _flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_FlushesWhenPartitionKeyChanges()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create, PartitionKey.Key1));
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type2")], MessageAction.Create, PartitionKey.Key2));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(1, _flushedMessage.TypeCount);
+        Assert.Equal(PartitionKey.Key1, _flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_FlushesWhenPartitionKeyIsRemoved()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create, PartitionKey.Key1));
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type2")], MessageAction.Create));
+        block.Post(new CommandMessage(true));
+
+        SpinWait.SpinUntil(() => _flushCount >= 2, SpinWaitTimeout);
+
+        Assert.Equal(2, _flushCount);
+        Assert.Null(_flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_FlushesWhenPartitionKeyIsAdded()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create));
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type2")], MessageAction.Create, PartitionKey.Key1));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(1, _flushedMessage.TypeCount);
+        Assert.Null(_flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_DataType_WithRelationships_KeepsRelationshipsInTheTypesPartitionKeyBatch()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        var dataType = CreateDataType("Type1");
+        dataType.Relationships = [CreateLink("Source1", "Target1")];
+
+        block.Post(new OmfMessage<DataType>(1, [dataType], MessageAction.Create, PartitionKey.Key2));
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type2")], MessageAction.Create, PartitionKey.Key1));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(1, _flushedMessage.TypeCount);
+        Assert.Equal(1, _flushedMessage.RelationshipCount);
+        Assert.Equal(PartitionKey.Key2, _flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_TimerFlush_KeepsPartitionKey()
+    {
+        using var block = CreateSchemaGroupingBlock(maxFlushTime: 200);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create, PartitionKey.Key3));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(PartitionKey.Key3, _flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Handle_StateMessageFlush_KeepsPartitionKey()
+    {
+        using var block = CreateSchemaGroupingBlock(maxStreamsBatchCount: 10, maxFlushTime: 60_000);
+
+        var dataStreams = CreateDataStreams(5);
+        block.Post(new OmfMessage<DataStream>(dataStreams.Count, dataStreams.ToArray(), MessageAction.Create, PartitionKey.Key3));
+        block.Post(new StateMessage(3));
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(5, _flushedMessage.ContainerCount);
+        Assert.Equal(PartitionKey.Key3, _flushedMessage.PartitionKey);
+    }
+
+    [Fact]
+    public void Dispose_FlushesRemainingData_KeepsPartitionKey()
+    {
+        var block = CreateSchemaGroupingBlock(maxFlushTime: 60_000);
+
+        block.Post(new OmfMessage<DataType>(1, [CreateDataType("Type1")], MessageAction.Create, PartitionKey.Key3));
+
+        block.Dispose();
+
+        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
+
+        Assert.Equal(1, _flushCount);
+        Assert.Equal(PartitionKey.Key3, _flushedMessage.PartitionKey);
+    }
+
+    #endregion
+
     #region Empty Flush Tests
 
     [Fact]

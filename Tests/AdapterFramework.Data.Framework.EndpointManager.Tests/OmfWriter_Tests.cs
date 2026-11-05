@@ -283,9 +283,19 @@ public class OmfWriter_Tests : IDisposable
         Assert.False(_testLogger.ContainsMessage(ReconnectSuccessString));
     }
 
-    [Fact]
-    public async Task OmfWriter_SendMessage_SingleMessageLogged_OnFail()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2_000)]
+    public async Task OmfWriter_SendMessage_SingleMessageLogged_OnFail(int firstResponseDelay)
     {
+        var receivedMessageCount = 0;
+        _testEndpoint.SetMessageReceivedAction(() =>
+        {
+            if (Interlocked.Increment(ref receivedMessageCount) == 1)
+            {
+                Thread.Sleep(firstResponseDelay);
+            }
+        });
         _testEndpoint.SetHttpResponse(HttpStatusCode.Unauthorized);
         _testEndpoint.StartListening();
 
@@ -294,7 +304,7 @@ public class OmfWriter_Tests : IDisposable
 
         _omfWriter.SendMessage(msg);
 
-        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), SuccessfulSendExpectedWaitTime));
+        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), LogMessageMaxWaitTime));
         Assert.True(_testLogger.ContainsMessage("Error sending"));
 
         _testLogger.ClearLog();
@@ -310,7 +320,7 @@ public class OmfWriter_Tests : IDisposable
 
         _omfWriterBuffered.SendMessage(msg);
 
-        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), SuccessfulSendExpectedWaitTime));
+        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), LogMessageMaxWaitTime));
         Assert.True(_testLogger.ContainsMessage("Error sending"));
 
         _testLogger.ClearLog();
