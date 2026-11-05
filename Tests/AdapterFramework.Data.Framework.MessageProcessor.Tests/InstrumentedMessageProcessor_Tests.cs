@@ -1324,6 +1324,91 @@ public class InstrumentedMessageProcessor_Tests
     }
 
     [Fact]
+    public void InstrumentedMessageProcessor_GetAndResetResourceCounters_ClassifiesWritesAndResets_Test()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        var value = new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 };
+        var values = new[] { value, value, value };
+        var instance = new Dictionary<string, string> { { "prop1", "prop1Value" } };
+
+        // Stream values: 1 + 1 (static classification still goes to a stream) + 3 + 1 + 3 = 9.
+        instrumentedMessageProcessor.WriteValue(TestStreamIdBase, Classification.Dynamic, value, MessageAction.Default);
+        instrumentedMessageProcessor.WriteValue(TestStreamIdBase, Classification.Static, value, MessageAction.Default);
+        instrumentedMessageProcessor.WriteValues(TestStreamIdBase, Classification.Dynamic, values, MessageAction.Default);
+        instrumentedMessageProcessor.WriteDynamicValue(TestStreamIdBase, value, MessageAction.Default, null);
+        instrumentedMessageProcessor.WriteDynamicValues(TestStreamIdBase, values, MessageAction.Default, null);
+
+        // Assets: one write through each WriteStaticValue overload.
+        instrumentedMessageProcessor.WriteStaticValue(TestStreamIdBase, null, null, instance, null, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStaticValue(TestTypeIdBase, "Entity-1", "name", "description", "dataSource", null, null, instance, null, null, null, MessageAction.Create);
+        instrumentedMessageProcessor.WriteStaticValue(TestTypeIdBase, "Entity-2", "name", "description", "dataSource", instance, null, null, null, MessageAction.Update);
+
+        // Events: a repeated upsert counts every write, like the egress EventIORate.
+        instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Create);
+        instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Update);
+
+        Assert.Equal(new OmfResourceCounts(9, 3, 2), instrumentedMessageProcessor.GetAndResetResourceCounters());
+        Assert.True(instrumentedMessageProcessor.GetAndResetResourceCounters().IsEmpty);
+
+        // IORate keeps counting every data write, so its counter is unaffected by resetting the resource counters.
+        Assert.Equal(14, instrumentedMessageProcessor.GetAndResetEventsCounter());
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_GetAndResetResourceCounters_DeletesAreNotCounted_Test()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        var value = new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 };
+        var values = new[] { value, value };
+        var instance = new Dictionary<string, string> { { "prop1", "prop1Value" } };
+
+        instrumentedMessageProcessor.WriteValue(TestStreamIdBase, Classification.Dynamic, value, MessageAction.Delete);
+        instrumentedMessageProcessor.WriteValues(TestStreamIdBase, Classification.Dynamic, values, MessageAction.Delete);
+        instrumentedMessageProcessor.WriteDynamicValue(TestStreamIdBase, value, MessageAction.Delete, null);
+        instrumentedMessageProcessor.WriteDynamicValues(TestStreamIdBase, values, MessageAction.Delete, null);
+        instrumentedMessageProcessor.WriteStaticValue(null, "Entity-1", "name", "description", "dataSource", instance, null, null, null, MessageAction.Delete);
+        instrumentedMessageProcessor.WriteEvent<object>("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, null, null, null, null, MessageAction.Delete);
+
+        Assert.True(instrumentedMessageProcessor.GetAndResetResourceCounters().IsEmpty);
+        Assert.Equal(8, instrumentedMessageProcessor.GetAndResetEventsCounter());
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_GetAndResetResourceCounters_ClearCounters_ResetsCounts_Test()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        var instance = new Dictionary<string, string> { { "prop1", "prop1Value" } };
+
+        instrumentedMessageProcessor.WriteDynamicValue(TestStreamIdBase, new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 }, MessageAction.Default, null);
+        instrumentedMessageProcessor.WriteStaticValue(TestTypeIdBase, "Entity-1", "name", "description", "dataSource", instance, null, null, null, MessageAction.Create);
+        instrumentedMessageProcessor.WriteEvent("Event-1", TestTypeIdBase, "name", "description", "dataSource", DateTime.UtcNow, null, null, null, instance, null, null, null, MessageAction.Create);
+
+        instrumentedMessageProcessor.ClearCounters();
+
+        Assert.True(instrumentedMessageProcessor.GetAndResetResourceCounters().IsEmpty);
+    }
+
+    [Fact]
+    public void InstrumentedMessageProcessor_GetAndResetResourceCounters_WrappedProcessorException_DoesNotCount_Test()
+    {
+        var mockOmfMessageProcessor = new Mock<IMessageProcessor>();
+        mockOmfMessageProcessor.Setup(mp => mp.WriteDynamicValue(It.IsAny<string>(), It.IsAny<TimeIndexedValue<int>>(), It.IsAny<MessageAction>(), It.IsAny<PartitionKey?>()))
+            .Throws<InvalidOperationException>();
+
+        var instrumentedMessageProcessor = new InstrumentedMessageProcessor(mockOmfMessageProcessor.Object, _mLogger.Object, TestComponentId, TestComponentType);
+
+        Assert.Throws<InvalidOperationException>(() => instrumentedMessageProcessor.WriteDynamicValue(TestStreamIdBase, new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 }, MessageAction.Default, null));
+
+        Assert.True(instrumentedMessageProcessor.GetAndResetResourceCounters().IsEmpty);
+    }
+
+    [Fact]
     public void InstrumentedMessageProcessor_WriteValue_InvalidCharacters_Test()
     {
         var receivedStreamId = string.Empty;
