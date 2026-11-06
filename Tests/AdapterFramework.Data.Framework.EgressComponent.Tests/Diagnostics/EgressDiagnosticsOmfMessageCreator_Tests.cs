@@ -58,10 +58,10 @@ public class EgressDiagnosticsOmfMessageCreator_Tests
 
     [Theory]
     [InlineData(null, DiagnosticsConstants.StreamIoRateStreamName)]
-    [InlineData(null, DiagnosticsConstants.AssetIoRateStreamName)]
+    [InlineData(null, DiagnosticsConstants.EntityIoRateStreamName)]
     [InlineData(null, DiagnosticsConstants.EventIoRateStreamName)]
     [InlineData("Prefix.", DiagnosticsConstants.StreamIoRateStreamName)]
-    [InlineData("Prefix.", DiagnosticsConstants.AssetIoRateStreamName)]
+    [InlineData("Prefix.", DiagnosticsConstants.EntityIoRateStreamName)]
     [InlineData("Prefix.", DiagnosticsConstants.EventIoRateStreamName)]
     public void EgressDiagnosticsOmfMessageCreator_CreateResourceIoRateStream_Test(string streamIdPrefix, string streamName)
     {

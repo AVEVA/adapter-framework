@@ -78,7 +78,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetStreamIoRateStreamId() => $"{_streamIdPrefix}.{StreamIoRateStreamName}";
 
-    public string GetAssetIoRateStreamId() => $"{_streamIdPrefix}.{AssetIoRateStreamName}";
+    public string GetEntityIoRateStreamId() => $"{_streamIdPrefix}.{EntityIoRateStreamName}";
 
     public string GetEventIoRateStreamId() => $"{_streamIdPrefix}.{EventIoRateStreamName}";
 
@@ -220,7 +220,7 @@ public class AdapterDiagnosticsOmfMessageCreator
         // AssetCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
         if (_publishOmf20Diagnostics)
         {
-            foreach (var streamId in new[] { GetAssetCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetAssetIoRateStreamId(), GetEventIoRateStreamId() })
+            foreach (var streamId in new[] { GetAssetCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
             {
                 targetLink = new DataStreamLinkNode(streamId);
                 link = new Link(sourceLink, targetLink);
@@ -291,7 +291,7 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
             ioRateStream,
             CreateResourceIoRateStream(GetStreamIoRateStreamId(), StreamIoRateStreamName),
-            CreateResourceIoRateStream(GetAssetIoRateStreamId(), AssetIoRateStreamName),
+            CreateResourceIoRateStream(GetEntityIoRateStreamId(), EntityIoRateStreamName),
             CreateResourceIoRateStream(GetEventIoRateStreamId(), EventIoRateStreamName),
         };
     }

@@ -49,7 +49,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly MovingAverage _errorRateMovingAverage;
     private readonly MovingAverage _ioRateMovingAverage;
     private readonly ResourceIoRate _streamIoRate;
-    private readonly ResourceIoRate _assetIoRate;
+    private readonly ResourceIoRate _entityIoRate;
     private readonly ResourceIoRate _eventIoRate;
     private readonly IInstrumentedLogger _instrumentedLogger;
     private readonly IInstrumentedMessageProcessor _instrumentedMessageProcessor;
@@ -132,7 +132,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         _ioRateMovingAverage = new MovingAverage(MovingAveragePeriod);
         _errorRateMovingAverage = new MovingAverage(MovingAveragePeriod);
         _streamIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetStreamIoRateStreamId(), DiagnosticsConstants.StreamIoRateStreamName);
-        _assetIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetAssetIoRateStreamId(), DiagnosticsConstants.AssetIoRateStreamName);
+        _entityIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetEntityIoRateStreamId(), DiagnosticsConstants.EntityIoRateStreamName);
         _eventIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetEventIoRateStreamId(), DiagnosticsConstants.EventIoRateStreamName);
 
         _componentId = componentId;
@@ -186,7 +186,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
             _errorRateMovingAverage.ClearSamples();
             _ioRateMovingAverage.ClearSamples();
             _streamIoRate.MovingAverage.ClearSamples();
-            _assetIoRate.MovingAverage.ClearSamples();
+            _entityIoRate.MovingAverage.ClearSamples();
             _eventIoRate.MovingAverage.ClearSamples();
 
             _instrumentedLogger.LogDebug("{ServiceName} is Stopped.", nameof(AdapterDiagnosticsService));
@@ -314,7 +314,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                     var resourceCounts = _instrumentedMessageProcessor.GetAndResetResourceCounters();
 
                     _streamIoRate.MovingAverage.AddSample(resourceCounts.StreamValues);
-                    _assetIoRate.MovingAverage.AddSample(resourceCounts.Assets);
+                    _entityIoRate.MovingAverage.AddSample(resourceCounts.Assets);
                     _eventIoRate.MovingAverage.AddSample(resourceCounts.Events);
                 }
 
@@ -564,7 +564,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
             _timerTickResourceIoRateCounter = SendResourceIoRatePeriod;
 
             SendResourceIoRateEvent(_streamIoRate);
-            SendResourceIoRateEvent(_assetIoRate);
+            SendResourceIoRateEvent(_entityIoRate);
             SendResourceIoRateEvent(_eventIoRate);
         }
 
@@ -615,7 +615,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
     #region Private Classes
 
-    // Tracks one per-component resource IO rate stream: StreamIORate, AssetIORate or EventIORate.
+    // Tracks one per-component resource IO rate stream: StreamIORate, EntityIORate or EventIORate.
     private sealed class ResourceIoRate
     {
         public ResourceIoRate(string streamId, string streamName)

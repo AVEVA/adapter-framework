@@ -258,9 +258,9 @@ public class EgressDiagnosticsService_Tests
 
         var ioRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.IoRateStreamName}";
         var streamIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.StreamIoRateStreamName}";
-        var assetIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.AssetIoRateStreamName}";
+        var entityIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.EntityIoRateStreamName}";
         var eventIoRateStreamId = $"{_id}.{EndpointId}.{DiagnosticsConstants.EventIoRateStreamName}";
-        var expectedStreamIds = new[] { ioRateStreamId, streamIoRateStreamId, assetIoRateStreamId, eventIoRateStreamId };
+        var expectedStreamIds = new[] { ioRateStreamId, streamIoRateStreamId, entityIoRateStreamId, eventIoRateStreamId };
 
         Assert.True(SpinWait.SpinUntil(() => expectedStreamIds.All(id => recorder.GetIoRate(id).HasValue), WaitTime));
 
@@ -276,7 +276,7 @@ public class EgressDiagnosticsService_Tests
         // A single one-second sample has been taken, so each rate equals that second's count.
         Assert.Equal(78, recorder.GetIoRate(ioRateStreamId));
         Assert.Equal(60, recorder.GetIoRate(streamIoRateStreamId));
-        Assert.Equal(6, recorder.GetIoRate(assetIoRateStreamId));
+        Assert.Equal(6, recorder.GetIoRate(entityIoRateStreamId));
         Assert.Equal(12, recorder.GetIoRate(eventIoRateStreamId));
     }
 
@@ -348,7 +348,7 @@ public class EgressDiagnosticsService_Tests
         Assert.Equal(8, recorder.GetStreams().Count);
         Assert.DoesNotContain(recorder.GetStreams(), s => s.Id.StartsWith($"{_id}.ep2.", StringComparison.Ordinal));
         Assert.DoesNotContain(recorder.GetIoRateStreamIds(), id => id.StartsWith($"{_id}.ep2.", StringComparison.Ordinal));
-        foreach (var streamName in new[] { DiagnosticsConstants.StreamIoRateStreamName, DiagnosticsConstants.AssetIoRateStreamName, DiagnosticsConstants.EventIoRateStreamName })
+        foreach (var streamName in new[] { DiagnosticsConstants.StreamIoRateStreamName, DiagnosticsConstants.EntityIoRateStreamName, DiagnosticsConstants.EventIoRateStreamName })
         {
             Assert.True(recorder.GetIoRate($"{_id}.ep1.{streamName}").HasValue);
         }
@@ -484,7 +484,7 @@ public class EgressDiagnosticsService_Tests
         {
             expected[$"{_id}.{endpointId}.{DiagnosticsConstants.IoRateStreamName}"] = 6;
             expected[$"{_id}.{endpointId}.{DiagnosticsConstants.StreamIoRateStreamName}"] = 3;
-            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.AssetIoRateStreamName}"] = 2;
+            expected[$"{_id}.{endpointId}.{DiagnosticsConstants.EntityIoRateStreamName}"] = 2;
             expected[$"{_id}.{endpointId}.{DiagnosticsConstants.EventIoRateStreamName}"] = 1;
         }
 

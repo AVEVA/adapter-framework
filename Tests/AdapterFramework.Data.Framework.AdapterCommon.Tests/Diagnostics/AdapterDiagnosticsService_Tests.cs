@@ -470,7 +470,7 @@ public class AdapterDiagnosticsService_Tests
 
         instrumentedMessageProcessor.Verify(im => im.GetAndResetResourceCounters(), Times.Never);
         Assert.Contains(_diagnosticData, x => x.EndsWith(".IORate", StringComparison.Ordinal));
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith("StreamIORate", StringComparison.Ordinal) || x.EndsWith("AssetIORate", StringComparison.Ordinal) || x.EndsWith("EventIORate", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith("StreamIORate", StringComparison.Ordinal) || x.EndsWith("EntityIORate", StringComparison.Ordinal) || x.EndsWith("EventIORate", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -482,7 +482,7 @@ public class AdapterDiagnosticsService_Tests
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
         var collectStatistics = GetCollectMessageProcessorStatistics(adapterDiagnosticsService);
 
-        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetIORate";
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".EntityIORate";
         collectStatistics(null);
         _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
 
@@ -491,7 +491,7 @@ public class AdapterDiagnosticsService_Tests
             collectStatistics(null);
         }
 
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetIORate", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityIORate", StringComparison.Ordinal));
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".StreamIORate", StringComparison.Ordinal)));
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".EventIORate", StringComparison.Ordinal)));
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".IORate", StringComparison.Ordinal)));
@@ -505,11 +505,11 @@ public class AdapterDiagnosticsService_Tests
         return collectStatisticsMethod.CreateDelegate<Action<object>>(adapterDiagnosticsService);
     }
 
-    // Expects the published values for each stream in order, as (StreamIORate, AssetIORate, EventIORate) triples.
+    // Expects the published values for each stream in order, as (StreamIORate, EntityIORate, EventIORate) triples.
     private void AssertResourceIoRates(params double[] expectedRates)
     {
         var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
-        var streamNames = new[] { "StreamIORate", "AssetIORate", "EventIORate" };
+        var streamNames = new[] { "StreamIORate", "EntityIORate", "EventIORate" };
 
         for (var i = 0; i < streamNames.Length; i++)
         {

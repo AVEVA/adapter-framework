@@ -121,7 +121,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.AssetCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetStreamIoRateStreamId()));
-        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetAssetIoRateStreamId()));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetEntityIoRateStreamId()));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetEventIoRateStreamId()));
     }
 
@@ -133,12 +133,12 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         var expected = new[]
         {
             (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.StreamIoRateStreamName}", Name: DiagnosticsConstants.StreamIoRateStreamName),
-            (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.AssetIoRateStreamName}", Name: DiagnosticsConstants.AssetIoRateStreamName),
+            (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.EntityIoRateStreamName}", Name: DiagnosticsConstants.EntityIoRateStreamName),
             (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.EventIoRateStreamName}", Name: DiagnosticsConstants.EventIoRateStreamName),
         };
 
         Assert.Equal(expected[0].Id, _messageCreator.GetStreamIoRateStreamId());
-        Assert.Equal(expected[1].Id, _messageCreator.GetAssetIoRateStreamId());
+        Assert.Equal(expected[1].Id, _messageCreator.GetEntityIoRateStreamId());
         Assert.Equal(expected[2].Id, _messageCreator.GetEventIoRateStreamId());
 
         foreach (var (id, name) in expected)

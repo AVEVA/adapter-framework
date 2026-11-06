@@ -55,7 +55,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     // Data events since the last GetAndResetEventsCounter() call, published as IORate.
     private long _ioEventsCount;
 
-    // Resources since the last GetAndResetResourceCounters() call (deletes excluded), published as StreamIORate, AssetIORate and EventIORate.
+    // Resources since the last GetAndResetResourceCounters() call (deletes excluded), published as StreamIORate, EntityIORate and EventIORate.
     private long _streamValuesCount;
     private long _assetsCount;
     private long _eventsCount;
