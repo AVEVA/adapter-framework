@@ -54,7 +54,8 @@ The counting rules are:
 - A `MessageAction.Delete` for a tracked entity removes it from `EntityCount`. A delete for an unknown entity has no effect.
 - `EventCount` is a running total, not a count of distinct events. Repeated writes to the same event count again. Deletes are not counted.
 - The legacy `WriteStaticValue(id, extendedPropertyDefinitions, ...)` overload, type writes, stream writes, and relationship writes do not change either count.
-- `AdapterDiagnosticsService` reads both counts every 60 ticks of its 1-second timer, on the same timer as `IORate` and `StreamCount`. It publishes a value only when it differs from the last value sent. The first tick after start publishes immediately.
+- `AdapterDiagnosticsService` reads both counts every 60 ticks of its 1-second timer, on the same timer as `IORate` and `StreamCount`. This periodic collection publishes a value only when it differs from the last value sent.
+- The first tick after the service is created publishes both counts immediately, unless `ResendTypesAndStreams()` has already sent the same value. Stop and start keep the 60-tick countdown and the last sent values, so after a restart a count is published at the next reporting boundary, and only if it changed.
 
 ### Stop, start, and resend
 
@@ -107,4 +108,4 @@ For component `Source1` on host `MachineNameX` in service `Adapter`, with no hea
 | `MachineNameX.Adapter.Source1.EntityCount` | `EntityCount`: 42 | 42 unique entities are currently tracked |
 | `MachineNameX.Adapter.Source1.EventCount` | `EventCount`: 1250 | 1250 events written since the component last started |
 
-Both link to the component's health asset, alongside `MachineNameX.Adapter.Source1.StreamCount`. Each published sample contains a UTC `Timestamp` and the count at the time it was read. A new sample appears only when the count has changed since the last one.
+Both link to the component's health asset, alongside `MachineNameX.Adapter.Source1.StreamCount`. Periodic samples contain a UTC `Timestamp` and the count at the time it was read, and appear only when the count has changed since the last one. `ResendTypesAndStreams()` republishes the last sent count with a new `Timestamp` even when it has not changed, so a resent timestamp is not a fresh measurement.
