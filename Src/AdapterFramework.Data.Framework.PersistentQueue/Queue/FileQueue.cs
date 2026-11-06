@@ -159,14 +159,9 @@ public class FileQueue : IPersistentQueue
         {
             while (!_internalCancelTokenSource.Token.IsCancellationRequested)
             {
-                while (ReaderAtEndOfFile())
+                if (!TryPositionReaderOnUnreadData())
                 {
-                    if (_queueState.WriterFileNumber == _queueState.ReaderFileNumber)
-                    {
-                        return null;
-                    }
-
-                    MoveReaderToNewDataFile();
+                    return null;
                 }
 
                 try
@@ -214,14 +209,9 @@ public class FileQueue : IPersistentQueue
         {
             while (!_internalCancelTokenSource.Token.IsCancellationRequested)
             {
-                while (ReaderAtEndOfFile())
+                if (!TryPositionReaderOnUnreadData())
                 {
-                    if (_queueState.WriterFileNumber == _queueState.ReaderFileNumber)
-                    {
-                        return null;
-                    }
-
-                    MoveReaderToNewDataFile();
+                    return null;
                 }
 
                 try
@@ -489,6 +479,29 @@ public class FileQueue : IPersistentQueue
     private bool TooLargeForCurrentWriterFile(DataItem item) => item.Data.Length + _writeStream.Position > _maxFileSizeBytes;
 
     private void DeleteDrainedDataFiles() => _fileManager.DeleteFilesPendingDeletion();
+
+    // Advances the reader past fully consumed data files. Returns false if there is currently nothing more to read.
+    // The writer file number must be sampled BEFORE checking for end of file: the writer finalizes a file (appends its last
+    // items and flushes) before moving on to the next one. Sampling it afterwards could let the reader skip items that were
+    // appended to the current file between the end of file check and the file number check.
+    private bool TryPositionReaderOnUnreadData()
+    {
+        while (true)
+        {
+            var writerFileNumber = _queueState.WriterFileNumber;
+            if (!ReaderAtEndOfFile())
+            {
+                return true;
+            }
+
+            if (writerFileNumber == _queueState.ReaderFileNumber)
+            {
+                return false;
+            }
+
+            MoveReaderToNewDataFile();
+        }
+    }
 
     private bool ReaderAtEndOfFile() => _readStream.Position == _readStream.Length;
 }
