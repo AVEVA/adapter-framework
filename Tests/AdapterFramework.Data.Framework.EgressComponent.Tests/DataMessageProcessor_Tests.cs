@@ -1251,6 +1251,8 @@ public class DataMessageProcessor_Tests
     {
         StreamData[] receivedMessage = null;
         ISerializedOmfMessage sentMessage = null;
+        var serializationTickCount = 0;
+        using var messageSent = new ManualResetEventSlim(false);
 
         var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
         var mockConfigurationProvider = new Mock<IConfigurationProvider>();
@@ -1263,12 +1265,14 @@ public class DataMessageProcessor_Tests
             .Callback<ISerializedOmfMessage>(message =>
             {
                 sentMessage = message;
+                messageSent.Set();
             });
 
         mockSerializer.Setup(serializer => serializer.Serialize(It.IsAny<StreamData[]>())).Returns(Array.Empty<byte>())
             .Callback<StreamData[]>(omfData =>
             {
                 receivedMessage = omfData;
+                serializationTickCount = Environment.TickCount;
             });
 
         ICollection<string> getErrors = null;
@@ -1281,17 +1285,19 @@ public class DataMessageProcessor_Tests
             MaxDataBulkTime = TimeSpan.FromMilliseconds(flushTime),
         };
         mockConfigurationProvider.Setup(x => x.TryGetConfiguration(It.IsAny<string>(), It.IsAny<string>(), out configuration, out getErrors)).Returns(true);
+        // The periodic flush timer starts during construction, not when the value is written.
+        var startTickCount = Environment.TickCount;
         using var messageProcessor = new DataMessageProcessor(mockLogManager.Object, mockSerializer.Object, null, mockOmfDataEndpointManager.Object, mockEgressComponentIdService.Object, mockConfigurationProvider.Object, mockfailoverDataMessageProcessor.Object);
 
         messageProcessor.WriteValue("TestStreamId", Classification.Dynamic, dataInstance, MessageAction.Default);
 
-        // delaying for flushTime - 20ms and didn't receive a message
-        Thread.Sleep(flushTime - 20);
-        Assert.Null(receivedMessage);
-
-        // delaying for flushTime + 10ms and received a message
-        Thread.Sleep(20000);
-        Assert.NotNull(receivedMessage);
+        Assert.True(messageSent.Wait(WaitTime), "The configured bulk timer did not flush the message.");
+        Assert.True(unchecked(serializationTickCount - startTickCount) >= flushTime,
+            "The message was serialized before the configured bulk interval elapsed.");
+        var stream = Assert.Single(receivedMessage);
+        Assert.Equal("TestStreamId", stream.Id);
+        Assert.Same(dataInstance, Assert.Single(stream.Values));
+        Assert.NotNull(sentMessage);
     }
 
     private static Dictionary<string, object> DeserializeValues(IEnumerable<object> values)
