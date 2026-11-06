@@ -181,7 +181,7 @@ public class AdapterDiagnosticsService_Tests
     }
 
     [Fact]
-    public async Task InitializeAsync_Omf12_AssetAndEventCountNotCreated_Test()
+    public async Task InitializeAsync_Omf12_EntityAndEventCountNotCreated_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
@@ -193,15 +193,15 @@ public class AdapterDiagnosticsService_Tests
         // ErrorRate, StreamCount and IORate only.
         Assert.Equal(3, _diagnosticTypes.Count);
         Assert.Equal(3, _diagnosticContainers.Count);
-        Assert.DoesNotContain(_diagnosticContainers, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticContainers, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.DoesNotContain(_diagnosticContainers, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task StartAsync_Omf12_AssetAndEventCountNotPublished_Test()
+    public async Task StartAsync_Omf12_EntityAndEventCountNotPublished_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -212,15 +212,15 @@ public class AdapterDiagnosticsService_Tests
         // ErrorRate, IORate and StreamCount only.
         SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 3, DiagnosticsMessagesRunoutDelayMSecs);
 
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task StartAsync_AssetAndEventCount_ValuesPublished_Test()
+    public async Task StartAsync_EntityAndEventCount_ValuesPublished_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -232,10 +232,10 @@ public class AdapterDiagnosticsService_Tests
 
         var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
 
-        var assetCountEvent = Assert.IsType<AssetCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance);
+        var entityCountEvent = Assert.IsType<EntityCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal)).Instance);
         var eventCountEvent = Assert.IsType<EventCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance);
 
-        Assert.Equal(7, assetCountEvent.AssetCount);
+        Assert.Equal(7, entityCountEvent.EntityCount);
         Assert.Equal(9, eventCountEvent.EventCount);
     }
 
@@ -243,11 +243,11 @@ public class AdapterDiagnosticsService_Tests
     [InlineData(7, 9, 1, 1)]
     [InlineData(8, 9, 2, 1)]
     [InlineData(7, 10, 1, 2)]
-    public void CollectMessageProcessorStatistics_AssetAndEventCount_PublishedOnlyWhenChangedAtReportingBoundary_Test(
-        int nextAssetCount, long nextEventCount, int expectedAssetWrites, int expectedEventWrites)
+    public void CollectMessageProcessorStatistics_EntityAndEventCount_PublishedOnlyWhenChangedAtReportingBoundary_Test(
+        int nextEntityCount, long nextEventCount, int expectedEntityWrites, int expectedEventWrites)
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -261,10 +261,10 @@ public class AdapterDiagnosticsService_Tests
         collectStatistics(null);
 
         var initialValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
-        Assert.Equal(7, Assert.IsType<AssetCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance).AssetCount);
+        Assert.Equal(7, Assert.IsType<EntityCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal)).Instance).EntityCount);
         Assert.Equal(9, Assert.IsType<EventCountEvent>(Assert.Single(initialValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance).EventCount);
 
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(nextAssetCount);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(nextEntityCount);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(nextEventCount);
 
         for (var tick = 0; tick < 59; tick++)
@@ -272,23 +272,23 @@ public class AdapterDiagnosticsService_Tests
             collectStatistics(null);
         }
 
-        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Once);
+        instrumentedMessageProcessor.Verify(im => im.GetEntityCount(), Times.Once);
         instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Once);
         var beforeBoundaryValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
-        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.Single(beforeBoundaryValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
 
         // The initial callback publishes immediately; callback 61 reaches the next 60-tick reporting boundary.
         collectStatistics(null);
 
-        instrumentedMessageProcessor.Verify(im => im.GetAssetCount(), Times.Exactly(2));
+        instrumentedMessageProcessor.Verify(im => im.GetEntityCount(), Times.Exactly(2));
         instrumentedMessageProcessor.Verify(im => im.GetEventCount(), Times.Exactly(2));
         var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
-        var assetValues = writtenValues.Where(x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).ToArray();
+        var entityValues = writtenValues.Where(x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal)).ToArray();
         var eventValues = writtenValues.Where(x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).ToArray();
-        Assert.Equal(expectedAssetWrites, assetValues.Length);
+        Assert.Equal(expectedEntityWrites, entityValues.Length);
         Assert.Equal(expectedEventWrites, eventValues.Length);
-        Assert.Equal(nextAssetCount, Assert.IsType<AssetCountEvent>(assetValues[^1].Instance).AssetCount);
+        Assert.Equal(nextEntityCount, Assert.IsType<EntityCountEvent>(entityValues[^1].Instance).EntityCount);
         Assert.Equal(nextEventCount, Assert.IsType<EventCountEvent>(eventValues[^1].Instance).EventCount);
     }
 
@@ -296,7 +296,7 @@ public class AdapterDiagnosticsService_Tests
     public void ResendTypesAndStreams_NothingSentYet_FallsBackToLiveCounts_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -306,10 +306,10 @@ public class AdapterDiagnosticsService_Tests
 
         var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
 
-        var assetCountEvent = Assert.IsType<AssetCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal)).Instance);
+        var entityCountEvent = Assert.IsType<EntityCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal)).Instance);
         var eventCountEvent = Assert.IsType<EventCountEvent>(Assert.Single(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal)).Instance);
 
-        Assert.Equal(7, assetCountEvent.AssetCount);
+        Assert.Equal(7, entityCountEvent.EntityCount);
         Assert.Equal(9, eventCountEvent.EventCount);
     }
 
@@ -317,7 +317,7 @@ public class AdapterDiagnosticsService_Tests
     public async Task ResendTypesAndStreams_FallbackCounts_AreNotPublishedAgainByNextTimerTick_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -331,23 +331,23 @@ public class AdapterDiagnosticsService_Tests
         SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 7, DiagnosticsMessagesRunoutDelayMSecs);
         await Task.Delay(DiagnosticsMessagesRunoutDelayMSecs);
 
-        Assert.Single(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Single(_diagnosticData, x => x.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.Single(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task ResendTypesAndStreams_AssetCountAlreadyFailed_DoesNotResendAssetCount_Test()
+    public async Task ResendTypesAndStreams_EntityCountAlreadyFailed_DoesNotResendEntityCount_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
-        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".EntityCount";
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
-        // The timer path fails to publish AssetCount and stops that metric for the rest of the run.
+        // The timer path fails to publish EntityCount and stops that metric for the rest of the run.
         await adapterDiagnosticsService.StartAsync();
 
         SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
@@ -355,21 +355,21 @@ public class AdapterDiagnosticsService_Tests
         _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
         adapterDiagnosticsService.ResendTypesAndStreams();
 
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task ResendTypesAndStreams_SendFailure_StopsAssetCountLikeTheTimerPath_Test()
+    public async Task ResendTypesAndStreams_SendFailure_StopsEntityCountLikeTheTimerPath_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
         // A failed send stops that metric for the rest of the run, the same as on the timer path and for IORate and StreamCount.
-        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".EntityCount";
         adapterDiagnosticsService.ResendTypesAndStreams();
         _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
 
@@ -379,15 +379,15 @@ public class AdapterDiagnosticsService_Tests
 
         var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
 
-        Assert.DoesNotContain(writtenValues, x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(writtenValues, x => x.Id.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.Contains(writtenValues, x => x.Id.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void ResendTypesAndStreams_TypesCreationFailed_DoesNotSendAssetOrEventCount_Test()
+    public void ResendTypesAndStreams_TypesCreationFailed_DoesNotSendEntityOrEventCount_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
@@ -398,18 +398,18 @@ public class AdapterDiagnosticsService_Tests
         adapterDiagnosticsService.ResendTypesAndStreams();
 
         // Without the diagnostics types the new streams can't exist downstream, so nothing is sent for them.
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task StartAsync_AssetCountFailure_DoesNotStopIoRateAndStreamCount_Test()
+    public async Task StartAsync_EntityCountFailure_DoesNotStopIoRateAndStreamCount_Test()
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
-        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEntityCount()).Returns(7);
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
-        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".AssetCount";
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".EntityCount";
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
@@ -417,8 +417,8 @@ public class AdapterDiagnosticsService_Tests
 
         SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
 
-        // The AssetCount failure must only disable AssetCount, leaving IORate, StreamCount and EventCount healthy.
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        // The EntityCount failure must only disable EntityCount, leaving IORate, StreamCount and EventCount healthy.
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityCount", StringComparison.Ordinal));
         Assert.Contains(_diagnosticData, x => x.EndsWith(".IORate", StringComparison.Ordinal));
         Assert.Contains(_diagnosticData, x => x.EndsWith(".StreamCount", StringComparison.Ordinal));
         Assert.Contains(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));

@@ -25,8 +25,8 @@ public static class DiagnosticsConstants
     public const string ErrorRateStreamName = "ErrorRate";
     public const string StreamCountTypeId = "Diagnostics.StreamCount";
     public const string StreamCountStreamName = "StreamCount";
-    public const string AssetCountTypeId = "Diagnostics.AssetCount";
-    public const string AssetCountStreamName = "AssetCount";
+    public const string EntityCountTypeId = "Diagnostics.EntityCount";
+    public const string EntityCountStreamName = "EntityCount";
     public const string EventCountTypeId = "Diagnostics.EventCount";
     public const string EventCountStreamName = "EventCount";
     public const string SystemDiagnosticsTypeId = "Diagnostics.System";

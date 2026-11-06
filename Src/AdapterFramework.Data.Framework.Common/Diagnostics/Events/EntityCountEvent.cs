@@ -16,9 +16,9 @@ using System;
 
 namespace AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 
-public class AssetCountEvent
+public class EntityCountEvent
 {
     public DateTime Timestamp { get; set; }
 
-    public int AssetCount { get; set; }
+    public int EntityCount { get; set; }
 }

@@ -106,7 +106,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
     [InlineData(OmfVersion.Omf12, 3)]
     [InlineData(OmfVersion.Omf13, 3)]
     [InlineData(OmfVersion.Omf20, 5)]
-    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesAssetAndEventCount_Test(OmfVersion omfVersion, int expectedCount)
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesEntityAndEventCount_Test(OmfVersion omfVersion, int expectedCount)
     {
         const string UnitTestComponentType = "UnitTestComponentType";
 
@@ -118,7 +118,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         Assert.Equal(expectedCount, _dataStreams.Count);
 
         var isOmf20 = omfVersion == OmfVersion.Omf20;
-        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.AssetCountStreamName}", StringComparison.Ordinal)));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EntityCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventCountStreamName}", StringComparison.Ordinal)));
     }
 }
