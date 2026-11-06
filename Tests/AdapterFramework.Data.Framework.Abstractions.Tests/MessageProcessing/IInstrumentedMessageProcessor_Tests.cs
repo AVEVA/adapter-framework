@@ -30,6 +30,7 @@ public class IInstrumentedMessageProcessor_Tests
 
         Assert.Equal(0, messageProcessor.GetAssetCount());
         Assert.Equal(0, messageProcessor.GetEventCount());
+        Assert.True(messageProcessor.GetAndResetResourceCounters().IsEmpty);
     }
 
     private class LegacyInstrumentedMessageProcessor : IInstrumentedMessageProcessor

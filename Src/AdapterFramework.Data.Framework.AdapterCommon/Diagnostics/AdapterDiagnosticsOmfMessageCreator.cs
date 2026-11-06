@@ -76,6 +76,12 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetIoRateStreamId() => $"{_streamIdPrefix}.{IoRateStreamName}";
 
+    public string GetStreamIoRateStreamId() => $"{_streamIdPrefix}.{StreamIoRateStreamName}";
+
+    public string GetEntityIoRateStreamId() => $"{_streamIdPrefix}.{EntityIoRateStreamName}";
+
+    public string GetEventIoRateStreamId() => $"{_streamIdPrefix}.{EventIoRateStreamName}";
+
     public string GetStreamCountStreamId() => $"{_streamIdPrefix}.{StreamCountStreamName}";
 
     public string GetAssetCountStreamId() => $"{_streamIdPrefix}.{AssetCountStreamName}";
@@ -211,18 +217,15 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
-        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
+        // AssetCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
         if (_publishOmf20Diagnostics)
         {
-            // Link adapter asset count to adapter component health asset
-            targetLink = new DataStreamLinkNode(GetAssetCountStreamId());
-            link = new Link(sourceLink, targetLink);
-            links.Add((Tokens.Link, Classification.Static, link));
-
-            // Link adapter event count to adapter component health asset
-            targetLink = new DataStreamLinkNode(GetEventCountStreamId());
-            link = new Link(sourceLink, targetLink);
-            links.Add((Tokens.Link, Classification.Static, link));
+            foreach (var streamId in new[] { GetAssetCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
+            {
+                targetLink = new DataStreamLinkNode(streamId);
+                link = new Link(sourceLink, targetLink);
+                links.Add((Tokens.Link, Classification.Static, link));
+            }
         }
 
         return links;
@@ -261,11 +264,14 @@ public class AdapterDiagnosticsOmfMessageCreator
             Name = IoRateStreamName,
         };
 
-        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        // AssetCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
         if (!_publishOmf20Diagnostics)
         {
             return new[] { streamCountStream, ioRateStream };
         }
+
+        // The resource IO rates share the IORate type and count what this component wrote, not what was delivered.
+        DataStream CreateResourceIoRateStream(string id, string name) => new DataStream { Id = id, TypeId = IoRateTypeId, Name = name };
 
         return new[]
         {
@@ -284,6 +290,9 @@ public class AdapterDiagnosticsOmfMessageCreator
                 Description = EventCountDescription,
             },
             ioRateStream,
+            CreateResourceIoRateStream(GetStreamIoRateStreamId(), StreamIoRateStreamName),
+            CreateResourceIoRateStream(GetEntityIoRateStreamId(), EntityIoRateStreamName),
+            CreateResourceIoRateStream(GetEventIoRateStreamId(), EventIoRateStreamName),
         };
     }
 

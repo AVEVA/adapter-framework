@@ -114,7 +114,7 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
 
             case DataItemVersion.V3:
                 // V3 records have no resource counts, so messages buffered before the upgrade still count toward IORate
-                // when delivered, but not toward StreamIORate, AssetIORate or EventIORate.
+                // when delivered, but not toward StreamIORate, EntityIORate or EventIORate.
                 if (data.Length < bodyOffset + V3TrailerSize)
                     return new SerializedOmfMessage(messageType, Array.Empty<byte>(), messageAction);
 

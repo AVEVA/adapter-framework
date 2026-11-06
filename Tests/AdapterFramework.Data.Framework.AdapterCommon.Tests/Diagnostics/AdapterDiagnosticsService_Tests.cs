@@ -22,6 +22,7 @@ using Moq;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.AdapterCommon.Diagnostics;
 using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 using AdapterFramework.Data.Framework.Tests.Helper;
@@ -32,7 +33,7 @@ namespace AdapterFramework.Data.Framework.AdapterCommon.Tests.Diagnostics;
 public class AdapterDiagnosticsService_Tests
 {
     private const int ExpectedTypeCount = 5;
-    private const int ExpectedContainerCount = 5;
+    private const int ExpectedContainerCount = 8;
     private const int DiagnosticsShutdownDelayMsecs = 1000;
     private const int DiagnosticsMessagesRunoutDelayMSecs = 2000;
     private const string UnitTestComponentId = "UnitTest";
@@ -100,7 +101,7 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataCount = 5;
+        var expectedDataCount = 8;
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
 
@@ -117,7 +118,7 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataMessageCount = 8;
+        var expectedDataMessageCount = 11;
         var expectedStreamSuffix = ".StreamCount";
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
@@ -137,7 +138,7 @@ public class AdapterDiagnosticsService_Tests
     {
         var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
-        var expectedDataMessageCount = 8;
+        var expectedDataMessageCount = 11;
         var expectedStreamSuffix = ".EventCount";
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
@@ -350,12 +351,13 @@ public class AdapterDiagnosticsService_Tests
         // The timer path fails to publish AssetCount and stops that metric for the rest of the run.
         await adapterDiagnosticsService.StartAsync();
 
-        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
+        // EventIORate is the last value written by a statistics tick, so the failed AssetCount write has happened once it's present.
+        SpinWait.SpinUntil(() => _fakeDiagnosticsMessageProcessor.GetWrittenValues().Any(x => x.Id.EndsWith(".EventIORate", StringComparison.Ordinal)), DiagnosticsMessagesRunoutDelayMSecs);
 
         _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
         adapterDiagnosticsService.ResendTypesAndStreams();
 
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_fakeDiagnosticsMessageProcessor.GetWrittenValues(), x => x.Id.EndsWith(".AssetCount", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -415,12 +417,107 @@ public class AdapterDiagnosticsService_Tests
 
         await adapterDiagnosticsService.StartAsync();
 
-        SpinWait.SpinUntil(() => GetDiagnosticDataCount() >= 4, DiagnosticsMessagesRunoutDelayMSecs);
+        // EventIORate is the last value written by a statistics tick, so the whole tick has completed once it's present.
+        SpinWait.SpinUntil(() => _fakeDiagnosticsMessageProcessor.GetWrittenValues().Any(x => x.Id.EndsWith(".EventIORate", StringComparison.Ordinal)), DiagnosticsMessagesRunoutDelayMSecs);
+        var writtenIds = _fakeDiagnosticsMessageProcessor.GetWrittenValues().Select(x => x.Id).ToArray();
 
         // The AssetCount failure must only disable AssetCount, leaving IORate, StreamCount and EventCount healthy.
-        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(writtenIds, x => x.EndsWith(".AssetCount", StringComparison.Ordinal));
+        Assert.Contains(writtenIds, x => x.EndsWith(".IORate", StringComparison.Ordinal));
+        Assert.Contains(writtenIds, x => x.EndsWith(".StreamCount", StringComparison.Ordinal));
+        Assert.Contains(writtenIds, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CollectMessageProcessorStatistics_ResourceIoRates_PublishedForComponent_Test()
+    {
+        var resourceCounts = new Queue<OmfResourceCounts>([new OmfResourceCounts(6, 3, 1)]);
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetAndResetResourceCounters())
+            .Returns(() => resourceCounts.Count > 0 ? resourceCounts.Dequeue() : new OmfResourceCounts(12, 6, 2));
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+        var collectStatistics = GetCollectMessageProcessorStatistics(adapterDiagnosticsService);
+
+        // The first callback publishes immediately; callback 61 reaches the next 60-tick reporting boundary,
+        // when the 60-sample moving average no longer includes the first sample.
+        collectStatistics(null);
+        AssertResourceIoRates(6, 3, 1);
+
+        for (var tick = 0; tick < 59; tick++)
+        {
+            collectStatistics(null);
+        }
+
+        AssertResourceIoRates(6, 3, 1);
+
+        collectStatistics(null);
+
+        AssertResourceIoRates(6, 3, 1, 12, 6, 2);
+        instrumentedMessageProcessor.Verify(im => im.GetAndResetResourceCounters(), Times.Exactly(61));
+    }
+
+    [Fact]
+    public void CollectMessageProcessorStatistics_Omf12_ResourceIoRatesNotPublished_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf12);
+
+        GetCollectMessageProcessorStatistics(adapterDiagnosticsService)(null);
+
+        instrumentedMessageProcessor.Verify(im => im.GetAndResetResourceCounters(), Times.Never);
         Assert.Contains(_diagnosticData, x => x.EndsWith(".IORate", StringComparison.Ordinal));
-        Assert.Contains(_diagnosticData, x => x.EndsWith(".StreamCount", StringComparison.Ordinal));
-        Assert.Contains(_diagnosticData, x => x.EndsWith(".EventCount", StringComparison.Ordinal));
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith("StreamIORate", StringComparison.Ordinal) || x.EndsWith("EntityIORate", StringComparison.Ordinal) || x.EndsWith("EventIORate", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CollectMessageProcessorStatistics_ResourceIoRateFailure_StopsOnlyThatStream_Test()
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+        var collectStatistics = GetCollectMessageProcessorStatistics(adapterDiagnosticsService);
+
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = ".EntityIORate";
+        collectStatistics(null);
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
+
+        for (var tick = 0; tick < 60; tick++)
+        {
+            collectStatistics(null);
+        }
+
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(".EntityIORate", StringComparison.Ordinal));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".StreamIORate", StringComparison.Ordinal)));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".EventIORate", StringComparison.Ordinal)));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".IORate", StringComparison.Ordinal)));
+    }
+
+    private static Action<object> GetCollectMessageProcessorStatistics(AdapterDiagnosticsService adapterDiagnosticsService)
+    {
+        // Drive the real timer callback without starting background timers or waiting for wall-clock time.
+        var collectStatisticsMethod = typeof(AdapterDiagnosticsService).GetMethod("CollectMessageProcessorStatistics", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(collectStatisticsMethod);
+        return collectStatisticsMethod.CreateDelegate<Action<object>>(adapterDiagnosticsService);
+    }
+
+    // Expects the published values for each stream in order, as (StreamIORate, EntityIORate, EventIORate) triples.
+    private void AssertResourceIoRates(params double[] expectedRates)
+    {
+        var writtenValues = _fakeDiagnosticsMessageProcessor.GetWrittenValues();
+        var streamNames = new[] { "StreamIORate", "EntityIORate", "EventIORate" };
+
+        for (var i = 0; i < streamNames.Length; i++)
+        {
+            var expectedStreamId = $"machine.service{UnitTestComponentId}.{streamNames[i]}";
+            var actualRates = writtenValues.Where(x => x.Id == expectedStreamId).Select(x => Assert.IsType<IoRateEvent>(x.Instance).IORate).ToArray();
+            var expected = expectedRates.Where((_, index) => index % streamNames.Length == i).ToArray();
+
+            Assert.Equal(expected, actualRates);
+        }
     }
 }
