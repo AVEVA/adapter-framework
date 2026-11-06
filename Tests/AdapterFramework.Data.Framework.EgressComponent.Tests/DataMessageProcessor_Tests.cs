@@ -17,6 +17,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Dynamic;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using AdapterFramework.Data.DataModel;
@@ -458,11 +459,268 @@ public class DataMessageProcessor_Tests
         var schemaMessage = captured.First(x => x.MessageType == MessageType.Schema);
         var instanceMessage = captured.First(x => x.MessageType == MessageType.Instance);
 
+        Assert.True(captured.IndexOf(schemaMessage) < captured.IndexOf(instanceMessage), "The schema must be sent before the instance that uses it.");
         Assert.Equal(OmfVersion.Omf20, schemaMessage.OmfVersion);
         Assert.Equal(OmfVersion.Omf20, instanceMessage.OmfVersion);
         Assert.Equal(2, schemaMessage.ItemCount);
         Assert.Equal(1, instanceMessage.ItemCount);
         Assert.DoesNotContain(captured, x => x.MessageType == MessageType.Type || x.MessageType == MessageType.Container || x.MessageType == MessageType.Data);
+    }
+
+    /// <summary>
+    /// Verifies that direct data-processor callers cannot use schema keys on OMF 1.2, OMF 1.3,
+    /// or undefined protocol versions, even when a schema grouping block exists.
+    /// </summary>
+    /// <param name="omfVersion">The unsupported protocol version.</param>
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    [InlineData((OmfVersion)99)]
+    public void DataMessageProcessor_WriteSchemaWithPartitionKey_UnsupportedVersion_Throws(OmfVersion omfVersion)
+    {
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(omfVersion);
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            new Mock<IFailoverDataMessageProcessor>().Object,
+            mockApplicationManifest.Object);
+
+        var dataType = new DynamicDataType { Id = "TestType" };
+        var dataStream = new DataStream { Id = "TestStreamId", TypeId = dataType.Id };
+        var link = new Link(new DataTypeLinkNode("TestType", null), new DataTypeLinkNode("int", null));
+
+        Action[] writes =
+        [
+            () => messageProcessor.WriteType(dataType, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteTypes([dataType], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStream(dataStream, PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteStreams([dataStream], PartitionKey.Key1, MessageAction.Create),
+            () => messageProcessor.WriteSchemaRelationship(link, PartitionKey.Key1, MessageAction.Create),
+        ];
+
+        foreach (var write in writes)
+        {
+            var exception = Assert.Throws<NotSupportedException>(write);
+            Assert.Equal("Schema partition keys are only supported in OMF 2.0.", exception.Message);
+        }
+    }
+
+    [Fact]
+    public void DataMessageProcessor_WriteSchemaOncePerPartitionKey_Omf20_SendsOneSchemaMessagePerPartitionKey()
+    {
+        var sentMessages = new List<ISerializedOmfMessage>();
+        var partitionKeys = new[] { PartitionKey.Key1, PartitionKey.Key4 };
+
+        var dataType = new DynamicDataType
+        {
+            Id = "TestType",
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                { "Value", new PropertyDefinition { Type = "integer", Format = "int32" } },
+            },
+        };
+
+        var dataStream = new DataStream { Id = "TestStreamId", TypeId = dataType.Id };
+        var link = new Link(new DataTypeLinkNode("TestType", null) { Property = "Value" }, new DataTypeLinkNode("int", null));
+
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+
+        mockFailoverDataMessageProcessor
+            .Setup(em => em.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(message =>
+            {
+                lock (sentMessagesLock)
+                {
+                    sentMessages.Add(message);
+                }
+            });
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            mockFailoverDataMessageProcessor.Object,
+            mockApplicationManifest.Object);
+
+        foreach (var partitionKey in partitionKeys)
+        {
+            messageProcessor.WriteType(dataType, partitionKey, MessageAction.Create);
+            messageProcessor.WriteStream(dataStream, partitionKey, MessageAction.Create);
+            messageProcessor.WriteSchemaRelationship(link, partitionKey, MessageAction.Create);
+        }
+
+        messageProcessor.Dispose();
+
+        Assert.True(SpinWait.SpinUntil(() =>
+        {
+            lock (sentMessagesLock)
+            {
+                return sentMessages.Count(x => x.MessageType == MessageType.Schema) == partitionKeys.Length;
+            }
+        }, WaitTime), "Expected one schema message per partition key.");
+
+        List<ISerializedOmfMessage> schemaMessages;
+        lock (sentMessagesLock)
+        {
+            schemaMessages = sentMessages.Where(x => x.MessageType == MessageType.Schema).ToList();
+        }
+
+        Assert.Equal(partitionKeys, schemaMessages.Select(x => x.PartitionKey!.Value).Order());
+        Assert.All(schemaMessages, message => Assert.Equal(3, message.ItemCount));
+        Assert.Equal(schemaMessages[0].MessageBody, schemaMessages[1].MessageBody);
+    }
+
+    [Fact]
+    public void DataMessageProcessor_WriteSchemaWithAlternatingPartitionKeys_Omf20_PreservesOrderWithinEachPartition()
+    {
+        var sentMessages = new List<ISerializedOmfMessage>();
+        var properties = new Dictionary<string, PropertyDefinition>
+        {
+            { "Value", new PropertyDefinition { Type = "integer", Format = "int32" } },
+        };
+
+        var dataType1 = new DynamicDataType { Id = "OrderType1", Properties = properties };
+        var dataType2 = new DynamicDataType { Id = "OrderType2", Properties = properties };
+        var dataStream1 = new DataStream { Id = "OrderStream1", TypeId = dataType1.Id };
+
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        var mockApplicationManifest = new Mock<IApplicationManifest>();
+
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockApplicationManifest.SetupGet(am => am.OmfVersion).Returns(OmfVersion.Omf20);
+
+        mockFailoverDataMessageProcessor
+            .Setup(em => em.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(message =>
+            {
+                lock (sentMessagesLock)
+                {
+                    sentMessages.Add(message);
+                }
+            });
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            new Mock<IConfigurationProvider>().Object,
+            mockFailoverDataMessageProcessor.Object,
+            mockApplicationManifest.Object);
+
+        messageProcessor.WriteType(dataType1, PartitionKey.Key1, MessageAction.Create);
+        messageProcessor.WriteType(dataType2, PartitionKey.Key2, MessageAction.Create);
+        messageProcessor.WriteStream(dataStream1, PartitionKey.Key1, MessageAction.Create);
+
+        messageProcessor.Dispose();
+
+        Assert.True(SpinWait.SpinUntil(() =>
+        {
+            lock (sentMessagesLock)
+            {
+                return sentMessages.Count(x => x.MessageType == MessageType.Schema) == 3;
+            }
+        }, WaitTime), "Expected one schema message per partition key batch.");
+
+        List<string> key1Bodies;
+        List<string> key2Bodies;
+        lock (sentMessagesLock)
+        {
+            key1Bodies = sentMessages.Where(x => x.MessageType == MessageType.Schema && x.PartitionKey == PartitionKey.Key1).Select(x => Encoding.UTF8.GetString(x.MessageBody)).ToList();
+            key2Bodies = sentMessages.Where(x => x.MessageType == MessageType.Schema && x.PartitionKey == PartitionKey.Key2).Select(x => Encoding.UTF8.GetString(x.MessageBody)).ToList();
+        }
+
+        Assert.Equal(2, key1Bodies.Count);
+        Assert.Contains(dataType1.Id, key1Bodies[0], StringComparison.Ordinal);
+        Assert.DoesNotContain(dataStream1.Id, key1Bodies[0], StringComparison.Ordinal);
+        Assert.Contains(dataStream1.Id, key1Bodies[1], StringComparison.Ordinal);
+
+        var key2Body = Assert.Single(key2Bodies);
+        Assert.Contains(dataType2.Id, key2Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DataMessageProcessor_Omf12_DisposeBeforeFlushTimer_SendsTypeAndContainerBeforeData()
+    {
+        var sentMessages = new List<ISerializedOmfMessage>();
+        var dataType = new DynamicDataType
+        {
+            Id = "OrderedType",
+            Properties = new Dictionary<string, PropertyDefinition>
+            {
+                { "Value", new PropertyDefinition { Type = "integer", Format = "int32" } },
+            },
+        };
+        var dataStream = new DataStream { Id = "OrderedStream", Name = "Stream", TypeId = dataType.Id };
+
+        var mockEgressComponentIdService = new Mock<IEgressComponentIdService>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockEgressComponentIdService.Setup(idService => idService.ComponentId).Returns("SampleId");
+        mockFailoverDataMessageProcessor
+            .Setup(em => em.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(message =>
+            {
+                lock (sentMessagesLock)
+                {
+                    sentMessages.Add(message);
+                }
+            });
+
+        // Pin the data block's flush timer far beyond the test, so the value is still buffered in the producer when
+        // Dispose runs. Only the producers-first dispose order can then deliver it; a reverted order loses it.
+        var mockConfigurationProvider = new Mock<IConfigurationProvider>();
+        var bufferingConfiguration = new BufferingConfiguration { MaxDataBulkTime = TimeSpan.FromMinutes(10) };
+        ICollection<string> configurationErrors = null;
+        mockConfigurationProvider
+            .Setup(provider => provider.TryGetConfiguration(It.IsAny<string>(), It.IsAny<string>(), out bufferingConfiguration, out configurationErrors))
+            .Returns(true);
+
+        using var messageProcessor = new DataMessageProcessor(
+            new Mock<ILogManager>().Object,
+            new OmfJsonSerializer(),
+            null,
+            new Mock<IOmfDataEndpointManager>().Object,
+            mockEgressComponentIdService.Object,
+            mockConfigurationProvider.Object,
+            mockFailoverDataMessageProcessor.Object);
+
+        messageProcessor.WriteType(dataType, MessageAction.Create);
+        messageProcessor.WriteStream(dataStream, MessageAction.Create);
+        messageProcessor.WriteValue(dataStream.Id, Classification.Dynamic, new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 42 }, MessageAction.Default);
+
+        // The value is still buffered (pinned timer): only the producers-first dispose order delivers it after its definitions.
+        Assert.Null(Record.Exception(messageProcessor.Dispose));
+
+        List<MessageType> order;
+        lock (sentMessagesLock)
+        {
+            order = sentMessages.Select(message => message.MessageType).ToList();
+        }
+
+        Assert.Contains(MessageType.Type, order);
+        Assert.Contains(MessageType.Container, order);
+        Assert.Contains(MessageType.DynamicData, order);
+        Assert.True(order.IndexOf(MessageType.Type) < order.IndexOf(MessageType.DynamicData), $"Type must be sent before data. Order: {string.Join(", ", order)}");
+        Assert.True(order.IndexOf(MessageType.Container) < order.IndexOf(MessageType.DynamicData), $"Container must be sent before data. Order: {string.Join(", ", order)}");
     }
 
     [Fact]

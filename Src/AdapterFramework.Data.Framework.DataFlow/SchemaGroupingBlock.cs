@@ -30,13 +30,12 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 /// <summary>
 /// Provides a dataFlow block that will group every <see cref="DataType"/> or <see cref="DataStream"/> item received to one bulked <see cref="OmfMessage{T}"/>.
 /// </summary>
-public sealed class SchemaGroupingBlock : BaseBlock<Message>
+public sealed class SchemaGroupingBlock : DefinitionsBlock
 {
     #region Private Constants
 
     private const int MinimumBatchCount = 1;
     private const int MinimumFlushTime = 15;
-    private const int DisposalDelay = 15 * 1000;
     private const string OutOfRangeExceptionTemplate = "Parameter must be at least {0}.";
 
     #endregion
@@ -52,6 +51,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
     private int _maxStreamsBatchCount;
     private List<Link> _relationships;
     private MessageAction _messageAction;
+    private PartitionKey? _partitionKey;
     private int _currentStreamCount;
     private int _currentTypeCount;
     private long _lastFlush;
@@ -70,6 +70,11 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
     /// <param name="maxTypesBatchCount">Maximum number of <see cref="DataType"/> that can be batched.</param>
     /// <param name="maxFlushTime">The max time in milliseconds before batched messages get flushed.</param>
     /// <param name="token">Cancellation token.</param>
+    /// <remarks>
+    /// In addition to schema messages, this block accepts <see cref="FlushThenForwardMessage"/> envelopes: it flushes its
+    /// buffered items and then forwards the envelope's payload from its own thread. It owns each accepted envelope and
+    /// releases the payload if the envelope is rejected, faulted or canceled before being forwarded.
+    /// </remarks>
     public SchemaGroupingBlock(ILogger logger,
         int capacity,
         Action<Message> flush,
@@ -120,19 +125,23 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
                 ProcessCommand(command);
                 break;
             case OmfMessage<DataStream> dataStreams:
-                SetMessageActionAndFlushOnChange(dataStreams.MessageAction);
+                SetBatchContextAndFlushOnChange(dataStreams.MessageAction, dataStreams.PartitionKey);
                 ProcessOmfMessage(dataStreams);
                 break;
             case RelationshipMessage relationship:
-                SetMessageActionAndFlushOnChange(relationship.MessageAction);
+                SetBatchContextAndFlushOnChange(relationship.MessageAction, relationship.PartitionKey);
                 ProcessRelationshipMessage(relationship);
                 break;
             case OmfMessage<DataType> dataTypes:
-                SetMessageActionAndFlushOnChange(dataTypes.MessageAction);
+                SetBatchContextAndFlushOnChange(dataTypes.MessageAction, dataTypes.PartitionKey);
                 ProcessOmfMessage(dataTypes);
                 break;
             case StateMessage state:
                 ProcessState(state);
+                break;
+            case FlushThenForwardMessage forward:
+                Flush();
+                Forward(forward);
                 break;
         }
     }
@@ -151,13 +160,9 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
             return;
         }
 
-        _flushTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        MessageHandler.Complete();
-        SpinWait.SpinUntil(() => MessageHandler.Completion.IsCompleted, DisposalDelay);
-        Flush();
         _flushTimer.Dispose();
 
+        DrainAndFlush(Flush);
         base.Dispose(true);
     }
 
@@ -293,7 +298,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
         }
 
 #pragma warning disable CA2000 // Dispose objects before losing scope
-        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true));
+        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true, _partitionKey));
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _lastFlush = Environment.TickCount64;
@@ -334,9 +339,9 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
         return Environment.TickCount64 - _lastFlush >= _maxFlushTime && (_currentStreamCount > 0 || _currentTypeCount > 0);
     }
 
-    private void SetMessageActionAndFlushOnChange(MessageAction incomingMessageAction)
+    private void SetBatchContextAndFlushOnChange(MessageAction incomingMessageAction, PartitionKey? incomingPartitionKey)
     {
-        if (_messageAction != incomingMessageAction)
+        if (_messageAction != incomingMessageAction || _partitionKey != incomingPartitionKey)
         {
             if (_currentTypeCount != 0 || _currentStreamCount != 0 || _relationships != null)
             {
@@ -344,6 +349,7 @@ public sealed class SchemaGroupingBlock : BaseBlock<Message>
             }
 
             _messageAction = incomingMessageAction;
+            _partitionKey = incomingPartitionKey;
         }
     }
 

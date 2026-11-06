@@ -36,6 +36,12 @@ public class SerializationBlock : BaseBlock<Message>
 
     // Fraction of the maximum message size aimed at when packing chunks; the margin absorbs size variation between items.
     private const double ChunkFillFactor = 0.90;
+    private static readonly Action<ILogger, int, int, Exception> _rangeDeleteTooLarge = LoggerMessage.Define<int, int>(
+        LogLevel.Error, new EventId(DataflowEventIds.RangeDeleteTooLarge, nameof(DataflowEventIds.RangeDeleteTooLarge)),
+        "A range delete cannot be split. Final byte size {ByteCount}, max {MaxByteCount}.");
+    private static readonly Action<ILogger, Exception> _unsupportedRangeDelete = LoggerMessage.Define(
+        LogLevel.Error, new EventId(DataflowEventIds.UnsupportedRangeDelete, nameof(DataflowEventIds.UnsupportedRangeDelete)),
+        "Range deletes require OMF 2.0. The message was discarded.");
     private readonly BatchingStrategyOptimizer _dataBatchingStrategyOptimizer;
     private readonly BatchingStrategyOptimizer _streamsBatchingStrategyOptimizer;
     private readonly Action<ISerializedOmfMessage> _flushAction;
@@ -88,6 +94,9 @@ public class SerializationBlock : BaseBlock<Message>
     {
         switch (message)
         {
+            case RangeDeleteMessage rangeDelete:
+                ProcessRangeDelete(rangeDelete);
+                break;
             case InstanceMessage instanceMessage:
                 using (instanceMessage)
                 {
@@ -113,6 +122,9 @@ public class SerializationBlock : BaseBlock<Message>
                 break;
             case OmfMessage<DynamicStreamData> dynamicStreamData:
                 Process(dynamicStreamData.Count, dynamicStreamData.Values, MessageType.DynamicData, dynamicStreamData.MessageAction, dynamicStreamData.PartitionKey);
+                break;
+            case FlushThenForwardMessage envelope:
+                envelope.ReleaseMisrouted(Logger);
                 break;
         }
     }
@@ -194,6 +206,30 @@ public class SerializationBlock : BaseBlock<Message>
 
         // Relationships are not counted as a resource.
         return default;
+    }
+
+    private void ProcessRangeDelete(RangeDeleteMessage message)
+    {
+        if (_omfVersion != OmfVersion.Omf20)
+        {
+            _unsupportedRangeDelete(_logger, null);
+            return;
+        }
+
+        // The public processor validates synchronously so callers see oversize failures. Keep this
+        // check for messages posted directly to the block, using this block's serializer and limit.
+        var bytes = SerializeWithWrapper(new Dictionary<string, RangeDeleteMessage[]>
+        {
+            ["streamingdata"] = [message],
+        });
+        if (bytes.Length > _maxByteCount)
+        {
+            _rangeDeleteTooLarge(_logger, bytes.Length, _maxByteCount, null);
+            return;
+        }
+
+        // The number of values removed is unknown; do not report the range as an inserted value.
+        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey);
     }
 
     private void ProcessInstance(InstanceMessage message)
@@ -430,11 +466,11 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (typesBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction);
+                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction, message.PartitionKey);
                 }
             }
 
@@ -444,11 +480,11 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (streamsBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction);
+                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction, message.PartitionKey);
                 }
             }
 
@@ -458,17 +494,17 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (linksBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction);
+                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction, message.PartitionKey);
                 }
                 else
                 {
-                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction);
+                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction, message.PartitionKey);
                 }
             }
         }
         else
         {
-            Flush(count, MessageType.Schema, bytes, message.MessageAction);
+            Flush(count, MessageType.Schema, bytes, message.MessageAction, message.PartitionKey);
         }
 
         if (count > 0)
@@ -523,7 +559,7 @@ public class SerializationBlock : BaseBlock<Message>
             ?? _serializer.Serialize(array);
     }
 
-    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction)
+    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey)
     {
         if (typeof(T) != typeof(DataType) && typeof(T) != typeof(DataStream) && typeof(T) != typeof(Link))
         {
@@ -551,11 +587,11 @@ public class SerializationBlock : BaseBlock<Message>
 
             if (bytes.Length > _maxByteCount)
             {
-                FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction);
+                FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction, partitionKey);
             }
             else
             {
-                Flush(segment.Count, MessageType.Schema, bytes, messageAction);
+                Flush(segment.Count, MessageType.Schema, bytes, messageAction, partitionKey);
             }
         }
     }

@@ -283,9 +283,19 @@ public class OmfWriter_Tests : IDisposable
         Assert.False(_testLogger.ContainsMessage(ReconnectSuccessString));
     }
 
-    [Fact]
-    public async Task OmfWriter_SendMessage_SingleMessageLogged_OnFail()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2_000)]
+    public async Task OmfWriter_SendMessage_SingleMessageLogged_OnFail(int firstResponseDelay)
     {
+        var receivedMessageCount = 0;
+        _testEndpoint.SetMessageReceivedAction(() =>
+        {
+            if (Interlocked.Increment(ref receivedMessageCount) == 1)
+            {
+                Thread.Sleep(firstResponseDelay);
+            }
+        });
         _testEndpoint.SetHttpResponse(HttpStatusCode.Unauthorized);
         _testEndpoint.StartListening();
 
@@ -294,7 +304,7 @@ public class OmfWriter_Tests : IDisposable
 
         _omfWriter.SendMessage(msg);
 
-        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), SuccessfulSendExpectedWaitTime));
+        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), LogMessageMaxWaitTime));
         Assert.True(_testLogger.ContainsMessage("Error sending"));
 
         _testLogger.ClearLog();
@@ -310,7 +320,7 @@ public class OmfWriter_Tests : IDisposable
 
         _omfWriterBuffered.SendMessage(msg);
 
-        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), SuccessfulSendExpectedWaitTime));
+        Assert.True(SpinWait.SpinUntil(() => _testLogger.ContainsMessage(SendMessageFailureString), LogMessageMaxWaitTime));
         Assert.True(_testLogger.ContainsMessage("Error sending"));
 
         _testLogger.ClearLog();
@@ -888,6 +898,70 @@ public class OmfWriter_Tests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => _testEndpoint.VerifyMessageReceived(testMessage, expectedHeaders), TimeToWaitForBufferedRetry));
     }
 
+    [Fact]
+    public void OmfWriterWithBuffering_RetentionEvictsMessageWhileSending_NextUnsentMessageDelivered()
+    {
+        // Three 7 MB messages exceed the 20 MB volatile limit, and two fill the single 20 MB buffer file.
+        const int bodySize = 7 * 1024 * 1024;
+        var bufferDirectory = Path.Combine(Path.GetTempPath(), "AdapterFramework.OmfWriterLeaseTests", Guid.NewGuid().ToString("N"));
+        var messages = new[] { 'A', '1', '2', '3', '4' }.Select(marker => new string(marker, bodySize)).ToArray();
+        using var firstSendStarted = new ManualResetEventSlim();
+        using var releaseFirstSend = new ManualResetEventSlim();
+
+        _testEndpoint.SetMessageReceivedAction(() =>
+        {
+            firstSendStarted.Set();
+            releaseFirstSend.Wait(TimeToWaitForBufferedRetry);
+        });
+        _testEndpoint.StartListening();
+
+        var writer = new OmfWriter(
+            new EndpointConfigurationBase
+            {
+                Id = Guid.NewGuid().ToString(),
+                Endpoint = TestUri,
+                UserName = UserName,
+                Password = _dataProtector.Protect(Password),
+            },
+            _testLogger,
+            _serializer,
+            null,
+            _dataProtector,
+            new BufferingConfiguration { EnablePersistentBuffering = true, BufferLocation = bufferDirectory, MaxBufferSizeMB = BufferingConstants.MaxBufferFileSizeMb },
+            new ApplicationManifest(),
+            bufferDirectory,
+            string.Empty,
+            OmfWriterType.Data,
+            _ => { });
+
+        try
+        {
+            writer.SendMessage(new SerializedOmfMessage(MessageType.Data, Encoding.UTF8.GetBytes(messages[0]), MessageAction.Default));
+            Assert.True(firstSendStarted.Wait(TimeToWaitForBufferedRetry));
+
+            // Spills the in-flight message to disk, then evicts the buffer file holding it and message 1.
+            foreach (var message in messages.Skip(1))
+            {
+                writer.SendMessage(new SerializedOmfMessage(MessageType.Data, Encoding.UTF8.GetBytes(message), MessageAction.Default));
+            }
+
+            releaseFirstSend.Set();
+
+            Assert.True(SpinWait.SpinUntil(() => _testEndpoint.VerifyMessageReceived(messages[4]), LogMessageMaxWaitTime));
+            Assert.True(_testLogger.ContainsMessage("had already been discarded from the buffer by retention"));
+            Assert.True(_testEndpoint.VerifyMessageReceived(messages[2]));
+            Assert.True(_testEndpoint.VerifyMessageReceived(messages[3]));
+            Assert.False(_testEndpoint.VerifyMessageReceived(messages[1]));
+        }
+        finally
+        {
+            releaseFirstSend.Set();
+            writer.Dispose();
+            writer.DeleteBuffers();
+            TestUtilities.CleanupDirectories(bufferDirectory);
+        }
+    }
+
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]
@@ -1106,6 +1180,27 @@ public class OmfWriter_Tests : IDisposable
         }
 
         return messageType;
+    }
+
+    [Fact]
+    public void OmfWriter_RangeDelete_RetryPreservesPayloadAndHeaders()
+    {
+        const string body = "{\"streamingdata\":[{\"id\":\"Stream\",\"range\":{\"starttime\":\"2026-01-01T00:00:00Z\",\"endtime\":\"2026-01-01T01:00:00Z\"}}]}";
+        _testEndpoint.SetHttpResponse(HttpStatusCode.ServiceUnavailable, new Dictionary<string, string> { ["Retry-After"] = "1" });
+        _testEndpoint.StartListening();
+        _omfWriterBuffered.SendMessage(new SerializedOmfMessage(MessageType.Instance, Encoding.UTF8.GetBytes(body),
+            MessageAction.Delete, 0, OmfVersion.Omf20, PartitionKey.Key7));
+        var headers = new Dictionary<string, string>
+        {
+            ["messagetype"] = "instance",
+            ["omfversion"] = "2.0",
+            ["action"] = "delete",
+            ["partitionkey"] = "7_",
+        };
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(body) >= 2, TimeToWaitForBufferedRetry));
+        Assert.True(_testEndpoint.VerifyMessageReceived(body, headers));
+        _testEndpoint.SetHttpResponse(HttpStatusCode.OK);
+        Assert.True(SpinWait.SpinUntil(() => _testEndpoint.NumberOfTimesMessageReceived(body) >= 3, TimeToWaitForBufferedRetry));
     }
 
     private static string GetBasicAuthString(string username = UserName, string password = Password)

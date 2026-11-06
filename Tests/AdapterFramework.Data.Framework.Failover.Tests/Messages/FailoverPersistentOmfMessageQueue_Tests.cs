@@ -13,12 +13,16 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
-using Moq;
+using System.Collections.Generic;
+using System.Linq;
+using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Failover.Messages;
 using AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
+using Microsoft.Extensions.Logging;
+using Moq;
 using Xunit;
 using MessageType = AdapterFramework.Data.DataModel.MessageType;
 
@@ -27,6 +31,55 @@ namespace AdapterFramework.Data.Framework.Failover.Tests.Messages;
 public class FailoverPersistentOmfMessageQueue_Tests
 {
     private const string TestTargetIdentifier = "http://localhost:5590/omf";
+
+    [Theory]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf12, null, DataItemVersion.V2)]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf20, PartitionKey.Key7, DataItemVersion.V3)]
+    [InlineData(AdapterFramework.Data.DataModel.OmfVersion.Omf20, null, DataItemVersion.V3)]
+    public void RangeDelete_PreservesFailoverBufferMetadata(AdapterFramework.Data.DataModel.OmfVersion version, PartitionKey? partitionKey, DataItemVersion recordVersion)
+    {
+        var original = new AdapterFramework.Data.Framework.Messages.SerializedOmfMessage(
+            MessageType.Instance, "{\"streamingdata\":[]}"u8.ToArray(), MessageAction.Delete, 0, version, partitionKey);
+        var message = new FailoverSerializedOmfMessage(original) { ProcessTimeTicks = 123456789 };
+        DataItem stored = null;
+        var queue = new Mock<IPersistentQueue>();
+        queue.Setup(q => q.Enqueue(It.IsAny<DataItem>())).Callback<DataItem>(item => stored = item);
+        queue.Setup(q => q.Dequeue()).Returns(() => stored);
+        using var buffer = new FailoverPersistentOmfMessageQueue(TestTargetIdentifier, queue.Object, null);
+        buffer.Enqueue(message);
+        Assert.Equal(recordVersion, stored.Version);
+        Assert.Equal(message.GetMessageSizeInBytes(), stored.Data.Length);
+        if (recordVersion == DataItemVersion.V3)
+        {
+            Assert.Equal(new[] { (byte)(partitionKey ?? 0), (byte)original.MessageAction, (byte)version }, stored.Data[^3..]);
+        }
+
+        Assert.True(buffer.TryDequeue(out var restored));
+        Assert.Equal(original.MessageBody, restored.MessageBody);
+        Assert.Equal(original.MessageAction, restored.MessageAction);
+        Assert.Equal(version, restored.OmfVersion);
+        Assert.Equal(partitionKey, restored.PartitionKey);
+        Assert.Equal(message.ProcessTimeTicks, restored.ProcessTimeTicks);
+        Assert.Equal(0, restored.ItemCount);
+    }
+
+    [Fact]
+    public void FailoverPersistentOmfMessageQueue_TruncatedRecordsReturnEmptyMessage()
+    {
+        using var buffer = new FailoverMessageQueueWrapper(new Mock<IPersistentQueue>().Object);
+        foreach (var version in new[] { DataItemVersion.V2, DataItemVersion.V3 })
+        {
+            // Type, value count, process ticks, action, and optional partition/version metadata.
+            var minimumLength = 1 + sizeof(int) + sizeof(long) + 1 + (version == DataItemVersion.V3 ? 2 : 0);
+            for (var length = 0; length < minimumLength; length++)
+            {
+                var restored = buffer.CreateSerializedOmfMessageExternal(new DataItem(version, new byte[length]));
+                Assert.Empty(restored.MessageBody);
+                Assert.Equal(0, restored.ItemCount);
+                Assert.Equal(0, restored.ProcessTimeTicks);
+            }
+        }
+    }
 
     [Fact]
     public void FailoverPersistentOmfMessageQueue_TryPeek_Test()
@@ -64,6 +117,30 @@ public class FailoverPersistentOmfMessageQueue_Tests
         Assert.Equal(int.MaxValue, peekedMessage.ItemCount);
     }
 
+    [Theory]
+    [InlineData(DataItemVersion.V2, 1)]
+    [InlineData(DataItemVersion.V3, 15)]
+    [InlineData(DataItemVersion.V1, 20)]
+    [InlineData((DataItemVersion)99, 20)]
+    public void FailoverPersistentOmfMessageQueue_InvalidRecordsLogVersionAndLength(DataItemVersion version, int length)
+    {
+        var queue = new Mock<IPersistentQueue>();
+        queue.Setup(q => q.Dequeue()).Returns(new DataItem(version, new byte[length]));
+        var logger = new Mock<ILogger>();
+        logger.Setup(l => l.IsEnabled(LogLevel.Warning)).Returns(true);
+        using var buffer = new FailoverPersistentOmfMessageQueue(TestTargetIdentifier, queue.Object, logger.Object);
+        Assert.True(buffer.TryDequeue(out var message));
+        Assert.Empty(message.MessageBody);
+
+        var log = Assert.Single(logger.Invocations, i => i.Method.Name == nameof(ILogger.Log));
+        Assert.Equal(LogLevel.Warning, log.Arguments[0]);
+        Assert.Equal(5100, ((EventId)log.Arguments[1]).Id);
+        var properties = Assert.IsAssignableFrom<IEnumerable<KeyValuePair<string, object>>>(log.Arguments[2]).ToDictionary(p => p.Key, p => p.Value);
+        Assert.Equal(version, properties["RecordVersion"]);
+        Assert.Equal(length, properties["ByteLength"]);
+        Assert.Equal(3, properties.Count); // Version, length, and the message template; no payload.
+    }
+
     [Fact]
     public void FailoverPersistentOmfMessageQueue_TryDequeue_Test()
     {
@@ -98,6 +175,67 @@ public class FailoverPersistentOmfMessageQueue_Tests
         Assert.Equal(expectedMessageAction, dequeuedMessage.MessageAction);
         Assert.Equal(long.MaxValue, dequeuedMessage.ProcessTimeTicks);
         Assert.Equal(int.MaxValue, dequeuedMessage.ItemCount);
+    }
+
+    /// <summary>
+    /// Verifies that V3 failover records retain the protocol, optional key, action, count,
+    /// body, and process time, including empty bodies and boundary routing keys.
+    /// </summary>
+    /// <param name="partitionKey">The routing key to persist.</param>
+    /// <param name="emptyBody">Whether the message body is empty.</param>
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(PartitionKey.Key1, false)]
+    [InlineData(PartitionKey.Key16, true)]
+    public void CreateDataItem_WhenOmf20MessageIsPersisted_RoundTripsMetadata(PartitionKey? partitionKey, bool emptyBody)
+    {
+        var body = emptyBody ? Array.Empty<byte>() : new byte[] { 1, 2, 3, 4 };
+        var message = new FailoverSerializedOmfMessage(MessageType.Schema, body, MessageAction.Delete,
+            int.MaxValue, OmfVersion.Omf20, partitionKey) { ProcessTimeTicks = long.MaxValue };
+        using var wrapper = new FailoverMessageQueueWrapper(new Mock<IPersistentQueue>().Object);
+
+        var record = wrapper.CreateDataItemExternal(message);
+        Assert.Equal(DataItemVersion.V3, record.Version);
+        Assert.Equal(body.Length + 16, record.Data.Length);
+        Assert.Equal(record.Data.Length, message.GetMessageSizeInBytes());
+        Assert.Equal((byte)(partitionKey ?? 0), record.Data[^3]);
+        Assert.Equal((byte)MessageAction.Delete, record.Data[^2]);
+        Assert.Equal((byte)OmfVersion.Omf20, record.Data[^1]);
+
+        var restored = wrapper.CreateSerializedOmfMessageExternal(record);
+        Assert.Equal(message.MessageType, restored.MessageType);
+        Assert.Equal(message.MessageAction, restored.MessageAction);
+        Assert.Equal(message.ItemCount, restored.ItemCount);
+        Assert.Equal(message.ProcessTimeTicks, restored.ProcessTimeTicks);
+        Assert.Equal(body, restored.MessageBody);
+        Assert.Equal(OmfVersion.Omf20, restored.OmfVersion);
+        Assert.Equal(partitionKey, restored.PartitionKey);
+    }
+
+    /// <summary>
+    /// Verifies that a legacy V2 record still restores its body and timestamp with OMF 1.2
+    /// and no partition key, independently of the current writer.
+    /// </summary>
+    [Fact]
+    public void CreateSerializedOmfMessage_WhenLegacyV2RecordIsRead_UsesOriginalDefaults()
+    {
+        var body = new byte[] { 10, 20, 30 };
+        var bytes = new byte[body.Length + 14];
+        bytes[0] = (byte)MessageType.Container;
+        BitConverter.GetBytes(42).CopyTo(bytes, 1);
+        body.CopyTo(bytes, 5);
+        BitConverter.GetBytes(123456789L).CopyTo(bytes, 5 + body.Length);
+        bytes[^1] = (byte)MessageAction.Update;
+        using var wrapper = new FailoverMessageQueueWrapper(new Mock<IPersistentQueue>().Object);
+
+        var restored = wrapper.CreateSerializedOmfMessageExternal(new DataItem(DataItemVersion.V2, bytes));
+        Assert.Equal(MessageType.Container, restored.MessageType);
+        Assert.Equal(MessageAction.Update, restored.MessageAction);
+        Assert.Equal(42, restored.ItemCount);
+        Assert.Equal(123456789L, restored.ProcessTimeTicks);
+        Assert.Equal(body, restored.MessageBody);
+        Assert.Equal(OmfVersion.Omf12, restored.OmfVersion);
+        Assert.Null(restored.PartitionKey);
     }
 
     [Theory]
