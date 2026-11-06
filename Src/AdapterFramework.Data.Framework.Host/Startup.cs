@@ -52,6 +52,7 @@ using AdapterFramework.Data.Framework.Host.Interfaces;
 using AdapterFramework.Data.Framework.Host.SystemMiddleware;
 using AdapterFramework.Data.Framework.Logger;
 using AdapterFramework.Data.Framework.MessageProcessor;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.Registry;
 using AdapterFramework.Data.Framework.Serialization;
 using IConfigurationProvider = AdapterFramework.Data.Framework.Abstractions.Configuration.IConfigurationProvider;
@@ -151,6 +152,7 @@ public class Startup
         services.AddSingleton<ICompressor, GZipCompressor>();
         services.AddSingleton<ISerializer, OmfJsonSerializer>();
         services.AddSingleton<IOmfWriterFactory, OmfWriterFactory>();
+        services.AddSingleton(_ => new OmfAwaitableCoordinator(SystemHost.MaxActiveAwaitableScopes));
         services.AddSingleton<OmfEndpointManager>();
         services.AddSingleton<IOmfHealthEndpointManager>(sp => sp.GetRequiredService<OmfEndpointManager>());
         services.AddSingleton<IOmfEndpointManager>(sp => sp.GetRequiredService<OmfEndpointManager>());

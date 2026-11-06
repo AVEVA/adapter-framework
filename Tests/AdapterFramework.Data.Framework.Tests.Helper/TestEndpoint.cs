@@ -45,6 +45,7 @@ public class TestEndpoint : IDisposable
     private int _openIdRouteGetCounter;
     private HttpStatusCode _responseCode;
     private Dictionary<string, string> _headers;
+    private string _postResponseBody;
     private bool _cacheLastDataValue;
     private bool _disposed;
     private Action _messageReceived;
@@ -149,6 +150,14 @@ public class TestEndpoint : IDisposable
                         SaveLastDataValueForContainers(body);
                     }
 
+                    if (_postResponseBody != null)
+                    {
+                        var buffer = Encoding.UTF8.GetBytes(_postResponseBody);
+                        context.Response.ContentType = "application/json";
+                        context.Response.ContentLength64 = buffer.Length;
+                        context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+                    }
+
                     context.Response.Close();
                 }
                 else if (context.Request.HttpMethod == "GET")
@@ -193,6 +202,11 @@ public class TestEndpoint : IDisposable
     {
         _responseCode = code;
         _headers = headers;
+    }
+
+    public void SetPostResponseBody(string body)
+    {
+        _postResponseBody = body;
     }
 
     public bool VerifyMessageReceived(string message, IDictionary<string, string> headers = null)

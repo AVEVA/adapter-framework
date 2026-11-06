@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -46,6 +47,9 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 {
     private const string RequestString = "Request";
     private const string ResponseString = "Response";
+
+    // Receipts are a few hundred bytes; error bodies are diagnostic text. Neither needs more.
+    private const int MaxResponseContentBytes = 1024 * 1024;
 
     private readonly ICompressor _compressor;
     private readonly string _format;
@@ -95,7 +99,12 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
     }
 
     /// <inheritdoc/>
-    public async Task<EndpointResponse> SendMessageAsync(MessageType messageType, byte[] messageBody, MessageAction messageAction, OmfVersion omfVersion, CancellationToken token, PartitionKey? partitionKey = null)
+    public Task<EndpointResponse> SendMessageAsync(MessageType messageType, byte[] messageBody, MessageAction messageAction, OmfVersion omfVersion, CancellationToken token, PartitionKey? partitionKey = null) =>
+        SendMessageAsync(messageType, messageBody, messageAction, omfVersion, partitionKey, readReceipt: false, token);
+
+    /// <inheritdoc/>
+    public async Task<EndpointResponse> SendMessageAsync(
+        MessageType messageType, byte[] messageBody, MessageAction messageAction, OmfVersion omfVersion, PartitionKey? partitionKey, bool readReceipt, CancellationToken token)
     {
         if (ShouldRecreateHttpClient)
         {
@@ -107,19 +116,21 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
         try
         {
             var messageActionString = GetMessageActionString(messageAction, messageType);
-            var operationId = Guid.NewGuid().ToString();
+            var httpTraceId = Guid.NewGuid().ToString();
             _httpDebugEnabled = IsHttpDebugEnabled();
 
-            var response = await SendMessageInternalAsync(
+            using var response = await SendMessageInternalAsync(
                 omfMessageType.ToString(),
                 messageBody,
                 messageActionString,
-                operationId,
+                httpTraceId,
                 omfVersion,
                 token,
                 partitionKey);
 
-            return await HandleResponseAsync(response, messageType, operationId);
+            var responseStatus = ClassifyResponse(response, messageType);
+            var endpointResponse = await CreateEndpointResponseAsync(responseStatus, response, messageType, httpTraceId, readReceipt, token);
+            return endpointResponse with { StatusCode = response.StatusCode };
         }
         catch (HttpRequestException httpRequestException)
         {
@@ -221,7 +232,7 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
         return false;
     }
 
-    private async Task<EndpointResponse> HandleResponseAsync(HttpResponseMessage response, MessageType messageType, string operationId)
+    private ResponseStatusEnum ClassifyResponse(HttpResponseMessage response, MessageType messageType)
     {
         switch (response.StatusCode)
         {
@@ -253,18 +264,18 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 
             // 4xx
             case HttpStatusCode.BadRequest:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.BadRequest, response, messageType, operationId);
+                return ResponseStatusEnum.BadRequest;
             case HttpStatusCode.Conflict:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.Conflict, response, messageType, operationId);
+                return ResponseStatusEnum.Conflict;
             case HttpStatusCode.TooManyRequests:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.DelayRequired, response, messageType, operationId);
+                return ResponseStatusEnum.DelayRequired;
             case HttpStatusCode.NotFound:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.NotFound, response, messageType, operationId);
+                return ResponseStatusEnum.NotFound;
             case HttpStatusCode.Unauthorized:
             case HttpStatusCode.PaymentRequired:
                 break;
             case HttpStatusCode.Forbidden:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.Forbidden, response, messageType, operationId);
+                return ResponseStatusEnum.Forbidden;
             case HttpStatusCode.MethodNotAllowed:
             case HttpStatusCode.NotAcceptable:
             case HttpStatusCode.ProxyAuthenticationRequired:
@@ -282,16 +293,16 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 
             // 5xx
             case HttpStatusCode.ServiceUnavailable:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.DelayRequired, response, messageType, operationId);
+                return ResponseStatusEnum.DelayRequired;
             case HttpStatusCode.InternalServerError:
                 if (messageType == MessageType.StaticData)
                 {
-                    return await CreateEndpointResponseAsync(ResponseStatusEnum.InternalServerError, response, messageType, operationId);
+                    return ResponseStatusEnum.InternalServerError;
                 }
 
                 break;
             case HttpStatusCode.NotImplemented:
-                return await CreateEndpointResponseAsync(ResponseStatusEnum.NotImplemented, response, messageType, operationId);
+                return ResponseStatusEnum.NotImplemented;
             case HttpStatusCode.BadGateway:
             case HttpStatusCode.GatewayTimeout:
             case HttpStatusCode.HttpVersionNotSupported:
@@ -302,19 +313,14 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
                 break;
         }
 
-        if (!response.IsSuccessStatusCode)
-        {
-            return await CreateEndpointResponseAsync(ResponseStatusEnum.Fail, response, messageType, operationId);
-        }
-
-        return await CreateEndpointResponseAsync(ResponseStatusEnum.Success, response, messageType, operationId);
+        return response.IsSuccessStatusCode ? ResponseStatusEnum.Success : ResponseStatusEnum.Fail;
     }
 
     private async Task<HttpResponseMessage> SendMessageInternalAsync(
         string messageType,
         byte[] messageBody,
         string omfAction,
-        string operationId,
+        string httpTraceId,
         OmfVersion omfVersion,        
         CancellationToken token,
         PartitionKey? partitionKey = null)
@@ -342,28 +348,30 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 
         if (_httpDebugEnabled)
         {
-            await TraceHttpRequestAsync(messageType, headers, messageBody, operationId);
+            await TraceHttpRequestAsync(messageType, headers, messageBody, httpTraceId);
         }
 
         await SetAuthorizationHeaderAsync(token);
 
         using var messageContent = BuildContent(messageBody, headers);
-#pragma warning disable CA2234 // Pass system uri objects instead of strings
-        return await Client.PostAsync(string.Empty, messageContent, token);
-#pragma warning restore CA2234 // Pass system uri objects instead of strings
+        using var request = new HttpRequestMessage(HttpMethod.Post, (Uri)null) { Content = messageContent };
+
+        // Read headers only, so response bodies can be read with a bound instead of buffered whole.
+        return await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
     }
 
-    private async Task<EndpointResponse> CreateEndpointResponseAsync(ResponseStatusEnum responseStatus, HttpResponseMessage responseMessage, MessageType messageType, string operationId)
+    private async Task<EndpointResponse> CreateEndpointResponseAsync(
+        ResponseStatusEnum responseStatus, HttpResponseMessage responseMessage, MessageType messageType, string httpTraceId, bool readReceipt, CancellationToken token)
     {
         if (responseStatus == ResponseStatusEnum.Success)
         {
-            return await CreateSuccessfulEndpointResponseAsync(responseMessage, messageType, operationId);
+            return await CreateSuccessfulEndpointResponseAsync(responseMessage, messageType, httpTraceId, readReceipt, token);
         }
 
-        var messageContent = await responseMessage.Content.ReadAsStringAsync();
+        var messageContent = await ReadContentAsync(responseMessage, token);
         if (_httpDebugEnabled)
         {
-            TraceHttpResponse(GetOmfMessageType(messageType).ToString(), responseMessage, messageContent, operationId);
+            TraceHttpResponse(GetOmfMessageType(messageType).ToString(), responseMessage, messageContent, httpTraceId);
         }
 
         RaiseHttpRequestExecutedEvent(messageType, responseMessage.StatusCode, messageContent);
@@ -376,7 +384,7 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
         };
     }
 
-    private async Task TraceHttpRequestAsync(string messageType, Dictionary<string, string> headers, byte[] messageBody, string operationId)
+    private async Task TraceHttpRequestAsync(string messageType, Dictionary<string, string> headers, byte[] messageBody, string httpTraceId)
     {
         var debugMessageBody = messageBody;
         if (_compressor != null)
@@ -387,17 +395,17 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
         var headersContent = string.Join("; ", headers.Select(x => x.Key + "=" + x.Value));
         var logMessageContent = $"{headersContent}{Environment.NewLine}{Environment.NewLine}{Encoding.UTF8.GetString(debugMessageBody)}";
 
-        TraceHttpInteraction(RequestString, messageType, logMessageContent, operationId);
+        TraceHttpInteraction(RequestString, messageType, logMessageContent, httpTraceId);
     }
 
-    private void TraceHttpResponse(string messageType, HttpResponseMessage responseMessage, string messageContent, string operationId)
+    private void TraceHttpResponse(string messageType, HttpResponseMessage responseMessage, string messageContent, string httpTraceId)
     {
         var content = $"{responseMessage}{Environment.NewLine}{Environment.NewLine}{messageContent}";
 
-        TraceHttpInteraction(ResponseString, messageType, content, operationId);
+        TraceHttpInteraction(ResponseString, messageType, content, httpTraceId);
     }
 
-    private void TraceHttpInteraction(string interactionType, string messageType, string content, string operationId)
+    private void TraceHttpInteraction(string interactionType, string messageType, string content, string httpTraceId)
     {
         var directory = Path.Combine(_debugLogsPath, messageType);
 
@@ -408,7 +416,7 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
                 Directory.CreateDirectory(directory);
             }
 
-            var filePath = Path.Combine(directory, $"{DateTime.UtcNow.Ticks}-{operationId}-{interactionType}.txt");
+            var filePath = Path.Combine(directory, $"{DateTime.UtcNow.Ticks}-{httpTraceId}-{interactionType}.txt");
             File.WriteAllText(filePath, content);
         }
         catch (Exception ex)
@@ -417,14 +425,16 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
         }
     }
 
-    private async Task<EndpointResponse> CreateSuccessfulEndpointResponseAsync(HttpResponseMessage responseMessage, MessageType messageType, string operationId)
+    private async Task<EndpointResponse> CreateSuccessfulEndpointResponseAsync(
+        HttpResponseMessage responseMessage, MessageType messageType, string httpTraceId, bool readReceipt, CancellationToken token)
     {
         var successfulResponse = new EndpointResponse(ResponseStatusEnum.Success);
+        var parseReceipt = readReceipt && responseMessage.StatusCode == HttpStatusCode.Accepted;
         var successfulMessageContent = string.Empty;
 
-        if (_logger.IsEnabled(LogLevel.Trace) || _httpDebugEnabled)
+        if (parseReceipt || _logger.IsEnabled(LogLevel.Trace) || _httpDebugEnabled)
         {
-            successfulMessageContent = await responseMessage.Content.ReadAsStringAsync();
+            successfulMessageContent = await ReadContentAsync(responseMessage, token);
         }
 
         if (_logger.IsEnabled(LogLevel.Trace))
@@ -434,12 +444,52 @@ public class OmfByteHttpClient : HttpClientWrapper, IClient
 
         if (_httpDebugEnabled)
         {
-            TraceHttpResponse(GetOmfMessageType(messageType).ToString(), responseMessage, successfulMessageContent, operationId);
+            TraceHttpResponse(GetOmfMessageType(messageType).ToString(), responseMessage, successfulMessageContent, httpTraceId);
         }
 
         RaiseHttpRequestExecutedEvent(messageType, responseMessage.StatusCode, successfulMessageContent);
 
-        return successfulResponse;
+        return parseReceipt ? successfulResponse with { Receipt = OmfIngressReceiptParser.Parse(successfulMessageContent) } : successfulResponse;
+    }
+
+    /// <summary>
+    /// Reads up to <see cref="MaxResponseContentBytes"/> of a response body as UTF-8, within the client timeout.
+    /// A body that can't be read is returned empty, so the status code still decides the outcome.
+    /// </summary>
+    private async Task<string> ReadContentAsync(HttpResponseMessage responseMessage, CancellationToken token)
+    {
+        // Without buffering, HttpClient's timeout no longer covers reading the body.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(Client.Timeout);
+
+        try
+        {
+            await using var stream = await responseMessage.Content.ReadAsStreamAsync(timeout.Token);
+            var content = new ArrayBufferWriter<byte>();
+            while (content.WrittenCount <= MaxResponseContentBytes)
+            {
+                var memory = content.GetMemory(4096);
+                var read = await stream.ReadAsync(memory[..Math.Min(memory.Length, MaxResponseContentBytes + 1 - content.WrittenCount)], timeout.Token);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                content.Advance(read);
+            }
+
+            if (content.WrittenCount > MaxResponseContentBytes)
+            {
+                _logger.LogWarning("The response body from {Uri} exceeded {MaxBytes} bytes and was truncated.", Uri, MaxResponseContentBytes);
+            }
+
+            return Encoding.UTF8.GetString(content.WrittenSpan[..Math.Min(content.WrittenCount, MaxResponseContentBytes)]);
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException || (ex is OperationCanceledException && !token.IsCancellationRequested))
+        {
+            _logger.LogWarning("Failed to read the response body from {Uri}: {Error}", Uri, ex.GetExceptionTypeAndMessages());
+            return string.Empty;
+        }
     }
 
     private void RaiseHttpRequestExecutedEvent(MessageType messageType, HttpStatusCode? statusCode, string content, Exception exception = null)

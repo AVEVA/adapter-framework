@@ -26,7 +26,7 @@ namespace AdapterFramework.Data.Framework.Buffering;
 
 public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializedOmfMessage>
 {
-    // V4 appends the stream value, asset and event counts (Int64 each) after the V3 trailer.
+    // V4 appends the stream value, asset and event counts (Int64 each) after the V3 trailer; V5 also appends the serialized message ID.
     private const int ResourceCountsSize = 3 * sizeof(long);
     private const int V3TrailerSize = 3;
 
@@ -35,6 +35,15 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
     {
     }
 
+    /// <summary>
+    /// Creates a V3 record, a V4 record that appends resource counts, or a V5 record that appends resource counts and the
+    /// serialized message ID of a scoped body.
+    /// </summary>
+    /// <remarks>
+    /// Known rollback limitation, accepted by design: earlier releases don't recognize V5 records and skip them as corrupt,
+    /// so scoped bodies still buffered are lost. The release notes require buffers to drain fully before rolling back to an
+    /// earlier adapter version.
+    /// </remarks>
     protected override DataItem CreateDataItem(ISerializedOmfMessage message)
     {
         if (message == null)
@@ -42,11 +51,19 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
             return new DataItem(DataItemVersion.V2, Array.Empty<byte>());
         }
 
+        var serializedMessageId = message.SerializedMessageId;
         var resourceCounts = message.ResourceCounts;
-        var includeResourceCounts = !resourceCounts.IsEmpty;
-        var v3Size = message.GetMessageSizeInBytes();
+        var version = serializedMessageId.HasValue ? DataItemVersion.V5
+            : resourceCounts.IsEmpty ? DataItemVersion.V3
+            : DataItemVersion.V4;
+        var v3Size = SerializedOmfMessage.MessageTypeEnumSize + SerializedOmfMessage.ValueCountSize + message.MessageBody.Length + V3TrailerSize;
 
-        var dataBuffer = new byte[includeResourceCounts ? v3Size + ResourceCountsSize : v3Size];
+        var dataBuffer = new byte[version switch
+        {
+            DataItemVersion.V5 => v3Size + ResourceCountsSize + SerializedOmfMessage.SerializedMessageIdSize,
+            DataItemVersion.V4 => v3Size + ResourceCountsSize,
+            _ => v3Size,
+        }];
         dataBuffer[0] = (byte)message.MessageType;
 
         BinaryPrimitives.WriteInt32LittleEndian(
@@ -61,19 +78,28 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         dataBuffer[v3Size - 2] = (byte)message.MessageAction;
         dataBuffer[v3Size - 1] = (byte)message.OmfVersion;
 
-        if (!includeResourceCounts)
+        if (version != DataItemVersion.V3)
         {
-            return new DataItem(DataItemVersion.V3, dataBuffer);
+            var countsSpan = dataBuffer.AsSpan(v3Size, ResourceCountsSize);
+            BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamValues);
+            BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Assets);
+            BinaryPrimitives.WriteInt64LittleEndian(countsSpan[(2 * sizeof(long))..], resourceCounts.Events);
         }
 
-        var countsSpan = dataBuffer.AsSpan(v3Size);
-        BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamValues);
-        BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Assets);
-        BinaryPrimitives.WriteInt64LittleEndian(countsSpan[(2 * sizeof(long))..], resourceCounts.Events);
+        if (serializedMessageId is { } id)
+        {
+            id.TryWriteBytes(dataBuffer.AsSpan(v3Size + ResourceCountsSize));
+        }
 
-        return new DataItem(DataItemVersion.V4, dataBuffer);
+        return new DataItem(version, dataBuffer)
+        {
+            TrackingId = serializedMessageId,
+        };
     }
 
+    /// <summary>
+    /// Reads V1 through V5 writer records.
+    /// </summary>
     protected override ISerializedOmfMessage CreateSerializedOmfMessage(DataItem dataItem)
     {
         if (dataItem?.Data == null || dataItem.Data.Length < SerializedOmfMessage.MessageTypeEnumSize + SerializedOmfMessage.ValueCountSize)
@@ -91,38 +117,43 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         PartitionKey? partitionKey = null;
         var messageAction = MessageAction.Default;
         var omfVersion = OmfVersion.Omf12;
+        Guid? serializedMessageId = null;
         OmfResourceCounts resourceCounts = default;
 
         switch (dataItem.Version)
         {
+            case DataItemVersion.V5:
             case DataItemVersion.V4:
-                if (data.Length < bodyOffset + V3TrailerSize + ResourceCountsSize)
+            case DataItemVersion.V3:
+            {
+                // V3 records have no resource counts, so messages buffered before the upgrade still count toward IORate
+                // when delivered, but not toward StreamIORate, AssetIORate or EventIORate.
+                var countsLength = dataItem.Version == DataItemVersion.V3 ? 0 : ResourceCountsSize;
+                var idLength = dataItem.Version == DataItemVersion.V5 ? SerializedOmfMessage.SerializedMessageIdSize : 0;
+                if (data.Length < bodyOffset + V3TrailerSize + countsLength + idLength)
                     return new SerializedOmfMessage(messageType, Array.Empty<byte>(), messageAction);
 
-                var countsSpan = data.AsSpan(data.Length - ResourceCountsSize);
-                resourceCounts = new OmfResourceCounts(
-                    BinaryPrimitives.ReadInt64LittleEndian(countsSpan),
-                    BinaryPrimitives.ReadInt64LittleEndian(countsSpan[sizeof(long)..]),
-                    BinaryPrimitives.ReadInt64LittleEndian(countsSpan[(2 * sizeof(long))..]));
+                var v3End = data.Length - countsLength - idLength;
+                if (countsLength > 0)
+                {
+                    var countsSpan = data.AsSpan(v3End, ResourceCountsSize);
+                    resourceCounts = new OmfResourceCounts(
+                        BinaryPrimitives.ReadInt64LittleEndian(countsSpan),
+                        BinaryPrimitives.ReadInt64LittleEndian(countsSpan[sizeof(long)..]),
+                        BinaryPrimitives.ReadInt64LittleEndian(countsSpan[(2 * sizeof(long))..]));
+                }
 
-                var v3End = data.Length - ResourceCountsSize;
+                if (idLength > 0)
+                {
+                    serializedMessageId = new Guid(data.AsSpan(data.Length - idLength));
+                }
+
                 bodyLength = v3End - bodyOffset - V3TrailerSize;
                 partitionKey = data[v3End - 3] == 0 ? null : (PartitionKey)data[v3End - 3];  // 0 indicates No PartitionKey.
                 messageAction = (MessageAction)data[v3End - 2];
                 omfVersion = (OmfVersion)data[v3End - 1];
                 break;
-
-            case DataItemVersion.V3:
-                // V3 records have no resource counts, so messages buffered before the upgrade still count toward IORate
-                // when delivered, but not toward StreamIORate, AssetIORate or EventIORate.
-                if (data.Length < bodyOffset + V3TrailerSize)
-                    return new SerializedOmfMessage(messageType, Array.Empty<byte>(), messageAction);
-
-                bodyLength = data.Length - bodyOffset - V3TrailerSize;
-                partitionKey = data[^3] == 0 ? null : (PartitionKey)data[^3];  // 0 indicates No PartitionKey.
-                messageAction = (MessageAction)data[^2];
-                omfVersion = (OmfVersion)data[^1];
-                break;
+            }
 
             case DataItemVersion.V2:
                 if (data.Length < bodyOffset + 1)
@@ -143,8 +174,8 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         var messageBody = new byte[bodyLength];
         Buffer.BlockCopy(data, bodyOffset, messageBody, 0, bodyLength);
 
-        return dataItem.Version is DataItemVersion.V3 or DataItemVersion.V4
-            ? new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey) { ResourceCounts = resourceCounts }
+        return dataItem.Version is DataItemVersion.V3 or DataItemVersion.V4 or DataItemVersion.V5
+            ? new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount, omfVersion, partitionKey) { ResourceCounts = resourceCounts, SerializedMessageId = serializedMessageId }
             : new SerializedOmfMessage(messageType, messageBody, messageAction, valueCount);
     }
 }

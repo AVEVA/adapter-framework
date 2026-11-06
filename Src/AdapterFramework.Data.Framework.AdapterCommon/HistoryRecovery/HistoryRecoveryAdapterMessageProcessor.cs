@@ -18,6 +18,7 @@ using System.Threading;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.MessageProcessor;
@@ -43,21 +44,22 @@ public class HistoryRecoveryAdapterMessageProcessor : AdapterMessageProcessor
     }
 
     /// <inheritdoc/>
-    public override void WriteDynamicValue<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey = null)
+    protected override void WriteDynamicValueCore<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowIfInvalidPartitionKey(partitionKey);
 
         _eventCountUpdateAction?.Invoke(Interlocked.Increment(ref _eventsCount));
-        base.WriteDynamicValue(dataSelectionItem, instance, messageAction, partitionKey);
+        base.WriteDynamicValueCore(dataSelectionItem, instance, messageAction, partitionKey, scope);
     }
 
     /// <inheritdoc/>
-    public override void WriteDynamicValues<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null)
+    protected override void WriteDynamicValuesCore<T>(IDataSelectionConfiguration dataSelectionItem, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey,
+        ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
         ThrowIfInvalidPartitionKey(partitionKey);
 
         _eventCountUpdateAction?.Invoke(Interlocked.Add(ref _eventsCount, instances.Count));
-        base.WriteDynamicValues(dataSelectionItem, instances, messageAction, partitionKey);
+        base.WriteDynamicValuesCore(dataSelectionItem, instances, messageAction, partitionKey, scope);
     }
 }
