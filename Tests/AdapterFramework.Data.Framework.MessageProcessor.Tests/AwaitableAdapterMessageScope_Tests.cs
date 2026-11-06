@@ -60,15 +60,25 @@ public class AwaitableAdapterMessageScope_Tests
         mockScopedProcessor.Setup(processor => processor.TryCreateScope(It.IsAny<OmfAwaitableScopeOptions>(), out token)).Returns(true);
         var processor = new AdapterMessageProcessor(mockProcessor.Object, OmfVersion.Omf20);
         var dataType = new StaticDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>() };
+        var link = new Link(new DataTypeLinkNode("source", null), new DataTypeLinkNode("target", null));
         var value = new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 1 };
+        var range = new StreamingDataRange(DateTimeOffset.UtcNow.AddHours(-1), DateTimeOffset.UtcNow);
 
         Assert.True(processor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out var scope));
         scope.WriteType(dataType);
+        scope.WriteType(dataType, PartitionKey.Key4);
+        scope.WriteTypeRelationship(link, PartitionKey.Key4);
         scope.WriteDynamicValue(DataFilterTestHelper.GetSelectionItem<int>(), value);
+        scope.DeleteDynamicValuesInRange(DataFilterTestHelper.GetSelectionItem<int>(), range, PartitionKey.Key4);
 
-        mockScopedProcessor.Verify(p => p.WriteType(dataType, MessageAction.Default, state), Times.Once);
+        mockScopedProcessor.Verify(p => p.WriteType(dataType, MessageAction.Default, null, state), Times.Once);
+        mockScopedProcessor.Verify(p => p.WriteType(dataType, MessageAction.Default, PartitionKey.Key4, state), Times.Once);
+        mockScopedProcessor.Verify(p => p.WriteSchemaRelationship(link, MessageAction.Default, PartitionKey.Key4, state), Times.Once);
         mockScopedProcessor.Verify(p => p.WriteDynamicValue(It.IsAny<string>(), value, MessageAction.Default, null, state), Times.Once);
+        mockScopedProcessor.Verify(p => p.DeleteDynamicValuesInRange(It.IsAny<string>(), range, PartitionKey.Key4, state), Times.Once);
+        mockProcessor.Verify(p => p.DeleteDynamicValuesInRange(It.IsAny<string>(), It.IsAny<StreamingDataRange>(), It.IsAny<PartitionKey?>()), Times.Never);
         mockProcessor.Verify(p => p.WriteDynamicValue(It.IsAny<string>(), It.IsAny<TimeIndexedValue<int>>(), It.IsAny<MessageAction>(), It.IsAny<PartitionKey?>()), Times.Never);
+        mockProcessor.Verify(p => p.WriteType(It.IsAny<DataType>(), It.IsAny<PartitionKey>(), It.IsAny<MessageAction>()), Times.Never);
 
         scope.Seal();
         Assert.Throws<InvalidOperationException>(() => scope.WriteType(dataType));
@@ -113,6 +123,33 @@ public class AwaitableAdapterMessageScope_Tests
 
         await scope.DisposeAsync();
         await state.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a processor overriding the public <c>DeleteDynamicValuesInRange</c>, which scoped deletes bypass, can't create a scope.
+    /// </summary>
+    [Fact]
+    public void TryCreateAwaitableScope_WhenPublicRangeDeleteOverridden_ThrowsNotSupported()
+    {
+        var mockProcessor = new Mock<IMessageProcessor>();
+        var mockScopedProcessor = mockProcessor.As<IScopedMessageProcessor>();
+        var processor = new PublicDeleteOverrideProcessor(mockProcessor.Object);
+
+        var exception = Assert.Throws<NotSupportedException>(() => processor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out _));
+
+        Assert.Contains(nameof(AdapterMessageProcessor.DeleteDynamicValuesInRange), exception.Message, StringComparison.Ordinal);
+        mockScopedProcessor.Verify(p => p.TryCreateScope(It.IsAny<OmfAwaitableScopeOptions>(), out It.Ref<ScopeToken>.IsAny), Times.Never);
+    }
+
+    private sealed class PublicDeleteOverrideProcessor : AdapterMessageProcessor
+    {
+        public PublicDeleteOverrideProcessor(IMessageProcessor messageProcessor)
+            : base(messageProcessor, OmfVersion.Omf20)
+        {
+        }
+
+        public override void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+            base.DeleteDynamicValuesInRange(dataSelectionItem, range, partitionKey);
     }
 
     private sealed class PublicOverrideProcessor : AdapterMessageProcessor

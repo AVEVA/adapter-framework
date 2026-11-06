@@ -54,19 +54,39 @@ public sealed class AwaitableMessageScope : IAwaitableMessageScope
 
     /// <inheritdoc/>
     public void WriteType(DataType dataType, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteType(dataType, messageAction, _state));
+        Write(() => _processor.WriteType(dataType, messageAction, null, _state));
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteType(dataType, messageAction, partitionKey, _state));
 
     /// <inheritdoc/>
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteTypes(dataTypes, messageAction, _state));
+        Write(() => _processor.WriteTypes(dataTypes, messageAction, null, _state));
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteTypes(dataTypes, messageAction, partitionKey, _state));
 
     /// <inheritdoc/>
     public void WriteStream(DataStream dataStream, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteStream(dataStream, messageAction, _state));
+        Write(() => _processor.WriteStream(dataStream, messageAction, null, _state));
+
+    /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteStream(dataStream, messageAction, partitionKey, _state));
 
     /// <inheritdoc/>
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteStreams(dataStreams, messageAction, _state));
+        Write(() => _processor.WriteStreams(dataStreams, messageAction, null, _state));
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteStreams(dataStreams, messageAction, partitionKey, _state));
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+        Write(() => _processor.DeleteDynamicValuesInRange(id, range, partitionKey, _state));
 
     /// <inheritdoc/>
     public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction = MessageAction.Default)
@@ -116,7 +136,11 @@ public sealed class AwaitableMessageScope : IAwaitableMessageScope
 
     /// <inheritdoc/>
     public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteSchemaRelationship(link, messageAction, _state));
+        Write(() => _processor.WriteSchemaRelationship(link, messageAction, null, _state));
+
+    /// <inheritdoc/>
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteSchemaRelationship(link, messageAction, partitionKey, _state));
 
     /// <inheritdoc/>
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) =>

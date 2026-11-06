@@ -1435,6 +1435,125 @@ public class DataMessageProcessor_Tests
     }
 
     /// <summary>
+    /// Verifies through a real OMF 2.0 pipeline that keyed schema writes in a scope are admitted, serialized with their partition key,
+    /// and counted toward acceptance, alongside keyed values that depend on them.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_ScopedKeyedSchemaWrites_AreAcceptedWithPartitionKey()
+    {
+        const string endpointId = "endpoint";
+        using var coordinator = new OmfAwaitableCoordinator();
+        var schemaKeys = new System.Collections.Concurrent.ConcurrentBag<PartitionKey?>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockFailoverDataMessageProcessor.Setup(processor => processor.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(body =>
+            {
+                if (body.MessageType == MessageType.Schema)
+                {
+                    schemaKeys.Add(body.PartitionKey);
+                }
+
+                if (body is Messages.SerializedOmfMessage { SerializedMessageId: { } id })
+                {
+                    coordinator.RegisterDeliveries(id, [new OmfDeliveryTarget(endpointId, new Uri("https://example.com/omf"))]);
+                    coordinator.RecordDisposition(id, endpointId, OmfDeliveryState.Accepted, System.Net.HttpStatusCode.Accepted, null);
+                }
+            });
+        using var messageProcessor = CreateScopedProcessor(coordinator, mockFailoverDataMessageProcessor.Object);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
+        scope.WriteType(new StaticDataType { Id = "type", Properties = new Dictionary<string, PropertyDefinition>(), Relationships = [new Link(new RelationshipLinkNode("source"), new RelationshipLinkNode("target"))] }, PartitionKey.Key5);
+        scope.WriteStream(new DataStream { Id = "stream", TypeId = "type" }, PartitionKey.Key5);
+        scope.WriteSchemaRelationship(new Link(new RelationshipLinkNode("source"), new RelationshipLinkNode("target")), PartitionKey.Key5);
+        scope.WriteDynamicValue("stream", new TimeIndexedValue<int> { Timestamp = DateTime.UtcNow, Value = 1 }, partitionKey: PartitionKey.Key5);
+        scope.Seal();
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.Outcome == OmfAcceptanceOutcome.Accepted, $"{result.Outcome}: {result.Reason}");
+        Assert.NotEmpty(schemaKeys);
+        Assert.All(schemaKeys, key => Assert.Equal(PartitionKey.Key5, key));
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a scoped range delete is tracked to the endpoint's decision: the scope is accepted only when the delete body
+    /// receives 202, is rejected otherwise, and the scope never appears in the serialized delete body.
+    /// </summary>
+    /// <param name="accept">Whether the endpoint accepts the delete body.</param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DataMessageProcessor_ScopedRangeDelete_FollowsEndpointDisposition(bool accept)
+    {
+        const string endpointId = "endpoint";
+        using var coordinator = new OmfAwaitableCoordinator();
+        var deleteBodies = new System.Collections.Concurrent.ConcurrentBag<ISerializedOmfMessage>();
+        var mockFailoverDataMessageProcessor = new Mock<IFailoverDataMessageProcessor>();
+        mockFailoverDataMessageProcessor.Setup(processor => processor.ProcessOmfMessage(It.IsAny<ISerializedOmfMessage>()))
+            .Callback<ISerializedOmfMessage>(body =>
+            {
+                if (body is not Messages.SerializedOmfMessage { SerializedMessageId: { } id })
+                {
+                    return;
+                }
+
+                var isDelete = body.MessageAction == MessageAction.Delete;
+                if (isDelete)
+                {
+                    deleteBodies.Add(body);
+                }
+
+                coordinator.RegisterDeliveries(id, [new OmfDeliveryTarget(endpointId, new Uri("https://example.com/omf"))]);
+                if (accept || !isDelete)
+                {
+                    coordinator.RecordDisposition(id, endpointId, OmfDeliveryState.Accepted, System.Net.HttpStatusCode.Accepted, null);
+                }
+                else
+                {
+                    coordinator.RecordDisposition(id, endpointId, OmfDeliveryState.Rejected, System.Net.HttpStatusCode.BadRequest,
+                        new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, "400 Bad Request"));
+                }
+            });
+        using var messageProcessor = CreateScopedProcessor(coordinator, mockFailoverDataMessageProcessor.Object);
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions { FlushOnSeal = true }, out var scope));
+        scope.DeleteDynamicValuesInRange("stream", new StreamingDataRange(start, start.AddHours(1)), PartitionKey.Key5);
+        scope.WriteDynamicValue("stream", new TimeIndexedValue<int> { Timestamp = start.UtcDateTime, Value = 1 }, partitionKey: PartitionKey.Key5);
+        scope.Seal();
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(accept ? OmfAcceptanceOutcome.Accepted : OmfAcceptanceOutcome.Rejected, result.Outcome);
+        var deleteBody = Assert.Single(deleteBodies);
+        Assert.Equal(PartitionKey.Key5, deleteBody.PartitionKey);
+        Assert.DoesNotContain("scope", System.Text.Encoding.UTF8.GetString(deleteBody.MessageBody), StringComparison.OrdinalIgnoreCase);
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Verifies that a scoped range delete the instance block refuses still throws to the caller, as an unscoped delete does,
+    /// and discards the scope with <see cref="OmfReasonCode.PostRejected"/> instead of leaving the admitted delete unaccounted for.
+    /// </summary>
+    [Fact]
+    public async Task DataMessageProcessor_ScopedRangeDeleteRefused_ThrowsAndDiscardsScope()
+    {
+        using var coordinator = new OmfAwaitableCoordinator();
+        using var messageProcessor = CreateScopedProcessor(coordinator, new Mock<IFailoverDataMessageProcessor>().Object);
+        ((IDisposable)TestUtilities.GetFieldValueFromObject("_instanceGroupingBlock", messageProcessor)).Dispose();
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.True(messageProcessor.TryCreateAwaitableScope(new OmfAwaitableScopeOptions(), out var scope));
+        Assert.Throws<InvalidOperationException>(() => scope.DeleteDynamicValuesInRange("stream", new StreamingDataRange(start, start.AddHours(1))));
+
+        var result = await scope.WaitForAcceptanceAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(OmfAcceptanceOutcome.Discarded, result.Outcome);
+        Assert.Equal(OmfReasonCode.PostRejected, result.Reason.Code);
+        await scope.DisposeAsync();
+    }
+
+    /// <summary>
     /// Verifies that when one or both grouping blocks refuse a scope's seal barrier, the scope fails with
     /// <see cref="OmfReasonCode.PostRejected"/> and serialization doesn't keep a barrier count for the scope forever.
     /// </summary>

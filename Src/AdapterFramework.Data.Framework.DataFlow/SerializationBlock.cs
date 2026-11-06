@@ -235,11 +235,19 @@ public class SerializationBlock : BaseBlock<Message>
         if (bytes.Length > _maxByteCount)
         {
             _rangeDeleteTooLarge(_logger, bytes.Length, _maxByteCount, null);
+            if (message.Scope is { } discardedScope)
+            {
+                _coordinator?.RecordItemsDiscarded(discardedScope, 1, new OmfOutcomeReason(
+                    OmfReasonCode.ItemTooLarge,
+                    string.Create(CultureInfo.InvariantCulture, $"A range delete serializes to {bytes.Length} bytes, more than the maximum of {_maxByteCount}.")));
+            }
+
             return;
         }
 
         // The number of values removed is unknown; do not report the range as an inserted value.
-        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey);
+        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey,
+            membership: message.Scope is { } scope ? new Dictionary<ScopeToken, int> { [scope] = 1 } : null);
     }
 
     private void ProcessInstance(InstanceMessage message)

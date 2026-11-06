@@ -128,6 +128,8 @@ var result = await scope.WaitForAcceptanceAsync();
 ## Rules and behavior
 
 - **Supported configurations:** Scopes require OMF 2.0. `TryCreateAwaitableScope` throws `NotSupportedException` for OMF 1.2, for a processor chain that doesn't support scopes, or when hot failover is configured.
+- **Partition keys:** Keyed schema writes (types, streams, and schema relationships) and keyed dynamic values are tracked like unkeyed writes.
+- **Range deletes:** A scoped range delete counts as one item and follows its body's endpoint decision. `Accepted` means the endpoint returned `202 Accepted` for the delete, not that deletion has finished, so it isn't a safe signal to write replacement values unless the destination processes requests in order. Retries and failover can still replay a delete after later writes. A delete that fails validation throws without being counted; one that the pipeline refuses throws and discards the scope with `PostRejected`.
 - **Active-scope limit:** `TryCreateAwaitableScope` returns `false` when the limit is reached. A scope uses a slot until you dispose it, even after its outcome is final. Use `await using`.
 - **Waiting never cancels delivery:** A timeout, a cancelled token, or disposal ends only the wait. Data continues to its endpoints.
 - **Waits can be repeated:** `TimedOut` isn't final. Call `WaitForAcceptanceAsync` again.

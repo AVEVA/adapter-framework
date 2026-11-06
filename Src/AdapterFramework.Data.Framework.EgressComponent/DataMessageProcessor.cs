@@ -210,83 +210,63 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     }
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null);
+    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction, ScopeToken scope)
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction) => WriteType(dataType, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        ThrowIfSchemaPartitionKeysUnsupported(partitionKey);
 
-        Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataType>(1, [dataType], messageAction), CountTypeItems([dataType]), scope);
+        PostSchema(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey), CountTypeItems([dataType]), scope);
     }
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
-        ThrowIfSchemaPartitionKeysUnsupported();
-
-        _schemaGroupingBlock.Post(new OmfMessage<DataType>(1, [dataType], messageAction, partitionKey));
-    }
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null);
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope)
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
+        ThrowIfSchemaPartitionKeysUnsupported(partitionKey);
 
-        Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction), CountTypeItems(dataTypes), scope);
+        PostSchema(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey), CountTypeItems(dataTypes), scope);
     }
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
-        ThrowIfSchemaPartitionKeysUnsupported();
-
-        _schemaGroupingBlock.Post(new OmfMessage<DataType>(dataTypes.Length, dataTypes, messageAction, partitionKey));
-    }
+    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null);
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction) => WriteStream(dataStream, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction, ScopeToken scope)
+    public void WriteStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
+        ThrowIfSchemaPartitionKeysUnsupported(partitionKey);
 
-        Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataStream>(1, [dataStream], messageAction), 1, scope);
+        PostSchema(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey), 1, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
-        ThrowIfSchemaPartitionKeysUnsupported();
-
-        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(1, [dataStream], messageAction, partitionKey));
-    }
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null);
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope)
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
+        ThrowIfSchemaPartitionKeysUnsupported(partitionKey);
 
-        Post(_typesStreamsGroupingBlock, _schemaGroupingBlock, new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction), dataStreams.Length, scope);
-    }
-
-    /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
-        ThrowIfSchemaPartitionKeysUnsupported();
-
-        _schemaGroupingBlock.Post(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey));
+        PostSchema(new OmfMessage<DataStream>(dataStreams.Length, dataStreams, messageAction, partitionKey), dataStreams.Length, scope);
     }
 
     /// <inheritdoc/>
@@ -302,7 +282,11 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     }
 
     /// <inheritdoc/>
-    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+        DeleteDynamicValuesInRange(id, range, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey, ScopeToken scope)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_omfVersion != OmfVersion.Omf20)
@@ -321,7 +305,23 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
             throw new ArgumentException("The range delete exceeds the maximum message size and cannot be split.", nameof(id));
         }
 
-        _instanceGroupingBlock.PostOrThrow(message);
+        if (scope is null)
+        {
+            _instanceGroupingBlock.PostOrThrow(message);
+            return;
+        }
+
+        message.Scope = scope;
+        _coordinator?.RecordAdmitted(scope, 1);
+        try
+        {
+            _instanceGroupingBlock.PostOrThrow(message);
+        }
+        catch (InvalidOperationException)
+        {
+            _coordinator?.RecordItemsDiscarded(scope, 1, new OmfOutcomeReason(OmfReasonCode.PostRejected, "The instance grouping block refused the range delete."));
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -436,20 +436,20 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
         Post(null, _instanceGroupingBlock, eventMessage, 1 + (relationships?.Count ?? 0), scope);
     }
 
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null);
-
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction, ScopeToken scope)
-    {
-        Post(null, _schemaGroupingBlock, new RelationshipMessage(link, messageAction), 1, scope);
-    }
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null, null);
 
     /// <inheritdoc/>
     public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
-        ThrowIfSchemaPartitionKeysUnsupported();
+        WriteSchemaRelationship(link, messageAction, partitionKey, null);
+    }
 
-        _schemaGroupingBlock.Post(new RelationshipMessage(link, messageAction, partitionKey));
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+    {
+        ThrowIfSchemaPartitionKeysUnsupported(partitionKey);
+
+        Post(null, _schemaGroupingBlock, new RelationshipMessage(link, messageAction, partitionKey), 1, scope);
     }
 
     public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteInstanceRelationship(link, messageAction, null);
@@ -569,13 +569,18 @@ public class DataMessageProcessor : IMessageProcessor, IScopedMessageProcessor, 
     /// Rejects keyed schema writes unless the configured protocol is explicitly OMF 2.0.
     /// A schema grouping block also exists for other versions, so its presence is not a capability check.
     /// </summary>
-    private void ThrowIfSchemaPartitionKeysUnsupported()
+    /// <param name="partitionKey">The schema partition key, or null for an unkeyed write, which is always allowed.</param>
+    private void ThrowIfSchemaPartitionKeysUnsupported(PartitionKey? partitionKey)
     {
-        if (_omfVersion != OmfVersion.Omf20)
+        if (partitionKey.HasValue && _omfVersion != OmfVersion.Omf20)
         {
             throw new NotSupportedException("Schema partition keys are only supported in OMF 2.0.");
         }
     }
+
+    // Keyed schema only exists in OMF 2.0, so it never goes to the OMF 1.2 block.
+    private void PostSchema<T>(OmfMessage<T> message, int itemCount, ScopeToken scope) =>
+        Post(message.PartitionKey is null ? _typesStreamsGroupingBlock : null, _schemaGroupingBlock, message, itemCount, scope);
 
     // Kept in this type so CA2213 can see each field being disposed.
     private void Safely(Action dispose)

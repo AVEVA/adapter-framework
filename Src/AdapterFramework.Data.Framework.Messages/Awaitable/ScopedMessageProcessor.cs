@@ -50,17 +50,56 @@ public static class ScopedMessageProcessor
         public bool TryCreateScope(OmfAwaitableScopeOptions options, out ScopeToken scope) =>
             throw new NotSupportedException($"The message processor '{_processor.GetType().Name}' doesn't support awaitable scopes.");
 
-        public void WriteType(DataType dataType, MessageAction messageAction, ScopeToken scope) =>
-            _processor.WriteType(dataType, messageAction);
+        public void WriteType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        {
+            if (partitionKey is { } key)
+            {
+                _processor.WriteType(dataType, key, messageAction);
+            }
+            else
+            {
+                _processor.WriteType(dataType, messageAction);
+            }
+        }
 
-        public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope) =>
-            _processor.WriteTypes(dataTypes, messageAction);
+        public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        {
+            if (partitionKey is { } key)
+            {
+                _processor.WriteTypes(dataTypes, key, messageAction);
+            }
+            else
+            {
+                _processor.WriteTypes(dataTypes, messageAction);
+            }
+        }
 
-        public void WriteStream(DataStream dataStream, MessageAction messageAction, ScopeToken scope) =>
-            _processor.WriteStream(dataStream, messageAction);
+        public void WriteStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        {
+            if (partitionKey is { } key)
+            {
+                _processor.WriteStream(dataStream, key, messageAction);
+            }
+            else
+            {
+                _processor.WriteStream(dataStream, messageAction);
+            }
+        }
 
-        public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope) =>
-            _processor.WriteStreams(dataStreams, messageAction);
+        public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        {
+            if (partitionKey is { } key)
+            {
+                _processor.WriteStreams(dataStreams, key, messageAction);
+            }
+            else
+            {
+                _processor.WriteStreams(dataStreams, messageAction);
+            }
+        }
+
+        public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey, ScopeToken scope) =>
+            _processor.DeleteDynamicValuesInRange(id, range, partitionKey);
 
         public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction, ScopeToken scope)
             where T : class =>
@@ -100,8 +139,17 @@ public static class ScopedMessageProcessor
             where T : class =>
             _processor.WriteEvent(id, typeId, name, description, dataSource, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
 
-        public void WriteSchemaRelationship(Link link, MessageAction messageAction, ScopeToken scope) =>
-            _processor.WriteSchemaRelationship(link, messageAction);
+        public void WriteSchemaRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
+        {
+            if (partitionKey is { } key)
+            {
+                _processor.WriteSchemaRelationship(link, key, messageAction);
+            }
+            else
+            {
+                _processor.WriteSchemaRelationship(link, messageAction);
+            }
+        }
 
         public void WriteInstanceRelationship(Link link, MessageAction messageAction, ScopeToken scope) =>
             _processor.WriteInstanceRelationship(link, messageAction);

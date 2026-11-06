@@ -48,16 +48,31 @@ internal sealed class AwaitableAdapterMessageScope : IAwaitableAdapterMessageSco
     public ValueTask DisposeAsync() => _state.DisposeAsync();
 
     public void WriteType(DataType dataType, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteTypeCore(dataType, messageAction, _state));
+        Write(() => _processor.WriteTypeCore(dataType, messageAction, null, _state));
+
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteTypeCore(dataType, messageAction, partitionKey, _state));
 
     public void WriteTypes(DataType[] dataTypes, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteTypesCore(dataTypes, messageAction, _state));
+        Write(() => _processor.WriteTypesCore(dataTypes, messageAction, null, _state));
+
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteTypesCore(dataTypes, messageAction, partitionKey, _state));
 
     public void WriteStream(DataStream dataStream, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteStreamCore(dataStream, messageAction, _state));
+        Write(() => _processor.WriteStreamCore(dataStream, messageAction, null, _state));
+
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteStreamCore(dataStream, messageAction, partitionKey, _state));
 
     public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteStreamsCore(dataStreams, messageAction, _state));
+        Write(() => _processor.WriteStreamsCore(dataStreams, messageAction, null, _state));
+
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteStreamsCore(dataStreams, messageAction, partitionKey, _state));
+
+    public void DeleteDynamicValuesInRange(IDataSelectionConfiguration dataSelectionItem, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+        Write(() => _processor.DeleteDynamicValuesInRangeCore(dataSelectionItem, range, partitionKey, _state));
 
     public void WriteDynamicValue<T>(IDataSelectionConfiguration dataSelectionItem, T instance, MessageAction messageAction = MessageAction.Default, PartitionKey? partitionKey = null)
         where T : class =>
@@ -82,7 +97,10 @@ internal sealed class AwaitableAdapterMessageScope : IAwaitableAdapterMessageSco
         Write(() => _processor.WriteInstanceRelationshipCore(link, messageAction, _state));
 
     public void WriteTypeRelationship(Link link, MessageAction messageAction = MessageAction.Default) =>
-        Write(() => _processor.WriteTypeRelationshipCore(link, messageAction, _state));
+        Write(() => _processor.WriteTypeRelationshipCore(link, messageAction, null, _state));
+
+    public void WriteTypeRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        Write(() => _processor.WriteTypeRelationshipCore(link, messageAction, partitionKey, _state));
 
     public void WriteEvent<T>(string typeId, string id, string name, string description, DateTime startTime, DateTime? endTime, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
         IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null,

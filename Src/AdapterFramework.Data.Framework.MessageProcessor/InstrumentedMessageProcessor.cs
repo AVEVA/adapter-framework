@@ -37,9 +37,6 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     #region Private Fields
 
     private readonly IScopedMessageProcessor _messageProcessor;
-
-    // Keyed schema writes and range deletes have no scoped overloads, so they go to the processor unwrapped.
-    private readonly IMessageProcessor _unscopedMessageProcessor;
     private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
@@ -68,7 +65,6 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     public InstrumentedMessageProcessor(IMessageProcessor messageProcessor, ILogger logger, string componentId, string componentType)
     {
         _messageProcessor = messageProcessor?.AsScoped();
-        _unscopedMessageProcessor = messageProcessor;
         _logger = logger;
         _componentId = componentId;
 
@@ -118,56 +114,32 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     public bool TryCreateScope(OmfAwaitableScopeOptions options, out ScopeToken scope) => _messageProcessor.TryCreateScope(options, out scope);
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null);
+    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction, ScopeToken scope)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
-
-        PrepareDataType(dataType);
-
-        _messageProcessor.WriteType(dataType, messageAction, scope);
-
-        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
-    }
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction) => WriteType(dataType, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         PrepareDataType(dataType);
 
-        _unscopedMessageProcessor.WriteType(dataType, partitionKey, messageAction);
+        _messageProcessor.WriteType(dataType, messageAction, partitionKey, scope);
 
         CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null);
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
-
-        foreach (var dataType in dataTypes)
-        {
-            PrepareDataType(dataType);
-        }
-
-        _messageProcessor.WriteTypes(dataTypes, messageAction, scope);
-
-        foreach (var dataType in dataTypes)
-        {
-            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
-        }
-    }
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
@@ -177,7 +149,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
             PrepareDataType(dataType);
         }
 
-        _unscopedMessageProcessor.WriteTypes(dataTypes, partitionKey, messageAction);
+        _messageProcessor.WriteTypes(dataTypes, messageAction, partitionKey, scope);
 
         foreach (var dataType in dataTypes)
         {
@@ -186,58 +158,32 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     }
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null);
+    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction, ScopeToken scope)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
-
-        PrepareDataStream(dataStream);
-
-        _messageProcessor.WriteStream(dataStream, messageAction, scope);
-
-        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
-    }
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction) => WriteStream(dataStream, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         PrepareDataStream(dataStream);
 
-        _unscopedMessageProcessor.WriteStream(dataStream, partitionKey, messageAction);
+        _messageProcessor.WriteStream(dataStream, messageAction, partitionKey, scope);
 
         CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null);
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
-
-        foreach (var dataStream in dataStreams)
-        {
-            ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
-
-            PrepareDataStream(dataStream);
-        }
-
-        _messageProcessor.WriteStreams(dataStreams, messageAction, scope);
-
-        foreach (var dataStream in dataStreams)
-        {
-            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
-        }
-    }
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, partitionKey, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
@@ -249,7 +195,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
             PrepareDataStream(dataStream);
         }
 
-        _unscopedMessageProcessor.WriteStreams(dataStreams, partitionKey, messageAction);
+        _messageProcessor.WriteStreams(dataStreams, messageAction, partitionKey, scope);
 
         foreach (var dataStream in dataStreams)
         {
@@ -271,9 +217,13 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
 
     /// <inheritdoc/>
     /// <inheritdoc/>
-    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+        DeleteDynamicValuesInRange(id, range, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey, ScopeToken scope)
     {
-        _unscopedMessageProcessor.DeleteDynamicValuesInRange(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), range, partitionKey);
+        _messageProcessor.DeleteDynamicValuesInRange(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), range, partitionKey, scope);
     }
 
     /// <inheritdoc/>
@@ -383,24 +333,18 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         IncrementIoEventsCount();
     }
 
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null);
-
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction, ScopeToken scope)
-    {
-        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
-
-        _messageProcessor.WriteSchemaRelationship(link, messageAction, scope);
-
-        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(null));
-    }
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        WriteSchemaRelationship(link, messageAction, partitionKey, null);
+
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
-        _unscopedMessageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
+        _messageProcessor.WriteSchemaRelationship(link, messageAction, partitionKey, scope);
 
         CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(partitionKey));
     }
@@ -470,9 +414,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     /// <inheritdoc/>
     public void ResendTypesAndStreams()
     {
-        Resend(_dataTypes.Values, (dataType, messageAction) => _messageProcessor.WriteType(dataType, messageAction, null), _unscopedMessageProcessor.WriteType);
-        Resend(_dataStreams.Values, (dataStream, messageAction) => _messageProcessor.WriteStream(dataStream, messageAction, null), _unscopedMessageProcessor.WriteStream);
-        Resend(_relationships.Values, (link, messageAction) => _messageProcessor.WriteSchemaRelationship(link, messageAction, null), _unscopedMessageProcessor.WriteSchemaRelationship);
+        Resend(_dataTypes.Values, (dataType, messageAction) => _messageProcessor.WriteType(dataType, messageAction, null, null),
+            (dataType, partitionKey, messageAction) => _messageProcessor.WriteType(dataType, messageAction, partitionKey, null));
+        Resend(_dataStreams.Values, (dataStream, messageAction) => _messageProcessor.WriteStream(dataStream, messageAction, null, null),
+            (dataStream, partitionKey, messageAction) => _messageProcessor.WriteStream(dataStream, messageAction, partitionKey, null));
+        Resend(_relationships.Values, (link, messageAction) => _messageProcessor.WriteSchemaRelationship(link, messageAction, null, null),
+            (link, partitionKey, messageAction) => _messageProcessor.WriteSchemaRelationship(link, messageAction, partitionKey, null));
     }
 
     /// <inheritdoc/>

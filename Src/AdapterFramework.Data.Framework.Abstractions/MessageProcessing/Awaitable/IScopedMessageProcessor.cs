@@ -37,13 +37,15 @@ public interface IScopedMessageProcessor
     /// <exception cref="NotSupportedException">The configuration or a layer of the processor chain doesn't support scopes.</exception>
     bool TryCreateScope(OmfAwaitableScopeOptions options, out ScopeToken scope);
 
-    void WriteType(DataType dataType, MessageAction messageAction, ScopeToken scope);
+    void WriteType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope);
 
-    void WriteTypes(DataType[] dataTypes, MessageAction messageAction, ScopeToken scope);
+    void WriteTypes(DataType[] dataTypes, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope);
 
-    void WriteStream(DataStream dataStream, MessageAction messageAction, ScopeToken scope);
+    void WriteStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope);
 
-    void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, ScopeToken scope);
+    void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope);
+
+    void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey, ScopeToken scope);
 
     void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction, ScopeToken scope)
         where T : class;
@@ -75,7 +77,7 @@ public interface IScopedMessageProcessor
         IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction, ScopeToken scope)
         where T : class;
 
-    void WriteSchemaRelationship(Link link, MessageAction messageAction, ScopeToken scope);
+    void WriteSchemaRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope);
 
     void WriteInstanceRelationship(Link link, MessageAction messageAction, ScopeToken scope);
 }
