@@ -64,6 +64,10 @@ For example, if a single component writes 500 stream values/s to one endpoint th
 
 The PR also considered counting component rates at delivery time. That approach would require carrying the component ID through serialization, the buffer, and the egress writer. The endpoint rates already show delivered totals, so the extra work was not justified.
 
+### Consumers
+
+The adapter publishes rates only per component and per endpoint. It does not roll them up. A consumer that needs a total for a group of components, such as all components that send data for the same destination or all servers on a site, sums the component rates for the same resource kind and time window. A consumer that needs one server's rate reads that component's streams directly.
+
 ## Summary
 
 The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible.
@@ -84,6 +88,7 @@ The following shows where the new streams appear in the existing health hierarch
     - **{host}.{service name}.{egress instance id}** (static EgressHealth)
       - **DeviceStatus** (dynamic DeviceStatus)
       - **NextHealthMessageExpected** (dynamic NextHealthMessageExpected)
+      - **{endpoint id}.IORate** (dynamic Diagnostics.IORate)
       - **{endpoint id}.StreamIORate**, **.EntityIORate**, **.EventIORate** (dynamic Diagnostics.IORate), OMF 2.0
 
 ## Constraints
