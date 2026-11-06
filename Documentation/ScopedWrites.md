@@ -1,6 +1,8 @@
 # Scoped Writes (Awaitable Scopes)
 
-A scoped write groups a set of OMF 2.0 writes into one unit of work and lets you wait until every required endpoint has accepted it with `202 Accepted`.
+A scoped write groups a set of OMF 2.0 writes into one unit of work and lets you wait for their acceptance outcome at the required endpoints.
+
+> **`AcceptedWithDrops` can mean that no data was sent.** If every admitted item is too large, the scope completes as `AcceptedWithDrops` with an empty `Deliveries` collection and no HTTP call for the scope. Treating this outcome as success is an application policy that tolerates loss of some or all admitted items, not a guarantee of endpoint acceptance.
 
 All types are in the `AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable` namespace.
 
@@ -16,7 +18,19 @@ All types are in the `AdapterFramework.Data.Framework.Abstractions.MessageProces
 | `OmfDeliveryResult` | The state of one body sent to one endpoint, including `EndpointId`, `State`, `LastStatusCode`, `Reason`, and `Receipt`. |
 | `OmfOutcomeReason` | Contains a machine-readable `Code` (`OmfReasonCode`) and a `Message`. |
 
-## Basic example
+## Choosing a success policy
+
+- **`Accepted`:** No admitted items were dropped, and every required delivery received exact `202 Accepted`. Values removed by filters were never admitted; this does not guarantee that every value originally written was sent, or that destination processing has finished.
+- **`AcceptedWithDrops`:** One or more admitted items were dropped with `ItemTooLarge`, and every remaining required delivery received exact `202 Accepted`. There may be no remaining deliveries. `Reason` contains the first oversized-drop reason.
+- **`Filtered`:** Nothing was admitted because filters removed every value or the scope had no writes. No endpoint acceptance is implied.
+
+If your application requires acceptance without drops of admitted items, check `result.Outcome == OmfAcceptanceOutcome.Accepted`. Do not group `AcceptedWithDrops` with `Accepted` unless your application explicitly tolerates oversized-item loss. An empty `Deliveries` collection is not evidence that any endpoint accepted data.
+
+The all-oversized case differs from `Discarded` with `NoEndpoints`: oversized items are dropped before a body is dispatched, whereas `NoEndpoints` means a serialized body had no endpoint writers available at dispatch. Other item drops, body drops, and delivery failures are not tolerated by `AcceptedWithDrops`.
+
+## Basic example: loss-tolerant policy
+
+This example deliberately returns `true` for `AcceptedWithDrops` and `Filtered`, including when nothing was sent. Its return value means completion is acceptable to this application, not that any data reached an endpoint. Use the result-handling example below to surface oversized drops.
 
 ```csharp
 using System;
@@ -53,7 +67,7 @@ public async Task<bool> WriteBatchAsync(
 		return result.Outcome switch
 		{
 			OmfAcceptanceOutcome.Accepted => true,
-			OmfAcceptanceOutcome.AcceptedWithDrops => true, // oversized items were dropped; remaining deliveries were accepted
+			OmfAcceptanceOutcome.AcceptedWithDrops => true, // this application tolerates oversized drops, even if nothing was sent
 			OmfAcceptanceOutcome.Filtered => true, // filters removed every value, or nothing was written
 			_ => false,
 		};
@@ -72,7 +86,7 @@ switch (result.Outcome)
 		break;
 
 	case OmfAcceptanceOutcome.AcceptedWithDrops:
-		// The scope succeeded, but oversized items were not delivered. Do not retry the entire batch.
+		// Some or all admitted items were dropped; there may have been no HTTP call.
 		logger.LogWarning("Scope accepted with oversized drops: {Code} {Message}", result.Reason.Code, result.Reason.Message);
 		break;
 
@@ -101,6 +115,8 @@ switch (result.Outcome)
 ```
 
 > Later releases may add `OmfReasonCode` values. Always handle unknown codes.
+
+For `AcceptedWithDrops`, surface the loss and apply your application's success policy. Retrying unchanged oversized items will not make them fit, and retrying the entire batch can replay deliveries that were already accepted. Address the oversized items rather than blindly retrying the whole scope.
 
 ## Seal explicitly and wait later
 
