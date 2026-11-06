@@ -1,0 +1,110 @@
+# OMF 2.0 Entity and Event Count Diagnostics
+
+## Background
+
+Adapter components already publish diagnostics streams next to their OMF health data. These include `StreamCount`, `ErrorRate`, and `IORate`, linked to the component's **DataCollectorHealth** asset. `StreamCount` reports how many streams and types the component has written. Nothing reports the OMF 2.0 entities and events that the component has written.
+
+The implementation defines streams and health links in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs), samples and publishes values in [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs), and defines stream names and type IDs in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs). The counts come from [InstrumentedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/InstrumentedMessageProcessor.cs).
+
+This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology and the `EntityIORate` stream in [PR #21](https://github.com/AVEVA/adapter-framework/pull/21).
+
+## Design
+
+Each adapter component publishes two more diagnostics streams next to its existing `StreamCount`. They follow the same conventions as the other component diagnostics:
+
+| Aspect | Existing `StreamCount` | New `EntityCount` and `EventCount` |
+| --- | --- | --- |
+| Scope | Per adapter component | Per adapter component |
+| Stream ID | `{prefix}{componentId}.StreamCount` | `{prefix}{componentId}.EntityCount`, `.EventCount` |
+| OMF type | `Diagnostics.StreamCount` | `Diagnostics.EntityCount`, `Diagnostics.EventCount` |
+| Linked to | Component health asset | Component health asset |
+| Sampling | Every 1 second, checked every 60 seconds | Every 1 second, checked every 60 seconds |
+| Value | Current stream and type counts | `EntityCount`: current gauge. `EventCount`: cumulative total |
+| Publish cadence | Every 60 seconds, only when the value changed | Every 60 seconds, only when the value changed |
+| Failure handling | A write failure stops `IORate` and `StreamCount` publishing | A write failure stops only the failing count stream |
+| OMF version | All | OMF 2.0 only |
+
+`{prefix}` is the diagnostics stream ID prefix: `{health prefix}{host}.{service name}.`.
+
+### What each stream measures
+
+The **Diagnostics.EntityCount** type has these properties:
+
+- **Timestamp**: string, date-time, marked as `isindex`.
+- **EntityCount**: integer (int32). The number of unique entities currently tracked.
+
+The **Diagnostics.EventCount** type has these properties:
+
+- **Timestamp**: string, date-time, marked as `isindex`.
+- **EventCount**: integer (int64). The cumulative number of events written.
+
+The type and stream both carry a description saying that `EventCount` is cumulative and excludes deletes.
+
+Each stream counts one kind of OMF 2.0 resource that the component writes through `InstrumentedMessageProcessor`:
+
+| Stream | Counts | Message processor calls | Read through |
+| --- | --- | --- | --- |
+| `EntityCount` | Unique entity IDs currently tracked | OMF 2.0 `WriteStaticValue` overloads (`typeId`, `id`, `name`, ...) | `GetEntityCount()` |
+| `EventCount` | Events written since start or the last stop | `WriteEvent` | `GetEventCount()` |
+
+The counting rules are:
+
+- Counts change only after the underlying message processor write returns successfully. This does not confirm delivery to an endpoint.
+- `EntityCount` is a gauge. Writing the same entity again does not add to it. IDs are normalized with `ToOmfIdentifier()` and compared case-insensitively.
+- A `MessageAction.Delete` for a tracked entity removes it from `EntityCount`. A delete for an unknown entity has no effect.
+- `EventCount` is a running total, not a count of distinct events. Repeated writes to the same event count again. Deletes are not counted.
+- The legacy `WriteStaticValue(id, extendedPropertyDefinitions, ...)` overload, type writes, stream writes, and relationship writes do not change either count.
+- `AdapterDiagnosticsService` reads both counts every 60 ticks of its 1-second timer, on the same timer as `IORate` and `StreamCount`. It publishes a value only when it differs from the last value sent. The first tick after start publishes immediately.
+
+### Stop, start, and resend
+
+`AdapterDiagnosticsService.StopAsync()` calls `IInstrumentedMessageProcessor.ClearCounters()`. The two counts behave differently:
+
+- **EventCount** resets to 0, like `StreamCount` and the `IORate` counter.
+- **EntityCount** keeps its tracked identities. Entities still exist downstream after a stop, so the count does not fall to 0 when an adapter does not re-send its static values on start. An adapter that re-sends them on start does not double count them.
+
+Data selection changes do not affect `EntityCount`. Selection is keyed by stream ID, and entities are removed only by an explicit delete.
+
+`ResendTypesAndStreams()` re-creates the diagnostics types and streams, then re-sends the last published `EntityCount` and `EventCount`. If nothing has been published yet, it sends the live count and records it as sent, so the next timer tick does not publish the same value again. It skips a count whose stream has already failed, and skips both counts if creating the diagnostics types failed.
+
+### Alternatives considered
+
+- **Locks around the inner write.** An early version held striped locks while calling the wrapped message processor, so tracking stayed exact at the reset boundary. A slow downstream write could then block `StopAsync()`. The final design writes first and then updates tracking without a lock.
+- **A separate entity counter.** Keeping a counter next to the identity set lets the two drift permanently when a create and a delete of the same ID race. `GetEntityCount()` returns the size of the identity set instead.
+- **Clearing entities on stop.** This would make `EntityCount` depend on every adapter re-sending its entities on start. Retaining identities avoids that, at the cost described in [Constraints](#constraints).
+- **Reporting events as a rate.** `IORate` already includes event writes as a rate. A running total lets a consumer derive a rate over any window, while a smoothed rate cannot be turned back into a total.
+
+## Summary
+
+The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible.
+
+- **Adapters** (static DataCollectors)
+  - **{host}.{service name}** (static DataCollectorService) *
+    - **{host}.{service name}.{adapter instance id}** (static DataCollectorHealth) *
+      - **DeviceStatus** (dynamic DeviceStatus)
+      - **NextHealthMessageExpected** (dynamic NextHealthMessageExpected)
+      - **ErrorRate** (dynamic Diagnostics.Adapter.ErrorRate)
+      - **StreamCount** (dynamic Diagnostics.StreamCount)
+      - **IORate** (dynamic Diagnostics.IORate)
+      - **EntityCount** (dynamic Diagnostics.EntityCount), OMF 2.0, **New**
+      - **EventCount** (dynamic Diagnostics.EventCount), OMF 2.0, **New**
+
+## Constraints
+
+- Diagnostics follow the existing `EnableDiagnostics` general setting. If diagnostics are disabled, these streams are not published.
+- The streams are published only when the adapter uses OMF 2.0 or later. OMF 1.x adapters see no change in types, streams, or links.
+- `IInstrumentedMessageProcessor.GetEntityCount()` and `GetEventCount()` are default interface members that return 0. Other implementations still compile and report `0`.
+- A failure writing one count stream stops only that stream. The other diagnostics streams keep publishing.
+- An adapter that drops entities across a stop and start without sending deletes keeps them in `EntityCount` until the process restarts.
+- The type IDs and stream names were renamed from `AssetCount` to `EntityCount` with no compatibility alias. Consumers of an earlier `AssetCount` stream must switch to `EntityCount`.
+
+## Example - Adapter Component
+
+For component `Source1` on host `MachineNameX` in service `Adapter`, with no health prefix, the new streams are:
+
+| Stream ID | Example value | Meaning |
+| --- | --- | --- |
+| `MachineNameX.Adapter.Source1.EntityCount` | `EntityCount`: 42 | 42 unique entities are currently tracked |
+| `MachineNameX.Adapter.Source1.EventCount` | `EventCount`: 1250 | 1250 events written since the component last started |
+
+Both link to the component's health asset, alongside `MachineNameX.Adapter.Source1.StreamCount`. Each published sample contains a UTC `Timestamp` and the count at the time it was read. A new sample appears only when the count has changed since the last one.

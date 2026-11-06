@@ -24,11 +24,11 @@ namespace AdapterFramework.Data.Framework.Abstractions.Tests.MessageProcessing;
 public class IInstrumentedMessageProcessor_Tests
 {
     [Fact]
-    public void DefaultAssetAndEventCountMembers_PreserveLegacyImplementations_Test()
+    public void DefaultEntityAndEventCountMembers_PreserveLegacyImplementations_Test()
     {
         IInstrumentedMessageProcessor messageProcessor = new LegacyInstrumentedMessageProcessor();
 
-        Assert.Equal(0, messageProcessor.GetAssetCount());
+        Assert.Equal(0, messageProcessor.GetEntityCount());
         Assert.Equal(0, messageProcessor.GetEventCount());
     }
 
