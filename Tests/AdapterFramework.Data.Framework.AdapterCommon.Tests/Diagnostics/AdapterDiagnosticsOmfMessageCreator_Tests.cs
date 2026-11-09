@@ -121,4 +121,20 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EntityCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventCountStreamName}", StringComparison.Ordinal)));
     }
+
+    // Literals intentionally pin the OMF wire contract so a constant rename fails here.
+    [Theory]
+    [InlineData("Diagnostics.EntityCount", "EntityCount")]
+    [InlineData("Diagnostics.EventCount", "EventCount")]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_CountWireContract_Test(string expectedTypeId, string expectedName)
+    {
+        _messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
+
+        var dataType = Assert.Single(_dataTypes, x => x.Id == expectedTypeId);
+        Assert.Contains(expectedName, dataType.Properties.Keys);
+
+        var dataStream = Assert.Single(_dataStreams, x => x.TypeId == expectedTypeId);
+        Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{expectedName}", dataStream.Id);
+        Assert.Equal(expectedName, dataStream.Name);
+    }
 }

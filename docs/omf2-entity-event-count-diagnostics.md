@@ -6,7 +6,7 @@ Adapter components already publish diagnostics streams next to their OMF health 
 
 The implementation defines streams and health links in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs), samples and publishes values in [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs), and defines stream names and type IDs in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs). The counts come from [InstrumentedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/InstrumentedMessageProcessor.cs).
 
-This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology and the `EntityIORate` stream in [PR #21](https://github.com/AVEVA/adapter-framework/pull/21).
+This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology. [PR #21](https://github.com/AVEVA/adapter-framework/pull/21) uses the same term for its proposed `EntityIORate` stream.
 
 ## Design
 
@@ -18,7 +18,7 @@ Each adapter component publishes two more diagnostics streams next to its existi
 | Stream ID | `{prefix}{componentId}.StreamCount` | `{prefix}{componentId}.EntityCount`, `.EventCount` |
 | OMF type | `Diagnostics.StreamCount` | `Diagnostics.EntityCount`, `Diagnostics.EventCount` |
 | Linked to | Component health asset | Component health asset |
-| Sampling | Every 1 second, checked every 60 seconds | Every 1 second, checked every 60 seconds |
+| Sampling | Read every 60th tick of the 1-second timer | Read every 60th tick of the 1-second timer |
 | Value | Current stream and type counts | `EntityCount`: current gauge. `EventCount`: cumulative total |
 | Publish cadence | Every 60 seconds, only when the value changed | Every 60 seconds, only when the value changed |
 | Failure handling | A write failure stops `IORate` and `StreamCount` publishing | A write failure stops only the failing count stream |
