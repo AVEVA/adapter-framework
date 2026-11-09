@@ -36,6 +36,9 @@ namespace AdapterFramework.Data.Framework.DataFlow;
 public class SerializationBlock : BaseBlock<Message>
 {
     private const int EmptyMessageLength = 2;
+
+    // Fraction of the maximum message size aimed at when packing chunks; the margin absorbs size variation between items.
+    private const double ChunkFillFactor = 0.90;
     private static readonly Action<ILogger, int, int, Exception> _rangeDeleteTooLarge = LoggerMessage.Define<int, int>(
         LogLevel.Error, new EventId(DataflowEventIds.RangeDeleteTooLarge, nameof(DataflowEventIds.RangeDeleteTooLarge)),
         "A range delete cannot be split. Final byte size {ByteCount}, max {MaxByteCount}.");
@@ -296,85 +299,19 @@ public class SerializationBlock : BaseBlock<Message>
 
             if (message.EventsCount > 0 || message.EntitiesCount > 0 || message.RelationshipCount > 0)
             {
-                var bytesWithoutStreamingData = SerializeWithWrapper(new InstanceMessageWrapper
-                {
-                    Events = eventsSegment,
-                    Entities = entitiesSegment,
-                    Relationships = relationshipsSegment,                    
-                });
+                // Without streaming data the full payload is exactly the payload without streaming data.
+                var bytesWithoutStreamingData = message.StreamingDataObjectCount > 0
+                    ? SerializeWithWrapper(new InstanceMessageWrapper
+                    {
+                        Events = eventsSegment,
+                        Entities = entitiesSegment,
+                        Relationships = relationshipsSegment,
+                    })
+                    : bytes;
 
                 if (bytesWithoutStreamingData.Length > _maxByteCount)
                 {
-                    if (message.EventsCount > 0)
-                    {
-                        var eventsBytes = SerializeWithWrapper(new InstanceMessageWrapper
-                        {
-                            Events = eventsSegment,
-                        });
-
-                        if (eventsBytes.Length > _maxByteCount)
-                        {
-                            FlushInChunksInstance(eventsSegment.ToArray(), eventsBytes.Length, message.MessageAction, slice: new Slice(sidecar, ScopeSidecarKind.Events));
-                        }
-                        else
-                        {
-                            Flush(message.EventsCount, MessageType.Instance, eventsBytes, message.MessageAction, resourceCounts: new OmfResourceCounts(0, 0, message.EventsCount),
-                                membership: Membership(sidecar, ScopeSidecarKind.Events, message.EventsCount));
-                        }
-                    }
-                    
-                    if (message.EntitiesCount > 0 || message.RelationshipCount > 0)
-                    {
-                        var bytesOfEntitiesAndLinks = SerializeWithWrapper(new InstanceMessageWrapper
-                        {   
-                            Entities = entitiesSegment,
-                            Relationships = relationshipsSegment,
-                        });
-
-                        if (bytesOfEntitiesAndLinks.Length > _maxByteCount)
-                        {
-                            if (message.EntitiesCount > 0)
-                            {
-                                var entitiesBytes = SerializeWithWrapper(new InstanceMessageWrapper
-                                {
-                                    Entities = entitiesSegment,
-                                });
-
-                                if (entitiesBytes.Length > _maxByteCount)
-                                {
-                                    FlushInChunksInstance(entitiesSegment.ToArray(), entitiesBytes.Length, message.MessageAction, slice: new Slice(sidecar, ScopeSidecarKind.Entities));
-                                }
-                                else
-                                {
-                                    Flush(message.EntitiesCount, MessageType.Instance, entitiesBytes, message.MessageAction, resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, 0),
-                                        membership: Membership(sidecar, ScopeSidecarKind.Entities, message.EntitiesCount));
-                                }
-                            }
-
-                            if (message.RelationshipCount > 0)
-                            {
-                                var linksBytes = SerializeWithWrapper(new InstanceMessageWrapper
-                                {
-                                    Relationships = relationshipsSegment,
-                                });
-
-                                if (linksBytes.Length > _maxByteCount)
-                                {
-                                    FlushInChunksInstance(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction, slice: new Slice(sidecar, ScopeSidecarKind.Relationships));
-                                }
-                                else
-                                {
-                                    Flush(message.RelationshipCount, MessageType.Instance, linksBytes, message.MessageAction, membership: Membership(sidecar, ScopeSidecarKind.Relationships, message.RelationshipCount));
-                                }
-                            }
-                        }
-                        else
-                        {
-                            Flush(message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesOfEntitiesAndLinks, message.MessageAction,
-                                resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, 0),
-                                membership: Membership(sidecar, ScopeSidecarKind.Entities, message.EntitiesCount, Membership(sidecar, ScopeSidecarKind.Relationships, message.RelationshipCount)));
-                        }
-                    }
+                    FlushInstancesCollocated(message, bytesWithoutStreamingData.Length);
                 }
                 else // if Events + Entities + Relationships not oversize
                 {
@@ -415,6 +352,113 @@ public class SerializationBlock : BaseBlock<Message>
         if (instanceItemCount > 0)
         {
             _dataBatchingStrategyOptimizer?.Update(instanceItemCount, byteCount, over);
+        }
+    }
+
+    /// <summary>
+    /// Splits events, entities and relationships into chunks so that every relationship is flushed in the same
+    /// message as the event/entity its source references.
+    /// </summary>
+    private void FlushInstancesCollocated(InstanceMessage message, int byteCount)
+    {
+        using var groups = InstanceGroups.Create(message);
+        var oversize = new OversizeGroupStats();
+
+        SplitInstanceGroups(groups, 0, groups.GroupCount, byteCount, message.MessageAction, oversize);
+
+        if (oversize.GroupCount > 0)
+        {
+            _logger.LogWarning("{GroupCount} groups of related events, entities and relationships ({ItemCount} items in total) are larger than {MaxByteCount} bytes. They were split and their relationships may not be collocated with the instances they reference.", oversize.GroupCount, oversize.ItemCount, _maxByteCount);
+        }
+    }
+
+    private void SplitInstanceGroups(InstanceGroups groups, int groupStart, int groupEnd, int byteCount, MessageAction messageAction, OversizeGroupStats oversize)
+    {
+        // Items differ in size across the sorted groups (e.g. an event with its links vs. a lone entity), so the number of items
+        // which fit in a message is derived from the measured size of the previous attempt and refined as the groups are consumed.
+        var bytesPerItem = (double)byteCount / groups.ItemCount(groupStart, groupEnd);
+        var chunkStart = groupStart;
+
+        while (chunkStart < groupEnd)
+        {
+            var targetItemCount = Math.Max(1, (int)(_maxByteCount * ChunkFillFactor / bytesPerItem));
+            var chunkEnd = chunkStart;
+            var chunkItemCount = 0;
+
+            // Cut only on group boundaries; a chunk always holds at least one group.
+            while (chunkEnd < groupEnd)
+            {
+                var groupItemCount = groups.ItemCount(chunkEnd, chunkEnd + 1);
+
+                if (chunkItemCount > 0 && chunkItemCount + groupItemCount > targetItemCount)
+                {
+                    break;
+                }
+
+                chunkItemCount += groupItemCount;
+                chunkEnd++;
+            }
+
+            var chunk = groups.CreateWrapper(chunkStart, chunkEnd);
+            var bytes = SerializeWithWrapper(chunk);
+            bytesPerItem = (double)bytes.Length / chunkItemCount;
+
+            if (bytes.Length <= _maxByteCount)
+            {
+                var membership = new Slice(groups.Sidecar, ScopeSidecarKind.Events).Membership(chunk.Events.Offset, chunk.Events.Count);
+                if (membership is not null)
+                {
+                    groups.Sidecar.AddEntries(ScopeSidecarKind.Entities, chunk.Entities.Offset, chunk.Entities.Count, membership);
+                    groups.Sidecar.AddEntries(ScopeSidecarKind.Relationships, chunk.Relationships.Offset, chunk.Relationships.Count, membership);
+                }
+
+                Flush(chunkItemCount, MessageType.Instance, bytes, messageAction, resourceCounts: new OmfResourceCounts(0, chunk.Entities.Count, chunk.Events.Count),
+                    membership: membership);
+                chunkStart = chunkEnd;
+            }
+            else if (chunkEnd - chunkStart == 1)
+            {
+                FlushOversizeInstanceGroup(groups, chunkStart, bytes.Length, messageAction, oversize);
+                chunkStart = chunkEnd;
+            }
+
+            // Otherwise the chunk was too big: try again with a smaller one, using the size just measured.
+        }
+    }
+
+    private void FlushOversizeInstanceGroup(InstanceGroups groups, int group, int byteCount, MessageAction messageAction, OversizeGroupStats oversize)
+    {
+        var itemCount = groups.ItemCount(group, group + 1);
+        var wrapper = groups.CreateWrapper(group, group + 1);
+        var eventSlice = new Slice(groups.Sidecar, ScopeSidecarKind.Events, wrapper.Events.Offset);
+        var entitySlice = new Slice(groups.Sidecar, ScopeSidecarKind.Entities, wrapper.Entities.Offset);
+        var relationshipSlice = new Slice(groups.Sidecar, ScopeSidecarKind.Relationships, wrapper.Relationships.Offset);
+
+        if (itemCount <= 1)
+        {
+            _logger.LogError("One Instance item is too big to be sent and cannot be reduced. Final byte size {ByteCount}, max {MaxByteCount}.", byteCount, _maxByteCount);
+            Discard(eventSlice, 0, wrapper.Events.Count, byteCount);
+            Discard(entitySlice, 0, wrapper.Entities.Count, byteCount);
+            Discard(relationshipSlice, 0, wrapper.Relationships.Count, byteCount);
+            return;
+        }
+
+        oversize.GroupCount++;
+        oversize.ItemCount += itemCount;
+
+        if (wrapper.Events.Count > 0)
+        {
+            FlushInChunksInstance(wrapper.Events.ToArray(), byteCount, messageAction, slice: eventSlice);
+        }
+
+        if (wrapper.Entities.Count > 0)
+        {
+            FlushInChunksInstance(wrapper.Entities.ToArray(), byteCount, messageAction, slice: entitySlice);
+        }
+
+        if (wrapper.Relationships.Count > 0)
+        {
+            FlushInChunksInstance(wrapper.Relationships.ToArray(), byteCount, messageAction, slice: relationshipSlice);
         }
     }
 
@@ -939,5 +983,15 @@ public class SerializationBlock : BaseBlock<Message>
 
             return membership;
         }
+    }
+
+    /// <summary>
+    /// Counts the groups of related instances which were too large for a single message and had to be split.
+    /// </summary>
+    private sealed class OversizeGroupStats
+    {
+        public int GroupCount { get; set; }
+
+        public int ItemCount { get; set; }
     }
 }

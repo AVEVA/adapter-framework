@@ -18,6 +18,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using AdapterFramework.Data.DataModel;
@@ -177,6 +178,101 @@ public class ScopeTracking_Tests
         Assert.InRange(resultA.Deliveries.Count + resultB.Deliveries.Count, bodies.Count, bodies.Count + 1);
         await a.DisposeAsync();
         await b.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SerializationBlock_CollocatedGroups_PreserveReorderedScopeMembership()
+    {
+        using var coordinator = CreateCoordinator();
+        await using var a = CreateScope(coordinator);
+        await using var b = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+        var events = new[]
+        {
+            new Event { Id = "a", TypeId = "event", Value = "value" },
+            new Event { Id = "b", TypeId = "event", Value = "value" },
+        };
+        var entities = new[]
+        {
+            new StaticStreamData { InstanceId = "b", Id = "entity", Value = "value" },
+            new StaticStreamData { InstanceId = "a", Id = "entity", Value = "value" },
+        };
+        var links = new[]
+        {
+            new Link(new RelationshipLinkNode("b", "event"), new RelationshipLinkNode("target", "entity")),
+            new Link(new RelationshipLinkNode("a", "event"), new RelationshipLinkNode("target", "entity")),
+        };
+        var fullSize = new OmfJsonSerializer().Serialize(new InstanceMessageWrapper
+        {
+            Events = events,
+            Entities = entities,
+            Relationships = links,
+        }).Length;
+        using var block = CreateSerializationBlock(coordinator, fullSize * 3 / 4, bodies);
+        coordinator.RecordAdmitted(a, 3);
+        coordinator.RecordAdmitted(b, 3);
+        await block.PostAsync(new InstanceMessage(null, entities, events, links, 0, 0, 2, 2, 2, MessageAction.Default)
+        {
+            Sidecar = new InstanceScopeSidecar([a, b], null, [1, 0], [0, 1], [1, 0]),
+        });
+        await block.PostAsync(new ScopeMaterializationBarrier(a, 1));
+        await block.PostAsync(new ScopeMaterializationBarrier(b, 1));
+
+        var resultA = await a.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+        var resultB = await b.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+
+        Assert.Equal(OmfAcceptanceOutcome.Accepted, resultA.Outcome);
+        Assert.Equal(OmfAcceptanceOutcome.Accepted, resultB.Outcome);
+        var deliveryA = Assert.Single(resultA.Deliveries);
+        var deliveryB = Assert.Single(resultB.Deliveries);
+        Assert.NotEqual(deliveryA.SerializedMessageId, deliveryB.SerializedMessageId);
+        Assert.Equal(2, bodies.Count);
+        foreach (var body in bodies)
+        {
+            var id = Assert.IsType<SerializedOmfMessage>(body).SerializedMessageId;
+            var expectedId = id == deliveryA.SerializedMessageId ? "a" : "b";
+            using var json = JsonDocument.Parse(body.MessageBody);
+            Assert.Equal(3, body.ItemCount);
+            Assert.Equal(expectedId, Assert.Single(json.RootElement.GetProperty("events").EnumerateArray()).GetProperty("id").GetString());
+            Assert.Equal(expectedId, Assert.Single(json.RootElement.GetProperty("entities").EnumerateArray()).GetProperty("id").GetString());
+            Assert.Equal(expectedId, Assert.Single(json.RootElement.GetProperty("relationships").EnumerateArray()).GetProperty("source").GetProperty("id").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SerializationBlock_OversizedGroup_ReportsDropsOnlyToOwningScope(bool withRelationship)
+    {
+        using var coordinator = CreateCoordinator();
+        await using var dropped = CreateScope(coordinator);
+        await using var accepted = CreateScope(coordinator);
+        var bodies = new ConcurrentQueue<ISerializedOmfMessage>();
+        using var block = CreateSerializationBlock(coordinator, 300, bodies);
+        var events = new[] { new Event { Id = "instance", TypeId = "event", Value = new string('x', 1000) } };
+        var entities = new[] { new StaticStreamData { InstanceId = "instance", Id = "entity", Value = "small" } };
+        Link[] links = withRelationship
+            ? [new Link(new RelationshipLinkNode("instance", "event"), new RelationshipLinkNode("target", "entity"))]
+            : [];
+        coordinator.RecordAdmitted(dropped, 1);
+        coordinator.RecordAdmitted(accepted, 1 + links.Length);
+        await block.PostAsync(new InstanceMessage(null, entities, events, links, 0, 0, 1, 1, links.Length, MessageAction.Default)
+        {
+            Sidecar = new InstanceScopeSidecar([dropped, accepted], null, [1], [0], withRelationship ? [1] : null),
+        });
+        await block.PostAsync(new ScopeMaterializationBarrier(dropped, 1));
+        await block.PostAsync(new ScopeMaterializationBarrier(accepted, 1));
+
+        var droppedResult = await dropped.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+        var acceptedResult = await accepted.WaitForAcceptanceAsync(TimeSpan.FromMilliseconds(WaitTime));
+
+        Assert.Equal(OmfAcceptanceOutcome.AcceptedWithDrops, droppedResult.Outcome);
+        Assert.Equal(OmfReasonCode.ItemTooLarge, droppedResult.Reason.Code);
+        Assert.Empty(droppedResult.Deliveries);
+        Assert.Equal(OmfAcceptanceOutcome.Accepted, acceptedResult.Outcome);
+        Assert.Equal(1 + links.Length, bodies.Sum(body => body.ItemCount));
+        Assert.All(bodies, body => Assert.NotNull(Assert.IsType<SerializedOmfMessage>(body).SerializedMessageId));
+        Assert.Equal(bodies.Count, acceptedResult.Deliveries.Count);
     }
 
     /// <summary>
