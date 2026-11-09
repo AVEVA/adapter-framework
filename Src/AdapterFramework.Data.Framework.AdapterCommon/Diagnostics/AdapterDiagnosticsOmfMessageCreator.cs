@@ -28,6 +28,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 {
     #region Private Fields
 
+    private const string EntityCountDescription = "Number of unique OMF 2.0 entities currently tracked by the adapter. Entities are removed only by an explicit delete and are retained when the adapter stops and starts.";
     private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
 
     private readonly LinkNode _assetNode;
@@ -129,6 +130,7 @@ public class AdapterDiagnosticsOmfMessageCreator
         var entityCountDiagnosticsType = new DynamicDataType
         {
             Id = EntityCountTypeId,
+            Description = EntityCountDescription,
             Properties = new Dictionary<string, PropertyDefinition>
             {
                 [nameof(EntityCountEvent.Timestamp)] = timestampProperty,
@@ -275,6 +277,7 @@ public class AdapterDiagnosticsOmfMessageCreator
                 Id = GetEntityCountStreamId(),
                 TypeId = EntityCountTypeId,
                 Name = EntityCountStreamName,
+                Description = EntityCountDescription,
             },
             new DataStream
             {

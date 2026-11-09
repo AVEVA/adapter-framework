@@ -124,14 +124,16 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
 
     // Literals intentionally pin the OMF wire contract so a constant rename fails here.
     [Theory]
-    [InlineData("Diagnostics.EntityCount", "EntityCount")]
-    [InlineData("Diagnostics.EventCount", "EventCount")]
-    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_CountWireContract_Test(string expectedTypeId, string expectedName)
+    [InlineData("Diagnostics.EntityCount", "EntityCount", "int32")]
+    [InlineData("Diagnostics.EventCount", "EventCount", "int64")]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_CountWireContract_Test(string expectedTypeId, string expectedName, string expectedFormat)
     {
         _messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
 
         var dataType = Assert.Single(_dataTypes, x => x.Id == expectedTypeId);
-        Assert.Contains(expectedName, dataType.Properties.Keys);
+        Assert.True(dataType.Properties.TryGetValue(expectedName, out var property));
+        Assert.Equal("integer", property.Type);
+        Assert.Equal(expectedFormat, property.Format);
 
         var dataStream = Assert.Single(_dataStreams, x => x.TypeId == expectedTypeId);
         Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{expectedName}", dataStream.Id);

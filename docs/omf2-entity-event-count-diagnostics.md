@@ -38,7 +38,7 @@ The **Diagnostics.EventCount** type has these properties:
 - **Timestamp**: string, date-time, marked as `isindex`.
 - **EventCount**: integer (int64). The cumulative number of events written.
 
-The type and stream both carry a description saying that `EventCount` is cumulative and excludes deletes.
+Both types and streams carry a description. The `EntityCount` description says the count is a gauge of tracked entities that are removed only by an explicit delete and kept across stop and start. The `EventCount` description says the count is cumulative and excludes deletes.
 
 Each stream counts one kind of OMF 2.0 resource that the component writes through `InstrumentedMessageProcessor`:
 
@@ -97,7 +97,7 @@ The following shows where the new streams appear in the existing health hierarch
 - `IInstrumentedMessageProcessor.GetEntityCount()` and `GetEventCount()` are default interface members that return 0. Other implementations still compile and report `0`.
 - A failure writing one count stream stops only that stream. The other diagnostics streams keep publishing.
 - An adapter that drops entities across a stop and start without sending deletes keeps them in `EntityCount` until the process restarts.
-- The type IDs and stream names were renamed from `AssetCount` to `EntityCount` with no compatibility alias. Consumers of an earlier `AssetCount` stream must switch to `EntityCount`.
+- The type ID, stream name and property were renamed from `AssetCount` to `EntityCount` with no compatibility alias. `AssetCount` was never in a release; only pre-release builds of `main` published it.
 
 ## Example - Adapter Component
 
