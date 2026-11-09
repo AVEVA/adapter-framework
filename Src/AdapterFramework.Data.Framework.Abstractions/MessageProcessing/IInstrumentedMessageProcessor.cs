@@ -65,9 +65,9 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     long GetAndResetEventsCounter();
 
     /// <summary>
-    /// Gets the number of stream values, assets and events accepted by the processor since the last call, and resets them to 0.
+    /// Gets the number of stream values, entities and events accepted by the processor since the last call, and resets them to 0.
     /// Stream values come from the <c>WriteValue</c>, <c>WriteValues</c>, <c>WriteDynamicValue</c> and <c>WriteDynamicValues</c> methods,
-    /// assets from <c>WriteStaticValue</c> and events from <c>WriteEvent</c>. Deletes are not counted. Acceptance by the processor is not
+    /// entities from <c>WriteStaticValue</c> and events from <c>WriteEvent</c>. Deletes are not counted. Acceptance by the processor is not
     /// a delivery guarantee. Implementations relying on the default interface member report no resources.
     /// </summary>
     /// <returns>Resource counts since the last time this method was called.</returns>

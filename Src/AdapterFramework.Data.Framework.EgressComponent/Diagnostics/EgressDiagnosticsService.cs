@@ -483,7 +483,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         public void AddSamples(OmfResourceCounts resourceCounts)
         {
             _streamIoRate.MovingAverage.AddSample(resourceCounts.StreamValues);
-            _entityIoRate.MovingAverage.AddSample(resourceCounts.Assets);
+            _entityIoRate.MovingAverage.AddSample(resourceCounts.Entities);
             _eventIoRate.MovingAverage.AddSample(resourceCounts.Events);
         }
 

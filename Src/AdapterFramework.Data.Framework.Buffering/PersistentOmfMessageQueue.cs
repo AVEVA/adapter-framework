@@ -26,7 +26,7 @@ namespace AdapterFramework.Data.Framework.Buffering;
 
 public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializedOmfMessage>
 {
-    // V4 appends the stream value, asset and event counts (Int64 each) after the V3 trailer.
+    // V4 appends the stream value, entity and event counts (Int64 each) after the V3 trailer.
     private const int ResourceCountsSize = 3 * sizeof(long);
     private const int V3TrailerSize = 3;
 
@@ -68,7 +68,7 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
 
         var countsSpan = dataBuffer.AsSpan(v3Size);
         BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamValues);
-        BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Assets);
+        BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Entities);
         BinaryPrimitives.WriteInt64LittleEndian(countsSpan[(2 * sizeof(long))..], resourceCounts.Events);
 
         return new DataItem(DataItemVersion.V4, dataBuffer);

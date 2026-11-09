@@ -29,6 +29,9 @@ public class AdapterDiagnosticsOmfMessageCreator
     #region Private Fields
 
     private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
+    private const string StreamIoRateDescription = "Stream values written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
+    private const string EntityIoRateDescription = "Entities written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
+    private const string EventIoRateDescription = "Events written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
 
     private readonly LinkNode _assetNode;
     private readonly string _streamIdPrefix;
@@ -271,7 +274,8 @@ public class AdapterDiagnosticsOmfMessageCreator
         }
 
         // The resource IO rates share the IORate type and count what this component wrote, not what was delivered.
-        DataStream CreateResourceIoRateStream(string id, string name) => new DataStream { Id = id, TypeId = IoRateTypeId, Name = name };
+        DataStream CreateResourceIoRateStream(string id, string name, string description) =>
+            new DataStream { Id = id, TypeId = IoRateTypeId, Name = name, Description = description };
 
         return new[]
         {
@@ -290,9 +294,9 @@ public class AdapterDiagnosticsOmfMessageCreator
                 Description = EventCountDescription,
             },
             ioRateStream,
-            CreateResourceIoRateStream(GetStreamIoRateStreamId(), StreamIoRateStreamName),
-            CreateResourceIoRateStream(GetEntityIoRateStreamId(), EntityIoRateStreamName),
-            CreateResourceIoRateStream(GetEventIoRateStreamId(), EventIoRateStreamName),
+            CreateResourceIoRateStream(GetStreamIoRateStreamId(), StreamIoRateStreamName, StreamIoRateDescription),
+            CreateResourceIoRateStream(GetEntityIoRateStreamId(), EntityIoRateStreamName, EntityIoRateDescription),
+            CreateResourceIoRateStream(GetEventIoRateStreamId(), EventIoRateStreamName, EventIoRateDescription),
         };
     }
 

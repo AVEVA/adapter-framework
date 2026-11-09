@@ -1480,7 +1480,7 @@ public class SerializationBlock_Tests
         _receivedDataCount += m.ItemCount;
         _receivedResourceCounts = new OmfResourceCounts(
             _receivedResourceCounts.StreamValues + m.ResourceCounts.StreamValues,
-            _receivedResourceCounts.Assets + m.ResourceCounts.Assets,
+            _receivedResourceCounts.Entities + m.ResourceCounts.Entities,
             _receivedResourceCounts.Events + m.ResourceCounts.Events);
     }
 }

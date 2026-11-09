@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -85,7 +85,7 @@ public class OmfWriter : IOmfWriter
     private bool _disposed;
     private long _valueCount;
     private long _streamValueCount;
-    private long _assetCount;
+    private long _entityCount;
     private long _eventCount;
     private MessageType _messageType;
     private bool _shouldRetry404 = true;
@@ -215,7 +215,7 @@ public class OmfWriter : IOmfWriter
     {
         return new OmfResourceCounts(
             Interlocked.Exchange(ref _streamValueCount, 0),
-            Interlocked.Exchange(ref _assetCount, 0),
+            Interlocked.Exchange(ref _entityCount, 0),
             Interlocked.Exchange(ref _eventCount, 0));
     }
 
@@ -441,7 +441,7 @@ public class OmfWriter : IOmfWriter
         }
 
         Interlocked.Add(ref _streamValueCount, resourceCounts.StreamValues);
-        Interlocked.Add(ref _assetCount, resourceCounts.Assets);
+        Interlocked.Add(ref _entityCount, resourceCounts.Entities);
         Interlocked.Add(ref _eventCount, resourceCounts.Events);
     }
 

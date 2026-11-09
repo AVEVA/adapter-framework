@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -543,7 +543,7 @@ public class OmfEndpointManager_Tests : IDisposable
                 foreach (var (endpointId, counts) in counters)
                 {
                     var total = egressed[endpointId];
-                    egressed[endpointId] = new OmfResourceCounts(total.StreamValues + counts.StreamValues, total.Assets + counts.Assets, total.Events + counts.Events);
+                    egressed[endpointId] = new OmfResourceCounts(total.StreamValues + counts.StreamValues, total.Entities + counts.Entities, total.Events + counts.Events);
                 }
 
                 return egressed[config.Id] == resourceCounts;

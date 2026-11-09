@@ -18,15 +18,15 @@ namespace AdapterFramework.Data.Framework.Abstractions.Messages;
 /// Number of OMF 2.0 resource instances, by resource kind, contained in (or successfully delivered from) OMF instance messages.
 /// </summary>
 /// <remarks>
-/// Only stream values, assets and events are counted. Relationships, types, stream definitions and other schema objects are not.
+/// Only stream values, entities and events are counted. Relationships, types, stream definitions and other schema objects are not.
 /// </remarks>
 /// <param name="StreamValues">Number of individual stream values. Feeds the <c>StreamIORate</c> stream.</param>
-/// <param name="Assets">Number of asset instances.</param>
+/// <param name="Entities">Number of entity instances.</param>
 /// <param name="Events">Number of event instances.</param>
-public readonly record struct OmfResourceCounts(long StreamValues, long Assets, long Events)
+public readonly record struct OmfResourceCounts(long StreamValues, long Entities, long Events)
 {
     /// <summary>
     /// Gets a value indicating whether no resource instances are counted.
     /// </summary>
-    public bool IsEmpty => StreamValues == 0 && Assets == 0 && Events == 0;
+    public bool IsEmpty => StreamValues == 0 && Entities == 0 && Events == 0;
 }

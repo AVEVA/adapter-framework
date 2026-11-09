@@ -40,7 +40,7 @@ Each stream counts one kind of OMF 2.0 resource that the component writes throug
 | Stream | Counts | Message processor calls |
 | --- | --- | --- |
 | `StreamIORate` | Stream values written per second | `WriteValue`, `WriteValues`, `WriteDynamicValue`, `WriteDynamicValues` |
-| `EntityIORate` | Entities written per second | `WriteStaticValue` |
+| `EntityIORate` | Entities written per second | `WriteStaticValue` (all three overloads) |
 | `EventIORate` | Events written per second | `WriteEvent` |
 
 The counting rules match the egress endpoint rates:
@@ -48,6 +48,7 @@ The counting rules match the egress endpoint rates:
 - Messages with `MessageAction.Delete` are not counted. The existing `IORate` still counts deletes.
 - Counts increase only after the underlying message processor write returns successfully. This does not confirm delivery to an endpoint.
 - Batch writes count individual values, not API calls. For example, a successful batch of 100 stream values adds 100 to the stream counter.
+- `EntityIORate` counts all three `WriteStaticValue` overloads, including the older overload that takes `extendedPropertyDefinitions`. `EntityCount` tracks only the typed overloads. The egress `EntityIORate` agrees with the component rate because that older overload is still sent as a `StaticStreamData` entity.
 - These are write rates, not counts of distinct resources. Repeated writes to the same entity or event count again. Type, stream-definition, and relationship writes do not contribute.
 - `AdapterDiagnosticsService` reads and resets the counters on every 1-second tick, adds the sample to a 60-second moving average, and publishes the average every 60 seconds, just like `IORate`.
 

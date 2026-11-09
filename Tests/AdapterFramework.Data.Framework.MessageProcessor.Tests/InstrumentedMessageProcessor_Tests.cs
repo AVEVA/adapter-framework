@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -1340,7 +1340,7 @@ public class InstrumentedMessageProcessor_Tests
         instrumentedMessageProcessor.WriteDynamicValue(TestStreamIdBase, value, MessageAction.Default, null);
         instrumentedMessageProcessor.WriteDynamicValues(TestStreamIdBase, values, MessageAction.Default, null);
 
-        // Assets: one write through each WriteStaticValue overload.
+        // Entities: one write through each WriteStaticValue overload.
         instrumentedMessageProcessor.WriteStaticValue(TestStreamIdBase, null, null, instance, null, MessageAction.Create);
         instrumentedMessageProcessor.WriteStaticValue(TestTypeIdBase, "Entity-1", "name", "description", "dataSource", null, null, instance, null, null, null, MessageAction.Create);
         instrumentedMessageProcessor.WriteStaticValue(TestTypeIdBase, "Entity-2", "name", "description", "dataSource", instance, null, null, null, MessageAction.Update);

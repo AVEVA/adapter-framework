@@ -253,11 +253,7 @@ public class AdapterDiagnosticsService_Tests
         var instrumentedLogger = new Mock<IInstrumentedLogger>();
 
         using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
-
-        // Drive the real timer callback without starting background timers or waiting for wall-clock time.
-        var collectStatisticsMethod = typeof(AdapterDiagnosticsService).GetMethod("CollectMessageProcessorStatistics", BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(collectStatisticsMethod);
-        var collectStatistics = collectStatisticsMethod.CreateDelegate<Action<object>>(adapterDiagnosticsService);
+        var collectStatistics = GetCollectMessageProcessorStatistics(adapterDiagnosticsService);
 
         collectStatistics(null);
 
@@ -495,6 +491,38 @@ public class AdapterDiagnosticsService_Tests
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".StreamIORate", StringComparison.Ordinal)));
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".EventIORate", StringComparison.Ordinal)));
         Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".IORate", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(".IORate")]
+    [InlineData(".StreamCount")]
+    [InlineData(".AssetCount")]
+    [InlineData(".EventCount")]
+    public void CollectMessageProcessorStatistics_OtherDiagnosticFailure_DoesNotStopResourceIoRates_Test(string failingStreamIdSuffix)
+    {
+        var instrumentedMessageProcessor = new Mock<IInstrumentedMessageProcessor>();
+        instrumentedMessageProcessor.Setup(im => im.GetStreamCount()).Returns(5);
+        instrumentedMessageProcessor.Setup(im => im.GetAssetCount()).Returns(7);
+        instrumentedMessageProcessor.Setup(im => im.GetEventCount()).Returns(9);
+        var instrumentedLogger = new Mock<IInstrumentedLogger>();
+
+        using var adapterDiagnosticsService = new AdapterDiagnosticsService(_fakeDiagnosticsMessageProcessor, instrumentedLogger.Object, UnitTestComponentId, UnitTestComponentType, _elementNode, instrumentedMessageProcessor.Object, OmfVersion.Omf20);
+        var collectStatistics = GetCollectMessageProcessorStatistics(adapterDiagnosticsService);
+
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = failingStreamIdSuffix;
+        collectStatistics(null);
+        _fakeDiagnosticsMessageProcessor.FailingStreamIdSuffix = null;
+
+        for (var tick = 0; tick < 60; tick++)
+        {
+            collectStatistics(null);
+        }
+
+        // The failed stream stays stopped, but the resource rates still publish at the initial and next reporting boundary.
+        Assert.DoesNotContain(_diagnosticData, x => x.EndsWith(failingStreamIdSuffix, StringComparison.Ordinal));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".StreamIORate", StringComparison.Ordinal)));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".EntityIORate", StringComparison.Ordinal)));
+        Assert.Equal(2, _diagnosticData.Count(x => x.EndsWith(".EventIORate", StringComparison.Ordinal)));
     }
 
     private static Action<object> GetCollectMessageProcessorStatistics(AdapterDiagnosticsService adapterDiagnosticsService)

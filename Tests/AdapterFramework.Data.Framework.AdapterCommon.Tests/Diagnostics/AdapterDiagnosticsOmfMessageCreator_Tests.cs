@@ -146,6 +146,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
             var stream = Assert.Single(_dataStreams, x => x.Id == id);
             Assert.Equal(DiagnosticsConstants.IoRateTypeId, stream.TypeId);
             Assert.Equal(name, stream.Name);
+            Assert.Contains("written by this adapter component per second", stream.Description, StringComparison.Ordinal);
 
             // Each stream is linked to the component's health asset.
             Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == id);
