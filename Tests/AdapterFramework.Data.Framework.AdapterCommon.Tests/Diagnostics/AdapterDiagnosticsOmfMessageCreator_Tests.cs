@@ -165,9 +165,13 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         Assert.True(dataType.Properties.TryGetValue(expectedName, out var property));
         Assert.Equal("integer", property.Type);
         Assert.Equal(expectedFormat, property.Format);
+        Assert.False(string.IsNullOrWhiteSpace(dataType.Description));
 
         var dataStream = Assert.Single(_dataStreams, x => x.TypeId == expectedTypeId);
         Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{expectedName}", dataStream.Id);
         Assert.Equal(expectedName, dataStream.Name);
+        Assert.False(string.IsNullOrWhiteSpace(dataStream.Description));
+        Assert.Equal(dataType.Description, dataStream.Description);
+        Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == dataStream.Id);
     }
 }
