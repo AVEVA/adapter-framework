@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -56,6 +56,11 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
 
     // Data events since the last GetAndResetEventsCounter() call, published as IORate.
     private long _ioEventsCount;
+
+    // Resources since the last GetAndResetResourceCounters() call (deletes excluded), published as StreamIORate, EntityIORate and EventIORate.
+    private long _streamValuesSinceLastRead;
+    private long _entitiesSinceLastRead;
+    private long _eventsSinceLastRead;
     private long _cacheOrderSequence;
 
     #endregion
@@ -213,6 +218,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _streamValuesSinceLastRead, 1, messageAction);
     }
 
     /// <inheritdoc/>
@@ -236,6 +242,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _streamValuesSinceLastRead, 1, messageAction);
     }
 
     /// <inheritdoc/>
@@ -250,6 +257,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction, scope);
 
         AddToIoEventsCount(instances.Count);
+        AddToResourceCount(ref _streamValuesSinceLastRead, instances.Count, messageAction);
     }
 
     /// <inheritdoc/>
@@ -264,6 +272,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey, scope);
 
         AddToIoEventsCount(instances.Count);
+        AddToResourceCount(ref _streamValuesSinceLastRead, instances.Count, messageAction);
     }
 
     /// <inheritdoc/>
@@ -278,6 +287,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
@@ -294,6 +304,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
 
         TrackEntityIdentity(entityId, messageAction);
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null,
@@ -309,6 +320,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
 
         TrackEntityIdentity(entityId, messageAction);
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
@@ -331,6 +343,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         }
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _eventsSinceLastRead, 1, messageAction);
     }
 
     public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null, null);
@@ -398,12 +411,22 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     }
 
     /// <inheritdoc/>
+    public OmfResourceCounts GetAndResetResourceCounters()
+    {
+        return new OmfResourceCounts(
+            Interlocked.Exchange(ref _streamValuesSinceLastRead, 0),
+            Interlocked.Exchange(ref _entitiesSinceLastRead, 0),
+            Interlocked.Exchange(ref _eventsSinceLastRead, 0));
+    }
+
+    /// <inheritdoc/>
     public void ClearCounters()
     {
         Interlocked.Exchange(ref _typeCount, 0);
         Interlocked.Exchange(ref _streamCount, 0);
         Interlocked.Exchange(ref _ioEventsCount, 0);
         Interlocked.Exchange(ref _eventCount, 0);
+        GetAndResetResourceCounters();
 
         // Tracked asset identities are retained on purpose: assets still exist downstream after a stop, so AssetCount must not
         // fall to zero when an adapter does not re-send its static values on start.
@@ -590,6 +613,15 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     private void AddToIoEventsCount(int count)
     {
         Interlocked.Add(ref _ioEventsCount, count);
+    }
+
+    // Deletes still count toward IORate, but not toward the resource rates, matching EventCount and the egress resource rates.
+    private static void AddToResourceCount(ref long counter, int count, MessageAction messageAction)
+    {
+        if (messageAction != MessageAction.Delete)
+        {
+            Interlocked.Add(ref counter, count);
+        }
     }
 
     private void AddMetadataValues(DataStream dataStream)

@@ -68,7 +68,7 @@ public class PersistentOmfMessageQueue_Tests
         {
             var counts = new byte[3 * sizeof(long)];
             BinaryPrimitives.WriteInt64LittleEndian(counts, resourceCounts.StreamValues);
-            BinaryPrimitives.WriteInt64LittleEndian(counts.AsSpan(sizeof(long)), resourceCounts.Assets);
+            BinaryPrimitives.WriteInt64LittleEndian(counts.AsSpan(sizeof(long)), resourceCounts.Entities);
             BinaryPrimitives.WriteInt64LittleEndian(counts.AsSpan(2 * sizeof(long)), resourceCounts.Events);
             payload.AddRange(counts);
         }

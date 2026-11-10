@@ -38,7 +38,7 @@ public interface ISerializedOmfMessage
     int ItemCount { get; }
 
     /// <summary>
-    /// Gets the number of streaming values, assets and events contained in an OMF 2.0 instance message.
+    /// Gets the number of streaming values, entities and events contained in an OMF 2.0 instance message.
     /// Empty for every other message type.
     /// </summary>
     OmfResourceCounts ResourceCounts => default;

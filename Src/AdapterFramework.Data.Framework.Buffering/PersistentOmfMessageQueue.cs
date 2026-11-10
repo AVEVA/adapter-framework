@@ -26,7 +26,7 @@ namespace AdapterFramework.Data.Framework.Buffering;
 
 public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializedOmfMessage>
 {
-    // V4 appends the stream value, asset and event counts (Int64 each) after the V3 trailer; V5 also appends the serialized message ID.
+    // V4 appends the stream value, entity and event counts (Int64 each) after the V3 trailer; V5 also appends the serialized message ID.
     private const int ResourceCountsSize = 3 * sizeof(long);
     private const int V3TrailerSize = 3;
 
@@ -82,7 +82,7 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
         {
             var countsSpan = dataBuffer.AsSpan(v3Size, ResourceCountsSize);
             BinaryPrimitives.WriteInt64LittleEndian(countsSpan, resourceCounts.StreamValues);
-            BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Assets);
+            BinaryPrimitives.WriteInt64LittleEndian(countsSpan[sizeof(long)..], resourceCounts.Entities);
             BinaryPrimitives.WriteInt64LittleEndian(countsSpan[(2 * sizeof(long))..], resourceCounts.Events);
         }
 
@@ -127,7 +127,7 @@ public class PersistentOmfMessageQueue : PersistentOmfMessageQueueBase<ISerializ
             case DataItemVersion.V3:
             {
                 // V3 records have no resource counts, so messages buffered before the upgrade still count toward IORate
-                // when delivered, but not toward StreamIORate, AssetIORate or EventIORate.
+                // when delivered, but not toward StreamIORate, EntityIORate or EventIORate.
                 var countsLength = dataItem.Version == DataItemVersion.V3 ? 0 : ResourceCountsSize;
                 var idLength = dataItem.Version == DataItemVersion.V5 ? SerializedOmfMessage.SerializedMessageIdSize : 0;
                 if (data.Length < bodyOffset + V3TrailerSize + countsLength + idLength)
