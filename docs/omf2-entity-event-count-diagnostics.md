@@ -6,7 +6,7 @@ Adapter components already publish diagnostics streams next to their OMF health 
 
 The implementation defines streams and health links in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs), samples and publishes values in [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs), and defines stream names and type IDs in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs). The counts come from [InstrumentedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/InstrumentedMessageProcessor.cs).
 
-This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology. [PR #21](https://github.com/AVEVA/adapter-framework/pull/21) uses the same term for its `EntityIORate` stream.
+This document describes the `EntityCount` and `EventCount` diagnostics added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. `EntityCount` follows OMF 2.0 terminology, consistent with the `EntityIORate` stream from [PR #21](https://github.com/AVEVA/adapter-framework/pull/21).
 
 ## Design
 
@@ -98,7 +98,6 @@ The following shows where the new streams appear in the existing health hierarch
 - `IInstrumentedMessageProcessor.GetEntityCount()` and `GetEventCount()` are default interface members that return 0. Other implementations still compile and report `0`.
 - A failure writing one count stream stops only that stream. The other diagnostics streams keep publishing.
 - An adapter that drops entities across a stop and start without sending deletes keeps them in `EntityCount` until the process restarts.
-- The type ID, stream name and property were renamed from `AssetCount` to `EntityCount` with no compatibility alias. `AssetCount` was never in a release; only pre-release builds of `main` published it.
 
 ## Example - Adapter Component
 
