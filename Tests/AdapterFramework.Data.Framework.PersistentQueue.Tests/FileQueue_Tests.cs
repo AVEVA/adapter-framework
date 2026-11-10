@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -83,6 +83,47 @@ public class FileQueue_Tests
         var msg = new byte[(1024 * 1024) + 1];
 
         Assert.Throws<ArgumentOutOfRangeException>(() => fq.Enqueue(new DataItem(DataItemVersion.V1, msg)));
+    }
+
+    [Fact]
+    public void FileQueue_FlushEnqueues_IOExceptionPartway_WrittenItemsNotWrittenAgainOnNextFlush()
+    {
+        var writerStream = new Mock<Stream>();
+        long writeStreamPosition = 0;
+        writerStream.SetupGet(s => s.Position).Returns(() => writeStreamPosition);
+
+        var mfm = new Mock<IFileManager>();
+        mfm.Setup(fm => fm.CreateWriterStream(0)).Returns(writerStream.Object);
+        mfm.Setup(fm => fm.CreateStateStream()).Returns(() => new MemoryStream());
+        mfm.Setup(fm => fm.CreateReaderStream(It.IsAny<int>())).Returns(() => new MemoryStream());
+
+        var enqueuedMessages = TestHelper.GenerateRandomDataItems(5, 100);
+        var failingItem = enqueuedMessages[2];
+        var failOnce = true;
+        var serializedItems = new List<DataItem>();
+        var mser = new Mock<ISerializer>();
+        mser.Setup(ser => ser.DeserializeQueueState(It.IsAny<Stream>())).Returns(new QueueState());
+        mser.Setup(ser => ser.SerializeDataItem(writerStream.Object, It.IsAny<DataItem>()))
+            .Callback<Stream, DataItem>((s, d) =>
+            {
+                if (failOnce && ReferenceEquals(d, failingItem))
+                {
+                    failOnce = false;
+                    throw new IOException("Simulated write failure.");
+                }
+
+                writeStreamPosition += d.Data.Length;
+                serializedItems.Add(d);
+            });
+
+        using var fq = new FileQueue(mfm.Object, mser.Object, 1, 0);
+        foreach (var msg in enqueuedMessages) fq.Enqueue(msg);
+
+        Assert.Throws<IOException>(() => fq.FlushEnqueues());
+        TestHelper.AssertEqual(enqueuedMessages.Take(2).ToList(), serializedItems);
+
+        fq.FlushEnqueues();
+        TestHelper.AssertEqual(enqueuedMessages, serializedItems);
     }
 
     [Fact]

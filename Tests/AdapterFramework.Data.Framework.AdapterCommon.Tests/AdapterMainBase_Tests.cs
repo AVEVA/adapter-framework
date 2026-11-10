@@ -938,13 +938,13 @@ public class AdapterMainBase_Tests
     [Theory]
     [InlineData(OmfVersion.Omf12, 3)]
     [InlineData(OmfVersion.Omf13, 3)]
-    [InlineData(OmfVersion.Omf20, 5)]
+    [InlineData(OmfVersion.Omf20, 8)]
     public async Task AdapterMainBase_ResendHealthMetadata_Test(OmfVersion omfVersion, int expectedDiagnosticsStreamsCount)
     {
         // DeviceStatus and NextHealthMessageExpected
         const int ExpectedHealthStreamsCount = 2;
 
-        // ErrorRate, IORate and StreamCount always; EntityCount and EventCount only for OMF 2.0.
+        // ErrorRate, IORate and StreamCount always; EntityCount, EventCount, StreamIORate, EntityIORate and EventIORate only for OMF 2.0.
         using var cts = new CancellationTokenSource();
         using var adapter = CreateAdapter(omfVersion: omfVersion);
 

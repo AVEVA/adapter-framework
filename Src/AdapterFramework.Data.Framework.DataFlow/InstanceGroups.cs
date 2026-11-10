@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
 
@@ -68,6 +69,11 @@ internal sealed class InstanceGroups : IDisposable
     public int GroupCount { get; }
 
     /// <summary>
+    /// Gets the scope indexes reordered in parallel with the grouped items.
+    /// </summary>
+    public InstanceScopeSidecar Sidecar { get; private set; }
+
+    /// <summary>
     /// Groups the events, entities and relationships of <paramref name="message"/>.
     /// </summary>
     /// <param name="message">The message to group.</param>
@@ -102,6 +108,15 @@ internal sealed class InstanceGroups : IDisposable
                 SortByGroup(message.Events.AsSpan(0, eventsCount), groupOfNode.AsSpan(0, eventsCount), groupCount, groups._eventStarts, groups._events);
                 SortByGroup(message.Entities.AsSpan(0, entitiesCount), groupOfNode.AsSpan(eventsCount, entitiesCount), groupCount, groups._entityStarts, groups._entities);
                 SortByGroup(message.Relationships.AsSpan(0, linksCount), groupOfLink.AsSpan(0, linksCount), groupCount, groups._linkStarts, groups._links);
+                if (message.Sidecar is { } sidecar)
+                {
+                    groups.Sidecar = new InstanceScopeSidecar(
+                        sidecar.ScopeTable,
+                        null,
+                        SortScopes(sidecar.EntityScopes, groupOfNode.AsSpan(eventsCount, entitiesCount), groupCount, groups._entityStarts),
+                        SortScopes(sidecar.EventScopes, groupOfNode.AsSpan(0, eventsCount), groupCount, groups._eventStarts),
+                        SortScopes(sidecar.RelationshipScopes, groupOfLink.AsSpan(0, linksCount), groupCount, groups._linkStarts));
+                }
             }
             catch
             {
@@ -237,6 +252,24 @@ internal sealed class InstanceGroups : IDisposable
         {
             destination[--starts[groupOfItem[i]]] = source[i];
         }
+    }
+
+    private static int[] SortScopes(IReadOnlyList<int> scopes, ReadOnlySpan<int> groupOfItem, int groupCount, int[] starts)
+    {
+        if (scopes is null)
+        {
+            return null;
+        }
+
+        var source = new int[groupOfItem.Length];
+        for (var i = 0; i < source.Length; i++)
+        {
+            source[i] = i < scopes.Count ? scopes[i] : -1;
+        }
+
+        var sorted = new int[source.Length];
+        SortByGroup<int>(source, groupOfItem, groupCount, starts, sorted);
+        return sorted;
     }
 
     // Empty parts must be default so they are omitted from the serialized payload.

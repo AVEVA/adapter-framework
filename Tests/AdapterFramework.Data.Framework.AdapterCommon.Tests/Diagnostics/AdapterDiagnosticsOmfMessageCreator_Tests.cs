@@ -103,10 +103,10 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
     }
 
     [Theory]
-    [InlineData(OmfVersion.Omf12, 3)]
-    [InlineData(OmfVersion.Omf13, 3)]
-    [InlineData(OmfVersion.Omf20, 5)]
-    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesEntityAndEventCount_Test(OmfVersion omfVersion, int expectedCount)
+    [InlineData(OmfVersion.Omf12, 3, 3)]
+    [InlineData(OmfVersion.Omf13, 3, 3)]
+    [InlineData(OmfVersion.Omf20, 5, 8)]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesEntityAndEventCount_Test(OmfVersion omfVersion, int expectedTypeCount, int expectedStreamCount)
     {
         const string UnitTestComponentType = "UnitTestComponentType";
 
@@ -114,12 +114,43 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
 
         messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, UnitTestComponentType);
 
-        Assert.Equal(expectedCount, _dataTypes.Count);
-        Assert.Equal(expectedCount, _dataStreams.Count);
+        Assert.Equal(expectedTypeCount, _dataTypes.Count);
+        Assert.Equal(expectedStreamCount, _dataStreams.Count);
 
         var isOmf20 = omfVersion == OmfVersion.Omf20;
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EntityCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventCountStreamName}", StringComparison.Ordinal)));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetStreamIoRateStreamId()));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetEntityIoRateStreamId()));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetEventIoRateStreamId()));
+    }
+
+    [Fact]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_Omf20ResourceIoRateStreams_Test()
+    {
+        _messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
+
+        var expected = new[]
+        {
+            (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.StreamIoRateStreamName}", Name: DiagnosticsConstants.StreamIoRateStreamName),
+            (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.EntityIoRateStreamName}", Name: DiagnosticsConstants.EntityIoRateStreamName),
+            (Id: $"{_streamIdPrefix}{UnitTestComponentId}.{DiagnosticsConstants.EventIoRateStreamName}", Name: DiagnosticsConstants.EventIoRateStreamName),
+        };
+
+        Assert.Equal(expected[0].Id, _messageCreator.GetStreamIoRateStreamId());
+        Assert.Equal(expected[1].Id, _messageCreator.GetEntityIoRateStreamId());
+        Assert.Equal(expected[2].Id, _messageCreator.GetEventIoRateStreamId());
+
+        foreach (var (id, name) in expected)
+        {
+            var stream = Assert.Single(_dataStreams, x => x.Id == id);
+            Assert.Equal(DiagnosticsConstants.IoRateTypeId, stream.TypeId);
+            Assert.Equal(name, stream.Name);
+            Assert.Contains("written by this adapter component per second", stream.Description, StringComparison.Ordinal);
+
+            // Each stream is linked to the component's health asset.
+            Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == id);
+        }
     }
 
     // Literals intentionally pin the OMF wire contract so a constant rename fails here.

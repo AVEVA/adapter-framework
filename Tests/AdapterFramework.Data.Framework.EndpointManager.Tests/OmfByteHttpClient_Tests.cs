@@ -164,6 +164,55 @@ public class OmfByteHttpClient_Tests : IDisposable
         Assert.False(_edgeEventProvider.EdgeEventChannel.Reader.TryRead(out var _), "Channel should contain only one event.");
     }
 
+    /// <summary>
+    /// Verifies that the client parses an ingress receipt only when the caller asks for one and the response is 202 Accepted.
+    /// The same receipt body is ignored for an untracked send and for any other successful status.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Accepted, true, true)]
+    [InlineData(HttpStatusCode.Accepted, false, false)]
+    [InlineData(HttpStatusCode.OK, true, false)]
+    [InlineData(HttpStatusCode.Created, true, false)]
+    public async Task OmfByteHttpClient_SendMessageAsync_ParsesReceiptOnlyForRequested202(HttpStatusCode statusCode, bool readReceipt, bool expectReceipt)
+    {
+        var operationId = Guid.NewGuid();
+        _testEndpoint.SetPostResponseBody($"{{\"Operation-Id\":\"{operationId}\",\"ErrorCount\":0,\"QueueAge\":\"00:00:01\"}}");
+        _testEndpoint.SetHttpResponse(statusCode);
+        _testEndpoint.StartListening();
+
+        var response = await _omfByteHttpClient.SendMessageAsync(
+            MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, null, readReceipt, CancellationToken.None);
+
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+        if (expectReceipt)
+        {
+            Assert.Equal(operationId, response.Receipt?.OperationId);
+        }
+        else
+        {
+            Assert.Null(response.Receipt);
+        }
+    }
+
+    /// <summary>
+    /// Verifies that a 202 body larger than the read limit is cut off rather than read whole: the send still succeeds
+    /// with the 202 status, and no receipt is taken from the truncated body.
+    /// </summary>
+    [Fact]
+    public async Task OmfByteHttpClient_SendMessageAsync_OversizedReceiptBody_SucceedsWithoutReceipt()
+    {
+        _testEndpoint.SetPostResponseBody($"{{\"Operation-Id\":\"{Guid.NewGuid()}\",\"Padding\":\"{new string('x', 2 * 1024 * 1024)}\"}}");
+        _testEndpoint.SetHttpResponse(HttpStatusCode.Accepted);
+        _testEndpoint.StartListening();
+
+        var response = await _omfByteHttpClient.SendMessageAsync(
+            MessageType.Data, Encoding.UTF8.GetBytes(TestMessage), MessageAction.Default, OmfVersion.Omf12, null, readReceipt: true, CancellationToken.None);
+
+        Assert.Equal(ResponseStatusEnum.Success, response.ResponseStatus);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Null(response.Receipt);
+    }
+
     [Theory]
     [InlineData(MessageType.Type)]
     [InlineData(MessageType.Container)]

@@ -21,6 +21,7 @@ using AdapterFramework.Data.Framework.Abstractions.Diagnostics;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 using AdapterFramework.Data.Framework.Common;
+using AdapterFramework.Data.Framework.Common.Constants;
 using AdapterFramework.Data.Framework.Common.Diagnostics.Events;
 using AdapterFramework.Data.Framework.Extensions;
 
@@ -35,6 +36,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private const int SendEntityCountPeriod = 60;
     private const int SendEventCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
+    private const int SendResourceIoRatePeriod = 60;
     private const int SendErrorRatePeriod = 60;
 
     #endregion
@@ -46,6 +48,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private readonly SemaphoreSlim _stateChangeSemaphore = new(1, 1);
     private readonly MovingAverage _errorRateMovingAverage;
     private readonly MovingAverage _ioRateMovingAverage;
+    private readonly ResourceIoRate _streamIoRate;
+    private readonly ResourceIoRate _entityIoRate;
+    private readonly ResourceIoRate _eventIoRate;
     private readonly IInstrumentedLogger _instrumentedLogger;
     private readonly IInstrumentedMessageProcessor _instrumentedMessageProcessor;
     private readonly IDiagnosticsMessageProcessor _diagnosticsMessageProcessor;
@@ -61,6 +66,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _updateMessageProcessorStatisticsSync;
     private int _errorRateTimerTickCounter;
     private int _timerTickIoRateCounter;
+    private int _timerTickResourceIoRateCounter;
     private int _timerTickStreamCounter;
     private int _timerTickEntityCounter;
     private int _timerTickEventCounter;
@@ -125,6 +131,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
         _ioRateMovingAverage = new MovingAverage(MovingAveragePeriod);
         _errorRateMovingAverage = new MovingAverage(MovingAveragePeriod);
+        _streamIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetStreamIoRateStreamId(), DiagnosticsConstants.StreamIoRateStreamName);
+        _entityIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetEntityIoRateStreamId(), DiagnosticsConstants.EntityIoRateStreamName);
+        _eventIoRate = new ResourceIoRate(_diagnosticsOmfMessageCreator.GetEventIoRateStreamId(), DiagnosticsConstants.EventIoRateStreamName);
 
         _componentId = componentId;
         _componentType = componentType;
@@ -176,6 +185,9 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
             _instrumentedMessageProcessor.ClearCounters();
             _errorRateMovingAverage.ClearSamples();
             _ioRateMovingAverage.ClearSamples();
+            _streamIoRate.MovingAverage.ClearSamples();
+            _entityIoRate.MovingAverage.ClearSamples();
+            _eventIoRate.MovingAverage.ClearSamples();
 
             _instrumentedLogger.LogDebug("{ServiceName} is Stopped.", nameof(AdapterDiagnosticsService));
         }
@@ -297,6 +309,15 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
                 _ioRateMovingAverage.AddSample(sentEventsCount);
 
+                if (_publishOmf20Diagnostics)
+                {
+                    var resourceCounts = _instrumentedMessageProcessor.GetAndResetResourceCounters();
+
+                    _streamIoRate.MovingAverage.AddSample(resourceCounts.StreamValues);
+                    _entityIoRate.MovingAverage.AddSample(resourceCounts.Entities);
+                    _eventIoRate.MovingAverage.AddSample(resourceCounts.Events);
+                }
+
                 if (_failedToCreateDiagnosticsTypes)
                 {
                     return;
@@ -308,7 +329,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                     SendStreamCountEventWhenChanged();
                 }
 
-                // EntityCount and EventCount diagnostics only exist for OMF 2.0.
+                // EntityCount, EventCount and the resource IO rate diagnostics only exist for OMF 2.0.
                 if (!_publishOmf20Diagnostics)
                 {
                     return;
@@ -323,6 +344,8 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                 {
                     SendEventCountEventWhenChanged();
                 }
+
+                SendResourceIoRateEvents();
             }
             finally
             {
@@ -534,6 +557,46 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         _timerTickIoRateCounter--;
     }
 
+    private void SendResourceIoRateEvents()
+    {
+        if (_timerTickResourceIoRateCounter <= 0)
+        {
+            _timerTickResourceIoRateCounter = SendResourceIoRatePeriod;
+
+            SendResourceIoRateEvent(_streamIoRate);
+            SendResourceIoRateEvent(_entityIoRate);
+            SendResourceIoRateEvent(_eventIoRate);
+        }
+
+        _timerTickResourceIoRateCounter--;
+    }
+
+    // A failure stops only the failing stream, so the other resource IO rates keep publishing.
+    private void SendResourceIoRateEvent(ResourceIoRate resourceIoRate)
+    {
+        if (resourceIoRate.Failed)
+        {
+            return;
+        }
+
+        var ioRateEvent = new IoRateEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            IORate = resourceIoRate.MovingAverage.ComputeAverage(),
+        };
+
+        try
+        {
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(resourceIoRate.StreamId, Classification.Dynamic, ioRateEvent);
+        }
+        catch (Exception ex)
+        {
+            _instrumentedLogger.LogError(ex, "Failed to process {StreamName} diagnostics event. Stopping that stream's diagnostics data collection.", resourceIoRate.StreamName);
+
+            resourceIoRate.Failed = true;
+        }
+    }
+
     private void CreateDiagnosticsTypesStreams()
     {
         try
@@ -546,6 +609,28 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
             _failedToCreateDiagnosticsTypes = true;
         }
+    }
+
+    #endregion
+
+    #region Private Classes
+
+    // Tracks one per-component resource IO rate stream: StreamIORate, EntityIORate or EventIORate.
+    private sealed class ResourceIoRate
+    {
+        public ResourceIoRate(string streamId, string streamName)
+        {
+            StreamId = streamId;
+            StreamName = streamName;
+        }
+
+        public string StreamId { get; }
+
+        public string StreamName { get; }
+
+        public MovingAverage MovingAverage { get; } = new(MovingAveragePeriod);
+
+        public bool Failed { get; set; }
     }
 
     #endregion

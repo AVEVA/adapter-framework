@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -604,7 +604,7 @@ public class OmfWriter_Tests : IDisposable
             () =>
             {
                 var counts = _omfWriter.GetAndResetEgressedResourceCounters();
-                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Entities + counts.Entities, egressed.Events + counts.Events);
                 return egressed == resourceCounts;
             },
             SuccessfulSendExpectedWaitTime));
@@ -665,7 +665,7 @@ public class OmfWriter_Tests : IDisposable
             () =>
             {
                 var counts = _omfWriterBuffered.GetAndResetEgressedResourceCounters();
-                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Assets + counts.Assets, egressed.Events + counts.Events);
+                egressed = new OmfResourceCounts(egressed.StreamValues + counts.StreamValues, egressed.Entities + counts.Entities, egressed.Events + counts.Events);
                 return egressed == resourceCounts;
             },
             TimeToWaitForBufferedRetry));

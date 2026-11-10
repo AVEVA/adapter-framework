@@ -52,7 +52,7 @@ public interface IOmfEndpointManager
     IReadOnlyDictionary<string, long> GetAndResetEgressedValuesCounters();
 
     /// <summary>
-    /// Gets the number of OMF 2.0 streaming values, assets and events successfully delivered to each endpoint and then resets their counters.
+    /// Gets the number of OMF 2.0 streaming values, entities and events successfully delivered to each endpoint and then resets their counters.
     /// </summary>
     /// <returns>The per-resource number of instances successfully delivered, keyed by endpoint ID.</returns>
     IReadOnlyDictionary<string, OmfResourceCounts> GetAndResetEgressedResourceCounters() => new Dictionary<string, OmfResourceCounts>();

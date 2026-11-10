@@ -26,8 +26,10 @@ using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.Health;
 using AdapterFramework.Data.Framework.Abstractions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Security;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using static AdapterFramework.Data.Framework.Abstractions.Constants.EdgeSystemConstants;
 
 [assembly: InternalsVisibleTo("AdapterFramework.Data.Framework.EndpointManager.Tests")]
@@ -45,9 +47,18 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     private readonly IConfigurationProvider _configurationProvider;
     private readonly IOmfWriterFactory _writerFactory;
     private readonly ILogManager _logManager;
+    private readonly OmfAwaitableCoordinator _awaitableCoordinator;
+
+    // Orders delivery registration against writer removal, so a removal discards every delivery registered for the writer.
+    // Only writer list changes and enqueues run under it. Writer disposal and buffer file I/O run outside it, except during a reset.
+    private readonly object _dispatchLock = new();
+
+    // Serializes endpoint changes, so a removed writer can be disposed outside the dispatch lock before its ID is added again.
+    private readonly object _configurationLock = new();
 
     private bool _disposed;
     private ILogger _logger;
+    private OmfAwaitableCoordinator _dispatchCoordinator;
     private BufferingConfiguration _bufferingConfiguration;
     private ImmutableArray<IOmfWriter> _writers = ImmutableArray.Create<IOmfWriter>();
     private Action<DeviceStatus> _deviceStatusHandler = _ => { };
@@ -59,16 +70,19 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     /// <param name="writerFactory">Writer factory.</param>
     /// <param name="logManager">Log manager instance.</param>
     /// <param name="configurationProtector">Configuration protector instance.</param>
+    /// <param name="awaitableCoordinator">Optional coordinator that receives the deliveries of bodies with a serialized message ID. Used only for data endpoints.</param>
     public OmfEndpointManager(
         IConfigurationProvider configurationProvider,
         IOmfWriterFactory writerFactory,
         ILogManager logManager,
-        IConfigurationProtector configurationProtector)
+        IConfigurationProtector configurationProtector,
+        OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         _configurationProvider = configurationProvider;
         _writerFactory = writerFactory;
         _logManager = logManager;
         _configurationProtector = configurationProtector;
+        _awaitableCoordinator = awaitableCoordinator;
     }
 
     public void Initialize(string componentId, string facet)
@@ -78,27 +92,74 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
         _logger = _logManager.GetOrCreateLogger(componentId);
         _bufferingConfiguration = BufferingConfiguration.GetOrCreateBufferingConfiguration(_configurationProvider, _logger);
+        _dispatchCoordinator = facet.Equals(DataEndpointsFacetName, StringComparison.OrdinalIgnoreCase) ? _awaitableCoordinator : null;
 
-        AddOmfWriters(componentId, facet);
+        lock (_configurationLock)
+        {
+            AddOmfWriters(componentId, facet);
+        }
     }
 
     public void SendMessage(ISerializedOmfMessage serializedMessage)
     {
         ThrowHelper.ThrowIfArgumentNull(serializedMessage, nameof(serializedMessage));
 
-        foreach (var writer in _writers)
+        lock (_dispatchLock)
         {
-            try
+            // Snapshot, delivery registration, and enqueue share the removal lock so endpoint
+            // removal cannot miss a delivery registered for that writer.
+            // Enqueue can flush to disk inline, as on main; deferring that to the queue's background task was considered and not adopted.
+            var writers = _writers;
+            var serializedMessageId = _dispatchCoordinator is null ? null : serializedMessage.SerializedMessageId;
+            if (serializedMessageId is { } bodyId)
             {
-                writer.SendMessage(serializedMessage);
+                try
+                {
+                    _dispatchCoordinator.RegisterDeliveries(bodyId, writers.Select(writer => new OmfDeliveryTarget(writer.Id, writer.TargetUri)).ToList());
+                }
+                catch (Exception ex)
+                {
+                    // Tracking failures must not stop delivery to the endpoints.
+                    _logger.LogError(ex, "Failed to register endpoint deliveries for acceptance tracking. The message will still be sent.");
+                    serializedMessageId = null;
+                    try
+                    {
+                        _dispatchCoordinator.RecordBodyDiscarded(bodyId, new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                    }
+                    catch (Exception trackingEx)
+                    {
+                        _logger.LogError(trackingEx, "Failed to discard the body for acceptance tracking.");
+                    }
+                }
             }
-            catch (Exception ex)
+
+            foreach (var writer in writers)
             {
-                _logger.LogError(
-                    ex,
-                    SendErrorMessageTemplate,
-                    OmfByteHttpClient.GetOmfMessageType(serializedMessage.MessageType).ToString().ToUpperInvariant(),
-                    writer);
+                try
+                {
+                    writer.SendMessage(serializedMessage);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        SendErrorMessageTemplate,
+                        OmfByteHttpClient.GetOmfMessageType(serializedMessage.MessageType).ToString().ToUpperInvariant(),
+                        writer);
+
+                    if (serializedMessageId is { } failedId)
+                    {
+                        try
+                        {
+                            _dispatchCoordinator.RecordDisposition(
+                                failedId, writer.Id, OmfDeliveryState.Discarded, null, new OmfOutcomeReason(OmfReasonCode.EnqueueFailed, ex.Message));
+                        }
+                        catch (Exception trackingEx)
+                        {
+                            _logger.LogError(trackingEx, "Failed to record a discarded delivery for acceptance tracking.");
+                        }
+                    }
+                }
             }
         }
     }
@@ -107,7 +168,13 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     {
         var result = new Dictionary<string, long>();
 
-        foreach (var writer in _writers)
+        ImmutableArray<IOmfWriter> writers;
+        lock (_dispatchLock)
+        {
+            writers = _writers;
+        }
+
+        foreach (var writer in writers)
         {
             result[writer.Id] = writer.GetAndResetEgressedValuesCounter();
         }
@@ -131,6 +198,14 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
     {
         ThrowHelper.ThrowIfArgumentNull(configurationChangedEvent, nameof(configurationChangedEvent));
 
+        lock (_configurationLock)
+        {
+            return AddRemoveEndpointsCore(configurationChangedEvent, omfWriterType);
+        }
+    }
+
+    private bool AddRemoveEndpointsCore(ConfigurationChangedEventArgs configurationChangedEvent, OmfWriterType omfWriterType)
+    {
         if (configurationChangedEvent.NewValue is EndpointConfigurationBase[] newConfigurations)
         {
             var resendTypesAndStreams = false;
@@ -141,7 +216,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
                 var oldIdsToRemove = oldConfigurations.Except(newConfigurations, new EndpointConfigurationComparer()).Select(x => x.Id);
                 foreach (var oldIdToRemove in oldIdsToRemove)
                 {
-                    RemoveOmfWriter(oldIdToRemove);
+                    RemoveOmfWriter(oldIdToRemove, EndpointRemovedReason(oldIdToRemove));
                 }
             }
 
@@ -195,7 +270,7 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
             return resendTypesAndStreams;
         }
 
-        RemoveOmfWriters();
+        RemoveOmfWriters(EndpointRemovedReason);
 
         UpdateEgressComponentDeviceStatus();
         return false;
@@ -208,6 +283,21 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     public Task ResetDataBuffersAsync()
     {
+        lock (_configurationLock)
+        {
+            // Reset replaces every writer, so sends wait instead of finding no writers mid-reset.
+            // The new writers reuse the old writers' buffer files, so they can't be created until the old ones are disposed.
+            // Trade-off: sends block for the whole reset, including writer disposal, which is acceptable for a rare operator action.
+            // A writer whose disposal hangs (for example, on stuck file I/O) blocks every send until it finishes.
+            lock (_dispatchLock)
+            {
+                return ResetDataBuffersCore();
+            }
+        }
+    }
+
+    private Task ResetDataBuffersCore()
+    {
         if (NoOmfWriters())
         {
             _logger.LogWarning("Aborted resetting data buffers - no data buffers to reset.");
@@ -215,13 +305,22 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
         }
 
         _logger.LogWarning("Started resetting data buffers.");
-        RemoveOmfWriters();
+        RemoveOmfWriters(_ => new OmfOutcomeReason(OmfReasonCode.BuffersReset, "An operator reset the data buffers."));
         AddOmfWriters(OmfEgressComponentId, DataEndpointsFacetName);
         _logger.LogWarning("Completed resetting data buffers.");
         return Task.CompletedTask;
     }
 
     public void UpdateBufferSize(int newMaxBufferSizeMB)
+    {
+        // Every writer list change takes this lock, so no writer is disposed while its files are resized, and sends aren't blocked.
+        lock (_configurationLock)
+        {
+            UpdateBufferSizeCore(newMaxBufferSizeMB);
+        }
+    }
+
+    private void UpdateBufferSizeCore(int newMaxBufferSizeMB)
     {
         if (_bufferingConfiguration == null)
             return;
@@ -249,17 +348,32 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     protected virtual void Dispose(bool disposing)
     {
-        if (_disposed || !disposing)
+        if (!disposing)
         {
             return;
         }
 
-        foreach (var writer in _writers)
+        lock (_configurationLock)
         {
-            writer?.Dispose();
-        }
+            ImmutableArray<IOmfWriter> writers;
+            lock (_dispatchLock)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
 
-        _disposed = true;
+                _disposed = true;
+                writers = _writers;
+                _writers = ImmutableArray<IOmfWriter>.Empty;
+            }
+
+            // Like RemoveOmfWriter: detached under the dispatch lock, disposed outside it so sends don't wait.
+            foreach (var writer in writers)
+            {
+                writer?.Dispose();
+            }
+        }
     }
 
     private void AddOmfWriters(string componentId, string facet)
@@ -291,20 +405,28 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
 
     private bool NoOmfWriters() => _createdWriters.IsEmpty();
 
-    private void RemoveOmfWriters()
+    private static OmfOutcomeReason EndpointRemovedReason(string id) =>
+        new(OmfReasonCode.EndpointRemoved, $"Endpoint '{id}' was removed by a configuration change.");
+
+    private void RemoveOmfWriters(Func<string, OmfOutcomeReason> reason)
     {
         var writersToRemove = new List<string>(_createdWriters.Keys);
         foreach (var writerToRemove in writersToRemove)
         {
-            RemoveOmfWriter(writerToRemove);
+            RemoveOmfWriter(writerToRemove, reason(writerToRemove));
         }
     }
 
-    private void RemoveOmfWriter(string id)
+    private void RemoveOmfWriter(string id, OmfOutcomeReason reason)
     {
         if (_createdWriters.TryGetValue(id, out var writer))
         {
-            _writers = _writers.Remove(writer);
+            lock (_dispatchLock)
+            {
+                _writers = _writers.Remove(writer);
+                _dispatchCoordinator?.RecordEndpointDiscarded(id, reason);
+            }
+
             _createdWriters.Remove(id);
             writer.Dispose();
             writer.DeleteBuffers();
@@ -349,7 +471,10 @@ public class OmfEndpointManager : IOmfHealthEndpointManager, IOmfDataEndpointMan
             var writer = _writerFactory.GetOmfWriterInstance(writerConfig, _logger, writerType, bufferingConfig, ErrorCallback);
             _writersDeviceStatus.TryAdd(writerConfig.Id, DeviceStatus.Starting);
             _createdWriters.Add(writerConfig.Id, writer);
-            _writers = _writers.Add(writer);
+            lock (_dispatchLock)
+            {
+                _writers = _writers.Add(writer);
+            }
         }
         catch (Exception ex)
         {

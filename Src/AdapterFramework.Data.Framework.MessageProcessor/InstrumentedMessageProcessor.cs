@@ -1,4 +1,4 @@
-﻿// Copyright 2018-2026 AVEVA Group Limited
+// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,17 +24,19 @@ using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Abstractions.General;
 using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Abstractions.Metadata;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.MessageProcessor;
 
-public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
+public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScopedMessageProcessor, IAwaitableMessageProcessor
 {
     #region Private Fields
 
-    private readonly IMessageProcessor _messageProcessor;
+    private readonly IScopedMessageProcessor _messageProcessor;
     private readonly ConcurrentDictionary<string, (DataType DataType, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (DataStream DataStream, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _dataStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, (Link Link, MessageAction MessageAction, PartitionTargets Targets, long Sequence)> _relationships = new(StringComparer.OrdinalIgnoreCase);
@@ -54,6 +56,11 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
     // Data events since the last GetAndResetEventsCounter() call, published as IORate.
     private long _ioEventsCount;
+
+    // Resources since the last GetAndResetResourceCounters() call (deletes excluded), published as StreamIORate, EntityIORate and EventIORate.
+    private long _streamValuesSinceLastRead;
+    private long _entitiesSinceLastRead;
+    private long _eventsSinceLastRead;
     private long _cacheOrderSequence;
 
     #endregion
@@ -62,7 +69,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
 
     public InstrumentedMessageProcessor(IMessageProcessor messageProcessor, ILogger logger, string componentId, string componentType)
     {
-        _messageProcessor = messageProcessor;
+        _messageProcessor = messageProcessor?.AsScoped();
         _logger = logger;
         _componentId = componentId;
 
@@ -96,50 +103,48 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     #region IMessageProcessor Implementation
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, MessageAction messageAction)
+    public bool TryCreateAwaitableScope(OmfAwaitableScopeOptions options, out IAwaitableMessageScope scope)
     {
-        ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
+        if (!TryCreateScope(options, out var token))
+        {
+            scope = null;
+            return false;
+        }
 
-        PrepareDataType(dataType);
-
-        _messageProcessor.WriteType(dataType, messageAction);
-
-        CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
+        scope = new AwaitableMessageScope(this, token);
+        return true;
     }
 
     /// <inheritdoc/>
-    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction)
+    public bool TryCreateScope(OmfAwaitableScopeOptions options, out ScopeToken scope) => _messageProcessor.TryCreateScope(options, out scope);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, MessageAction messageAction) => WriteType(dataType, messageAction, null, null);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, PartitionKey partitionKey, MessageAction messageAction) => WriteType(dataType, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteType(DataType dataType, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataType, nameof(dataType));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         PrepareDataType(dataType);
 
-        _messageProcessor.WriteType(dataType, partitionKey, messageAction);
+        _messageProcessor.WriteType(dataType, messageAction, partitionKey, scope);
 
         CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
-
-        foreach (var dataType in dataTypes)
-        {
-            PrepareDataType(dataType);
-        }
-
-        _messageProcessor.WriteTypes(dataTypes, messageAction);
-
-        foreach (var dataType in dataTypes)
-        {
-            CacheDataTypeUpdateInstrumentation(dataType, messageAction, PartitionTargets.From(null));
-        }
-    }
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteTypes(DataType[] dataTypes, PartitionKey partitionKey, MessageAction messageAction) => WriteTypes(dataTypes, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteTypes(DataType[] dataTypes, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataTypes, nameof(dataTypes));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
@@ -149,7 +154,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             PrepareDataType(dataType);
         }
 
-        _messageProcessor.WriteTypes(dataTypes, partitionKey, messageAction);
+        _messageProcessor.WriteTypes(dataTypes, messageAction, partitionKey, scope);
 
         foreach (var dataType in dataTypes)
         {
@@ -158,52 +163,32 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
-
-        PrepareDataStream(dataStream);
-
-        _messageProcessor.WriteStream(dataStream, messageAction);
-
-        CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
-    }
+    public void WriteStream(DataStream dataStream, MessageAction messageAction) => WriteStream(dataStream, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteStream(DataStream dataStream, PartitionKey partitionKey, MessageAction messageAction) => WriteStream(dataStream, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteStream(DataStream dataStream, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
         PrepareDataStream(dataStream);
 
-        _messageProcessor.WriteStream(dataStream, partitionKey, messageAction);
+        _messageProcessor.WriteStream(dataStream, messageAction, partitionKey, scope);
 
         CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(partitionKey));
     }
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction)
-    {
-        ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
-
-        foreach (var dataStream in dataStreams)
-        {
-            ThrowHelper.ThrowIfArgumentNull(dataStream, nameof(dataStream));
-
-            PrepareDataStream(dataStream);
-        }
-
-        _messageProcessor.WriteStreams(dataStreams, messageAction);
-
-        foreach (var dataStream in dataStreams)
-        {
-            CacheDataStreamUpdateInstrumentation(dataStream, messageAction, PartitionTargets.From(null));
-        }
-    }
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction)
+    public void WriteStreams(DataStream[] dataStreams, PartitionKey partitionKey, MessageAction messageAction) => WriteStreams(dataStreams, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteStreams(DataStream[] dataStreams, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(dataStreams, nameof(dataStreams));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
@@ -215,7 +200,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
             PrepareDataStream(dataStream);
         }
 
-        _messageProcessor.WriteStreams(dataStreams, partitionKey, messageAction);
+        _messageProcessor.WriteStreams(dataStreams, messageAction, partitionKey, scope);
 
         foreach (var dataStream in dataStreams)
         {
@@ -224,86 +209,133 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
-    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction) where T : class
+    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction) where T : class =>
+        WriteValue(id, classification, instance, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteValue<T>(string id, Classification classification, T instance, MessageAction messageAction, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction);
+        _messageProcessor.WriteValue(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instance, messageAction, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _streamValuesSinceLastRead, 1, messageAction);
     }
 
     /// <inheritdoc/>
-    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null)
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey = null) =>
+        DeleteDynamicValuesInRange(id, range, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void DeleteDynamicValuesInRange(string id, StreamingDataRange range, PartitionKey? partitionKey, ScopeToken scope)
     {
-        _messageProcessor.DeleteDynamicValuesInRange(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), range, partitionKey);
+        _messageProcessor.DeleteDynamicValuesInRange(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), range, partitionKey, scope);
     }
 
     /// <inheritdoc/>
-    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValue(id, instance, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteDynamicValue<T>(string id, T instance, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey);
+        _messageProcessor.WriteDynamicValue(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instance, messageAction, partitionKey, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _streamValuesSinceLastRead, 1, messageAction);
     }
 
     /// <inheritdoc/>
-    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction) where T : class
+    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction) where T : class =>
+        WriteValues(id, classification, instances, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteValues<T>(string id, Classification classification, IReadOnlyList<T> instances, MessageAction messageAction, ScopeToken scope) where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction);
+        _messageProcessor.WriteValues(GetPrefixedOrSanitizedIdentifier(id, classification), classification, instances, messageAction, scope);
 
         AddToIoEventsCount(instances.Count);
+        AddToResourceCount(ref _streamValuesSinceLastRead, instances.Count, messageAction);
     }
 
     /// <inheritdoc/>
-    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class
+    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey = null) where T : class =>
+        WriteDynamicValues(id, instances, messageAction, partitionKey, null);
+
+    /// <inheritdoc/>
+    public void WriteDynamicValues<T>(string id, IReadOnlyList<T> instances, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope) where T : class
     {
         ThrowHelper.ThrowIfArgumentNull(instances, nameof(instances));
 
-        _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey);
+        _messageProcessor.WriteDynamicValues(GetPrefixedOrSanitizedIdentifier(id, Classification.Dynamic), instances, messageAction, partitionKey, scope);
 
         AddToIoEventsCount(instances.Count);
+        AddToResourceCount(ref _streamValuesSinceLastRead, instances.Count, messageAction);
     }
 
     /// <inheritdoc/>
     public void WriteStaticValue<T>(string id, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
-        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction) where T : class
+        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction) where T : class =>
+        WriteStaticValue(id, extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction, null);
+
+    /// <inheritdoc/>
+    public void WriteStaticValue<T>(string id, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides,
+        T instance, IReadOnlyDictionary<string, object> metadata, MessageAction messageAction, ScopeToken scope) where T : class
     {
-        _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction);
+        _messageProcessor.WriteStaticValue(id.ToOmfIdentifier(), extendedPropertyDefinitions, propertyOverrides, instance, metadata, messageAction, scope);
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValue(typeId, id, name, description, dataSource, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction,
+        ScopeToken scope) where T : class
     {
         var entityId = id.ToOmfIdentifier();
 
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
 
         TrackEntityIdentity(entityId, messageAction);
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags = null,
-        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteStaticValue(typeId, id, name, description, dataSource, instance, metadata, tags, propertyOverrides, messageAction, null);
+
+    public void WriteStaticValue<T>(string typeId, string id, string name, string description, string dataSource, T instance, IReadOnlyDictionary<string, object> metadata, List<string> tags,
+        IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, MessageAction messageAction, ScopeToken scope) where T : class
     {
         var entityId = id.ToOmfIdentifier();
 
-        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction);
+        _messageProcessor.WriteStaticValue(ToOmfTypeIdOrNull(typeId, messageAction), entityId, name, description, GetDataSource(dataSource, id), instance, metadata, tags, propertyOverrides, messageAction, scope);
 
         TrackEntityIdentity(entityId, messageAction);
         IncrementIoEventsCount();
+        AddToResourceCount(ref _entitiesSinceLastRead, 1, messageAction);
     }
 
     public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
         IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
-        IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class
+        IReadOnlyDictionary<string, object> metadata = null, List<string> tags = null, List<Link> relationships = null, MessageAction messageAction = MessageAction.Default) where T : class =>
+        WriteEvent(id, typeId, name, description, dataSource, startTime, endTime, extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, null);
+
+    public void WriteEvent<T>(string id, string typeId, string name, string description, string dataSource, DateTime startTime, DateTime? endTime,
+        IReadOnlyDictionary<string, PropertyDefinition> extendedPropertyDefinitions, IReadOnlyDictionary<string, PropertyDefinitionOverride> propertyOverrides, T instance,
+        IReadOnlyDictionary<string, object> metadata, List<string> tags, List<Link> relationships, MessageAction messageAction, ScopeToken scope) where T : class
     {
         var eventId = id.ToOmfIdentifier();
 
         _messageProcessor.WriteEvent(eventId, typeId.ToOmfIdentifier(), name, description, GetDataSource(dataSource, id), startTime, endTime,
-            extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction);
+            extendedPropertyDefinitions, propertyOverrides, instance, metadata, tags, relationships, messageAction, scope);
 
         if (messageAction != MessageAction.Delete)
         {
@@ -311,31 +343,30 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
         }
 
         IncrementIoEventsCount();
+        AddToResourceCount(ref _eventsSinceLastRead, 1, messageAction);
     }
 
-    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default)
-    {
-        ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
-
-        _messageProcessor.WriteSchemaRelationship(link, messageAction);
-
-        CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(null));
-    }
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteSchemaRelationship(link, messageAction, null, null);
 
     /// <inheritdoc/>
-    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default)
+    public void WriteSchemaRelationship(Link link, PartitionKey partitionKey, MessageAction messageAction = MessageAction.Default) =>
+        WriteSchemaRelationship(link, messageAction, partitionKey, null);
+
+    public void WriteSchemaRelationship(Link link, MessageAction messageAction, PartitionKey? partitionKey, ScopeToken scope)
     {
         ThrowHelper.ThrowIfArgumentNull(link, nameof(link));
         AdapterMessageProcessor.ThrowIfInvalidPartitionKey(partitionKey);
 
-        _messageProcessor.WriteSchemaRelationship(link, partitionKey, messageAction);
+        _messageProcessor.WriteSchemaRelationship(link, messageAction, partitionKey, scope);
 
         CacheRelationshipUpdateInstrumentation(link, messageAction, PartitionTargets.From(partitionKey));
     }
 
-    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default)
+    public void WriteInstanceRelationship(Link link, MessageAction messageAction = MessageAction.Default) => WriteInstanceRelationship(link, messageAction, null);
+
+    public void WriteInstanceRelationship(Link link, MessageAction messageAction, ScopeToken scope)
     {
-        _messageProcessor.WriteInstanceRelationship(link, messageAction);
+        _messageProcessor.WriteInstanceRelationship(link, messageAction, scope);
     }
 
     #endregion
@@ -380,12 +411,22 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     }
 
     /// <inheritdoc/>
+    public OmfResourceCounts GetAndResetResourceCounters()
+    {
+        return new OmfResourceCounts(
+            Interlocked.Exchange(ref _streamValuesSinceLastRead, 0),
+            Interlocked.Exchange(ref _entitiesSinceLastRead, 0),
+            Interlocked.Exchange(ref _eventsSinceLastRead, 0));
+    }
+
+    /// <inheritdoc/>
     public void ClearCounters()
     {
         Interlocked.Exchange(ref _typeCount, 0);
         Interlocked.Exchange(ref _streamCount, 0);
         Interlocked.Exchange(ref _ioEventsCount, 0);
         Interlocked.Exchange(ref _eventCount, 0);
+        GetAndResetResourceCounters();
 
         // Tracked entity identities are retained on purpose: entities still exist downstream after a stop, so EntityCount must not
         // fall to zero when an adapter does not re-send its static values on start.
@@ -396,9 +437,12 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     /// <inheritdoc/>
     public void ResendTypesAndStreams()
     {
-        Resend(_dataTypes.Values, _messageProcessor.WriteType, _messageProcessor.WriteType);
-        Resend(_dataStreams.Values, _messageProcessor.WriteStream, _messageProcessor.WriteStream);
-        Resend(_relationships.Values, _messageProcessor.WriteSchemaRelationship, _messageProcessor.WriteSchemaRelationship);
+        Resend(_dataTypes.Values, (dataType, messageAction) => _messageProcessor.WriteType(dataType, messageAction, null, null),
+            (dataType, partitionKey, messageAction) => _messageProcessor.WriteType(dataType, messageAction, partitionKey, null));
+        Resend(_dataStreams.Values, (dataStream, messageAction) => _messageProcessor.WriteStream(dataStream, messageAction, null, null),
+            (dataStream, partitionKey, messageAction) => _messageProcessor.WriteStream(dataStream, messageAction, partitionKey, null));
+        Resend(_relationships.Values, (link, messageAction) => _messageProcessor.WriteSchemaRelationship(link, messageAction, null, null),
+            (link, partitionKey, messageAction) => _messageProcessor.WriteSchemaRelationship(link, messageAction, partitionKey, null));
     }
 
     /// <inheritdoc/>
@@ -569,6 +613,15 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor
     private void AddToIoEventsCount(int count)
     {
         Interlocked.Add(ref _ioEventsCount, count);
+    }
+
+    // Deletes still count toward IORate, but not toward the resource rates, matching EventCount and the egress resource rates.
+    private static void AddToResourceCount(ref long counter, int count, MessageAction messageAction)
+    {
+        if (messageAction != MessageAction.Delete)
+        {
+            Interlocked.Add(ref counter, count);
+        }
     }
 
     private void AddMetadataValues(DataStream dataStream)

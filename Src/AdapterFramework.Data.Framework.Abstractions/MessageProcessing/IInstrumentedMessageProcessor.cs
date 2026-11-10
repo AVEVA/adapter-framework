@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.Messages;
 
 namespace AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 
@@ -64,8 +65,18 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     long GetAndResetEventsCounter();
 
     /// <summary>
+    /// Gets the number of stream values, entities and events accepted by the processor since the last call, and resets them to 0.
+    /// Stream values come from the <c>WriteValue</c>, <c>WriteValues</c>, <c>WriteDynamicValue</c> and <c>WriteDynamicValues</c> methods,
+    /// entities from <c>WriteStaticValue</c> and events from <c>WriteEvent</c>. Deletes are not counted. Acceptance by the processor is not
+    /// a delivery guarantee. Implementations relying on the default interface member report no resources.
+    /// </summary>
+    /// <returns>Resource counts since the last time this method was called.</returns>
+    OmfResourceCounts GetAndResetResourceCounters() => default;
+
+    /// <summary>
     /// Clears the counters in the <see cref="IInstrumentedMessageProcessor"/> service. Number of Types, Streams,
-    /// data events (<see cref="GetAndResetEventsCounter"/>) and OMF 2.0 events (<see cref="GetEventCount"/>) are going to be cleared.
+    /// data events (<see cref="GetAndResetEventsCounter"/>), resource counts (<see cref="GetAndResetResourceCounters"/>)
+    /// and OMF 2.0 events (<see cref="GetEventCount"/>) are going to be cleared.
     /// Tracked entity identities are retained, so <see cref="GetEntityCount"/> is not affected. An adapter that drops entities
     /// across a stop and start without sending deletes keeps them counted until the process restarts.
     /// </summary>

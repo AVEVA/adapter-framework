@@ -21,9 +21,11 @@ using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.DataModel;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
 
@@ -55,6 +57,8 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
     private int _currentStreamCount;
     private int _currentTypeCount;
     private long _lastFlush;
+    private ScopeSidecarBuilder _sidecar;
+    private List<ScopeSealBarrier> _awaitingFlush;
 
     #endregion
 
@@ -139,6 +143,9 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
             case StateMessage state:
                 ProcessState(state);
                 break;
+            case ScopeSealBarrier seal:
+                ProcessSeal(seal);
+                break;
             case FlushThenForwardMessage forward:
                 Flush();
                 Forward(forward);
@@ -174,9 +181,35 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
 
     private static List<DataType> TypesBatchFactory() => [];
 
+    private void ProcessSeal(ScopeSealBarrier seal)
+    {
+        if (_sidecar?.Contains(seal.Scope) != true)
+        {
+            _flush(new ScopeMaterializationBarrier(seal.Scope, seal.ExpectedBarrierCount));
+            return;
+        }
+
+        (_awaitingFlush ??= []).Add(seal);
+        if (seal.FlushOnSeal)
+        {
+            Flush();
+        }
+    }
+
+    private ScopeSidecarBuilder Track(ScopeToken scope)
+    {
+        if (scope is not null)
+        {
+            _sidecar ??= new ScopeSidecarBuilder();
+        }
+
+        return _sidecar;
+    }
+
     private void ProcessRelationshipMessage(RelationshipMessage relationshipMessage)
     {
         _relationships ??= [];
+        Track(relationshipMessage.Scope)?.AddEntry(ScopeSidecarKind.Relationships, _relationships.Count, relationshipMessage.Scope);
         _relationships.Add(relationshipMessage.Relationship);
     }
 
@@ -184,21 +217,23 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
     {
         if (omfMessage.Count == 1)
         {
-            AddValueToCurrentBatch(omfMessage.Values[0]);
+            AddValueToCurrentBatch(omfMessage.Values[0], omfMessage.Scope);
         }
         else if (omfMessage.Count > 1)
         {
-            AddValuesToCurrentBatch(omfMessage.Values);
+            AddValuesToCurrentBatch(omfMessage.Values, omfMessage.Scope);
         }
     }
 
-    private void AddValueToCurrentBatch<T>(T value)
+    private void AddValueToCurrentBatch<T>(T value, ScopeToken scope)
     {
         if (value is DataType dataType)
         {
+            var sidecar = Track(scope);
             if (dataType.Relationships != null)
             {
                 _relationships ??= [];
+                sidecar?.AddEntries(ScopeSidecarKind.Relationships, _relationships.Count, dataType.Relationships.Count, scope);
                 _relationships.AddRange(dataType.Relationships);
                 // Operate on a shallow copy so the relationships are not cleared from the
                 // original instance, which may be cached elsewhere (e.g. for resending).
@@ -206,6 +241,7 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
                 dataType.Relationships = null;
             }
 
+            sidecar?.AddEntry(ScopeSidecarKind.Types, _currentTypesBatch.Count, scope);
             _currentTypesBatch.Add(dataType);
             _currentTypeCount++;
 
@@ -216,6 +252,7 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
         }
         else if (value is DataStream dataStream)
         {
+            Track(scope)?.AddEntry(ScopeSidecarKind.Containers, _currentStreamsBatch.Count, scope);
             _currentStreamsBatch.Add(dataStream);
             _currentStreamCount++;
 
@@ -226,13 +263,13 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
         }
     }
 
-    private void AddValuesToCurrentBatch<T>(IReadOnlyCollection<T> values)
+    private void AddValuesToCurrentBatch<T>(IReadOnlyCollection<T> values, ScopeToken scope)
     {
         if (values is IEnumerable<DataType> dataTypes)
         {
             foreach (var dataType in dataTypes)
             {                
-                AddValueToCurrentBatch(dataType);
+                AddValueToCurrentBatch(dataType, scope);
             }
         }
 
@@ -240,6 +277,7 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
         {
             if (_currentStreamCount + values.Count <= _maxStreamsBatchCount)
             {
+                Track(scope)?.AddEntries(ScopeSidecarKind.Containers, _currentStreamsBatch.Count, values.Count, scope);
                 _currentStreamsBatch.AddRange(dataStreams);
                 _currentStreamCount += values.Count;
 
@@ -252,13 +290,31 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
             {
                 foreach (var dataStream in dataStreams)
                 {
-                    AddValueToCurrentBatch(dataStream);
+                    AddValueToCurrentBatch(dataStream, scope);
                 }
             }
         }
     }
 
     private void Flush()
+    {
+        FlushBuffered();
+        _sidecar = null;
+
+        if (_awaitingFlush is null)
+        {
+            return;
+        }
+
+        foreach (var seal in _awaitingFlush)
+        {
+            _flush(new ScopeMaterializationBarrier(seal.Scope, seal.ExpectedBarrierCount));
+        }
+
+        _awaitingFlush = null;
+    }
+
+    private void FlushBuffered()
     {
         var relationshipCount = _relationships?.Count ?? 0;
         if (_currentStreamCount == 0 && _currentTypeCount == 0 && relationshipCount == 0)
@@ -298,7 +354,10 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
         }
 
 #pragma warning disable CA2000 // Dispose objects before losing scope
-        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true, _partitionKey));
+        _flush(new SchemaMessage(typesArray, streamsArray, relationshipsArray, typeCount, streamCount, relationshipCount, _messageAction, true, _partitionKey)
+        {
+            Sidecar = _sidecar?.BuildSchema(),
+        });
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
         _lastFlush = Environment.TickCount64;
@@ -336,7 +395,7 @@ public sealed class SchemaGroupingBlock : DefinitionsBlock
 
     private bool FlushDue()
     {
-        return Environment.TickCount64 - _lastFlush >= _maxFlushTime && (_currentStreamCount > 0 || _currentTypeCount > 0);
+        return Environment.TickCount64 - _lastFlush >= _maxFlushTime && (_currentStreamCount > 0 || _currentTypeCount > 0 || _relationships?.Count > 0);
     }
 
     private void SetBatchContextAndFlushOnChange(MessageAction incomingMessageAction, PartitionKey? incomingPartitionKey)

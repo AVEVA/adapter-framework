@@ -19,7 +19,7 @@ public static class DiagnosticsConstants
     public const string IoRateTypeId = "Diagnostics.IORate";
     public const string IoRateStreamName = "IORate";
     public const string StreamIoRateStreamName = "StreamIORate";
-    public const string AssetIoRateStreamName = "AssetIORate";
+    public const string EntityIoRateStreamName = "EntityIORate";
     public const string EventIoRateStreamName = "EventIORate";
     public const string ErrorRateTypeId = "Diagnostics.Adapter.ErrorRate";
     public const string ErrorRateStreamName = "ErrorRate";

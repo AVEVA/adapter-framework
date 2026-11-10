@@ -30,6 +30,9 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     private const string EntityCountDescription = "Number of unique OMF 2.0 entities currently tracked by the adapter. Entities are removed only by an explicit delete and are retained when the adapter stops and starts.";
     private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
+    private const string StreamIoRateDescription = "Stream values written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
+    private const string EntityIoRateDescription = "Entities written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
+    private const string EventIoRateDescription = "Events written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
 
     private readonly LinkNode _assetNode;
     private readonly string _streamIdPrefix;
@@ -76,6 +79,12 @@ public class AdapterDiagnosticsOmfMessageCreator
     }
 
     public string GetIoRateStreamId() => $"{_streamIdPrefix}.{IoRateStreamName}";
+
+    public string GetStreamIoRateStreamId() => $"{_streamIdPrefix}.{StreamIoRateStreamName}";
+
+    public string GetEntityIoRateStreamId() => $"{_streamIdPrefix}.{EntityIoRateStreamName}";
+
+    public string GetEventIoRateStreamId() => $"{_streamIdPrefix}.{EventIoRateStreamName}";
 
     public string GetStreamCountStreamId() => $"{_streamIdPrefix}.{StreamCountStreamName}";
 
@@ -213,18 +222,15 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
-        // EntityCount and EventCount are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
+        // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
         if (_publishOmf20Diagnostics)
         {
-            // Link adapter entity count to adapter component health asset
-            targetLink = new DataStreamLinkNode(GetEntityCountStreamId());
-            link = new Link(sourceLink, targetLink);
-            links.Add((Tokens.Link, Classification.Static, link));
-
-            // Link adapter event count to adapter component health asset
-            targetLink = new DataStreamLinkNode(GetEventCountStreamId());
-            link = new Link(sourceLink, targetLink);
-            links.Add((Tokens.Link, Classification.Static, link));
+            foreach (var streamId in new[] { GetEntityCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
+            {
+                targetLink = new DataStreamLinkNode(streamId);
+                link = new Link(sourceLink, targetLink);
+                links.Add((Tokens.Link, Classification.Static, link));
+            }
         }
 
         return links;
@@ -263,11 +269,15 @@ public class AdapterDiagnosticsOmfMessageCreator
             Name = IoRateStreamName,
         };
 
-        // EntityCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
         if (!_publishOmf20Diagnostics)
         {
             return new[] { streamCountStream, ioRateStream };
         }
+
+        // The resource IO rates share the IORate type and count what this component wrote, not what was delivered.
+        DataStream CreateResourceIoRateStream(string id, string name, string description) =>
+            new DataStream { Id = id, TypeId = IoRateTypeId, Name = name, Description = description };
 
         return new[]
         {
@@ -287,6 +297,9 @@ public class AdapterDiagnosticsOmfMessageCreator
                 Description = EventCountDescription,
             },
             ioRateStream,
+            CreateResourceIoRateStream(GetStreamIoRateStreamId(), StreamIoRateStreamName, StreamIoRateDescription),
+            CreateResourceIoRateStream(GetEntityIoRateStreamId(), EntityIoRateStreamName, EntityIoRateDescription),
+            CreateResourceIoRateStream(GetEventIoRateStreamId(), EventIoRateStreamName, EventIoRateDescription),
         };
     }
 

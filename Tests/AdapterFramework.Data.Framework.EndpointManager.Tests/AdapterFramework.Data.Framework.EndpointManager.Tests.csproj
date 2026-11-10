@@ -36,6 +36,7 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\..\Src\AdapterFramework.Data.Framework.Abstractions\AdapterFramework.Data.Framework.Abstractions.csproj" />
     <ProjectReference Include="..\..\Src\AdapterFramework.Data.Framework.Compression\AdapterFramework.Data.Framework.Compression.csproj" />
     <ProjectReference Include="..\..\Src\AdapterFramework.Data.Framework.ConfigurationProvider\AdapterFramework.Data.Framework.ConfigurationProvider.csproj" />
+    <ProjectReference Include="..\..\Src\AdapterFramework.Data.Framework.Failover\AdapterFramework.Data.Framework.Failover.csproj" />
     <ProjectReference Include="..\..\Src\AdapterFramework.Data.Framework.Serialization\AdapterFramework.Data.Framework.Serialization.csproj" />
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Tests.Helper\AdapterFramework.Data.Framework.Tests.Helper.csproj" />
   </ItemGroup>

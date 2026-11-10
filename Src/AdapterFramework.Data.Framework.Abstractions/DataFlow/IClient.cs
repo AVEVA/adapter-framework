@@ -43,4 +43,20 @@ public interface IClient : IDisposable
     /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service.</param>
     /// <returns>An EndpointResponse, which contains information about the status of the message sent.</returns>
     Task<EndpointResponse> SendMessageAsync(MessageType messageType, byte[] messageBody, MessageAction messageAction, OmfVersion omfVersion, CancellationToken token, PartitionKey? partitionKey = null);
+
+    /// <summary>
+    /// Sends a message to the OMF endpoint, optionally reading the receipt from a 202 Accepted response.
+    /// </summary>
+    /// <param name="messageType">An enum that represents the type of the message.</param>
+    /// <param name="messageBody">The byte representation of the OMF payload.</param>
+    /// <param name="messageAction">The <see cref="MessageAction"/> that will be sent with the message.</param>
+    /// <param name="omfVersion">The OMF version.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service.</param>
+    /// <param name="readReceipt">Whether to read the receipt from a 202 response, for deliveries whose acceptance is tracked.</param>
+    /// <param name="token">Propagates notification that operations should be canceled.</param>
+    /// <returns>An EndpointResponse, which contains information about the status of the message sent.</returns>
+    /// <remarks>The default implementation ignores <paramref name="readReceipt"/>, so the response has no receipt.</remarks>
+    Task<EndpointResponse> SendMessageAsync(
+        MessageType messageType, byte[] messageBody, MessageAction messageAction, OmfVersion omfVersion, PartitionKey? partitionKey, bool readReceipt, CancellationToken token) =>
+        SendMessageAsync(messageType, messageBody, messageAction, omfVersion, token, partitionKey);
 }

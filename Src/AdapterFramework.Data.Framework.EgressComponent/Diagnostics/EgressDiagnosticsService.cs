@@ -91,7 +91,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     /// <param name="elementNodeLink">The node to link all the diagnostics stream to.</param>
     /// <param name="healthService">Instance of <see cref="IEdgeComponentHealthService"/>.</param>
     /// <param name="omfVersion">The OMF version the adapter egresses. OMF 2.0 adds the per-resource
-    /// <c>StreamIORate</c>, <c>AssetIORate</c> and <c>EventIORate</c> streams for every endpoint.</param>
+    /// <c>StreamIORate</c>, <c>EntityIORate</c> and <c>EventIORate</c> streams for every endpoint.</param>
     public EgressDiagnosticsService(IDiagnosticsMessageProcessor diagnosticsMessageProcessor,
         ILogger logger, string componentId, IOmfDataEndpointManager dataEndpointManager, LinkNode elementNodeLink, IEdgeComponentHealthService healthService,
         OmfVersion omfVersion)
@@ -467,15 +467,15 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
     private sealed class ResourceIoRates
     {
         private readonly ResourceIoRate _streamIoRate;
-        private readonly ResourceIoRate _assetIoRate;
+        private readonly ResourceIoRate _entityIoRate;
         private readonly ResourceIoRate _eventIoRate;
 
         public ResourceIoRates(EgressDiagnosticsOmfMessageCreator messageCreator, string endpointId)
         {
             _streamIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, StreamIoRateStreamName));
-            _assetIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, AssetIoRateStreamName));
+            _entityIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, EntityIoRateStreamName));
             _eventIoRate = new ResourceIoRate(messageCreator.CreateIoRateStream(endpointId, EventIoRateStreamName));
-            Rates = [_streamIoRate, _assetIoRate, _eventIoRate];
+            Rates = [_streamIoRate, _entityIoRate, _eventIoRate];
         }
 
         public IReadOnlyList<ResourceIoRate> Rates { get; }
@@ -483,7 +483,7 @@ public class EgressDiagnosticsService : IEdgeComponentDiagnosticsService
         public void AddSamples(OmfResourceCounts resourceCounts)
         {
             _streamIoRate.MovingAverage.AddSample(resourceCounts.StreamValues);
-            _assetIoRate.MovingAverage.AddSample(resourceCounts.Assets);
+            _entityIoRate.MovingAverage.AddSample(resourceCounts.Entities);
             _eventIoRate.MovingAverage.AddSample(resourceCounts.Events);
         }
 
