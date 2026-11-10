@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Buffering;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Buffering.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 
@@ -91,6 +92,16 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
     #endregion
 
+    #region Public Events
+
+    /// <summary>
+    /// Raised when a body with a serialized message ID is dropped because the volatile queue is full and there is no persistent queue.
+    /// Handlers run under the queue lock, so they must not call back into the queue.
+    /// </summary>
+    public event EventHandler<SerializedBodiesEventArgs> SerializedBodiesDiscarded;
+
+    #endregion
+
     #region Public Methods
 
     /// <inheritdoc/>
@@ -105,7 +116,15 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
 
             if (_currentVolatileQueueSize > _maxVolatileQueueSize)
             {
-                ConsolidateQueues();
+                try
+                {
+                    ConsolidateQueues();
+                }
+                catch (Exception ex)
+                {
+                    // The message is queued; only moving older messages to the persistent queue failed, and that queue reports any it lost.
+                    _logger?.LogError(ex, "Failed to move buffered messages to the persistent queue.");
+                }
             }
         }
     }
@@ -131,13 +150,20 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
             // An abandoned persistent lease is still the persistent head unless retention discarded it.
             _leasedItem = null;
 
-            if (_persistentQueue == null || !_persistentQueue.TryDequeue(out message))
+            // The persistent queue returns true with a null message for an unreadable record it has already removed and logged.
+            while (_persistentQueue != null && _persistentQueue.TryDequeue(out message))
             {
-                if (_volatileQueue.TryDequeue(out var timestampedMessage))
+                if (message != null)
                 {
-                    message = timestampedMessage.SerializedOmfMessage;
-                    _currentVolatileQueueSize -= message.GetMessageSizeInBytes();
+                    return true;
                 }
+            }
+
+            message = default;
+            if (_volatileQueue.TryDequeue(out var timestampedMessage))
+            {
+                message = timestampedMessage.SerializedOmfMessage;
+                _currentVolatileQueueSize -= message.GetMessageSizeInBytes();
             }
 
             return message != null;
@@ -159,12 +185,15 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                 return true;
             }
 
-            if (_persistentQueue == null || !_persistentQueue.TryPeek(out message))
+            if (TryPeekPersistent(out message))
             {
-                if (_volatileQueue.TryPeek(out var timestampedMessage))
-                {
-                    message = timestampedMessage.SerializedOmfMessage;
-                }
+                return true;
+            }
+
+            message = default;
+            if (_volatileQueue.TryPeek(out var timestampedMessage))
+            {
+                message = timestampedMessage.SerializedOmfMessage;
             }
 
             return message != null;
@@ -327,6 +356,10 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
                     if (_persistentQueue == null)
                     {
                         _logger.LogDebug(MaxBufferSizeReachedMessage);
+                        if (timestampedMessage.SerializedOmfMessage.SerializedMessageId is { } serializedMessageId)
+                        {
+                            SerializedBodiesDiscarded?.Invoke(this, new SerializedBodiesEventArgs(new[] { serializedMessageId }, OmfReasonCode.BufferFull));
+                        }
                     }
                 }
                 else
@@ -369,7 +402,7 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
         {
             // Read before peeking so an eviction racing the peek invalidates this lease rather than a later one.
             var readerEpoch = _persistentQueue.ReaderEpoch;
-            if (_persistentQueue.TryPeek(out var persistedMessage))
+            if (TryPeekPersistent(out var persistedMessage))
             {
                 leasedItem = new LeasedItem(persistedMessage, null, readerEpoch);
                 return true;
@@ -387,6 +420,26 @@ public abstract class BackedUpOmfMessageQueueBase<TMessage> : IPersistentMessage
     }
 
     private bool IsActiveLease(MessageLease<TMessage> lease) => lease != null && _leaseOutstanding && lease.Token == _leaseToken;
+
+    private bool TryPeekPersistent(out TMessage message)
+    {
+        message = default;
+        while (_persistentQueue != null && _persistentQueue.TryPeek(out message))
+        {
+            if (message != null)
+            {
+                return true;
+            }
+
+            // An unreadable record at the head would otherwise hide every record behind it, so it is dropped.
+            if (!_persistentQueue.TryDequeue(out _))
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
 
     private void ThrowIfLeaseOutstanding()
     {

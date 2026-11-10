@@ -13,8 +13,10 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Moq;
 using AdapterFramework.Data.DataModel;
@@ -550,21 +552,54 @@ public sealed class SchemaGroupingBlock_Tests : IDisposable
     }
 
     [Fact]
-    public void Handle_FlushesOnMessageActionChange_WithPendingRelationships()
+    public async Task Handle_FlushesOnMessageActionChange_WithPendingRelationships()
     {
-        using var block = CreateSchemaGroupingBlock();
+        var messages = new ConcurrentQueue<SchemaMessage>();
+        var flushed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Keep timer-driven flushes outside the bounded test window; flush the final batch explicitly.
+        var block = new SchemaGroupingBlock(
+            _loggerMock.Object, Capacity, message =>
+            {
+                messages.Enqueue((SchemaMessage)message);
+                if (messages.Count >= 2)
+                {
+                    flushed.TrySetResult();
+                }
+            },
+            MaxStreamsBatchCount, MaxTypesBatchCount, int.MaxValue, _cancellationTokenSource.Token);
+        try
+        {
+            var link = CreateLink("Source1", "Target1");
+            var dataType = CreateDataType("Type1");
 
-        var link = CreateLink("Source1", "Target1");
-        var dataType = CreateDataType("Type1");
+            Assert.True(block.Post(new RelationshipMessage(link, MessageAction.Create)));
+            Assert.True(block.Post(new OmfMessage<DataType>(1, new DataType[] { dataType }, MessageAction.Update)));
+            Assert.True(block.Post(new CommandMessage(true)));
 
-        block.Post(new RelationshipMessage(link, MessageAction.Create));
-        block.Post(new OmfMessage<DataType>(1, new DataType[] { dataType }, MessageAction.Update));
+            await flushed.Task.WaitAsync(TimeSpan.FromMilliseconds(SpinWaitTimeout));
 
-        SpinWait.SpinUntil(() => _flushCount > 0, SpinWaitTimeout);
-
-        Assert.Equal(1, _flushCount);
-        Assert.Equal(1, _flushedMessage.RelationshipCount);
-        Assert.Equal(MessageAction.Create, _flushedMessage.MessageAction);
+            Assert.Collection(messages.ToArray(),
+                relationshipBatch =>
+                {
+                    Assert.Equal(1, relationshipBatch.RelationshipCount);
+                    Assert.Equal(0, relationshipBatch.TypeCount);
+                    Assert.Equal(MessageAction.Create, relationshipBatch.MessageAction);
+                },
+                typeBatch =>
+                {
+                    Assert.Equal(0, typeBatch.RelationshipCount);
+                    Assert.Equal(1, typeBatch.TypeCount);
+                    Assert.Equal(MessageAction.Update, typeBatch.MessageAction);
+                });
+        }
+        finally
+        {
+            block.Dispose();
+            while (messages.TryDequeue(out var message))
+            {
+                message.Dispose();
+            }
+        }
     }
 
     [Fact]

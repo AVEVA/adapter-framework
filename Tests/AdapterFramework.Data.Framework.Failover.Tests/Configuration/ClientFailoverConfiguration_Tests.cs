@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Linq;
+using System.Text.Json;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Failover;
 using AdapterFramework.Data.Framework.Failover.Configuration;
@@ -107,6 +108,30 @@ public class ClientFailoverConfiguration_Tests
 
         Assert.Equal(FailoverMode.Hot, failoverConfiguration.Mode);
         Assert.Equal(TimeSpan.FromSeconds(60), failoverConfiguration.FailoverTimeout);
+    }
+
+    /// <summary>
+    /// Verifies that unknown JSON fields do not affect equality and are rejected by configuration validation.
+    /// </summary>
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"UnsupportedSetting\":false}")]
+    [InlineData("{\"UnsupportedSetting\":true}")]
+    public void Deserialize_WhenUnknownFieldPresent_RejectsFieldWithoutAffectingEquality(string json)
+    {
+        var configuration = JsonSerializer.Deserialize<ClientFailoverConfiguration>(json);
+        var other = new ClientFailoverConfiguration();
+
+        Assert.True(configuration.Equals(other));
+        Assert.True(configuration.Equals((object)other));
+        Assert.Equal(configuration.GetHashCode(), other.GetHashCode());
+        if (configuration.JsonExtensionData.Count > 0)
+        {
+            configuration.Endpoint = "https://example.com/failover";
+            configuration.FailoverGroupId = DefaultFailoverGroupId;
+            Assert.Contains(EdgeConfigurationBase.ValidateConfiguration(configuration),
+                error => error.ErrorMessage.Contains("Invalid fields specified - UnsupportedSetting", StringComparison.Ordinal));
+        }
     }
 
     private static ClientFailoverConfiguration CreateDefaultConfiguration()

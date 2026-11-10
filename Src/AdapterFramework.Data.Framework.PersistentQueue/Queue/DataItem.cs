@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+using System;
+
 namespace AdapterFramework.Data.Framework.PersistentQueue.Queue;
 
 public class DataItem
@@ -24,4 +26,9 @@ public class DataItem
 
     public DataItemVersion Version { get; }
     public byte[] Data { get; }
+
+    /// <summary>
+    /// Gets the in-memory ID the queue reports if the item is lost after it is written. It is not persisted.
+    /// </summary>
+    public Guid? TrackingId { get; init; }
 }
