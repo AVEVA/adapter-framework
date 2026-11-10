@@ -483,10 +483,25 @@ public class OmfEndpointManager_Tests : IDisposable
         Assert.True(SpinWait.SpinUntil(() => _testEndpoint.VerifyMessageReceived(message, expectedHeaders),
                 BufferedMessageWaitTime), "Message wasn't received.");
 
-        var counters = omfEndpointManager.GetAndResetEgressedValuesCounters();
+        // Receiving the HTTP request precedes the writer processing its response and updating counters.
+        var egressed = new Dictionary<string, long> { { config.Id, 0 }, { config2.Id, 0 } };
+        IReadOnlyDictionary<string, long> counters = null;
+        Assert.True(SpinWait.SpinUntil(
+            () =>
+            {
+                counters = omfEndpointManager.GetAndResetEgressedValuesCounters();
+                foreach (var (endpointId, count) in counters)
+                {
+                    egressed[endpointId] += count;
+                }
+
+                return egressed[config.Id] >= 1;
+            },
+            MaximumWaitTime), "The writer did not update its egressed-value counter.");
+
         Assert.Equal(configList.Length, counters.Count);
-        Assert.Equal(1, counters[config.Id]);
-        Assert.True(counters[config2.Id] == 0);
+        Assert.Equal(1, egressed[config.Id]);
+        Assert.Equal(0, egressed[config2.Id]);
 
         counters = omfEndpointManager.GetAndResetEgressedValuesCounters();
         Assert.Equal(configList.Length, counters.Count);

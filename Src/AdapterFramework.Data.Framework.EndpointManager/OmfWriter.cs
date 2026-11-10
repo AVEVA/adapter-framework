@@ -15,6 +15,7 @@
 using System;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -24,10 +25,12 @@ using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
 using AdapterFramework.Data.Framework.Abstractions.HttpCommunication;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Security;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.Buffering;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.PersistentQueue.Queue;
 using Polly;
 using Polly.Contrib.WaitAndRetry;
@@ -70,13 +73,14 @@ public class OmfWriter : IOmfWriter
     private readonly BackedUpOmfMessageQueue _dataQueue;
     private readonly FileQueue _metadataFileQueue;
     private readonly FileQueue _dataFileQueue;
-    private readonly IPersistentMessageQueue<ISerializedOmfMessage> _persistentMetadataQueue;
-    private readonly IPersistentMessageQueue<ISerializedOmfMessage> _persistentDataQueue;
+    private readonly PersistentOmfMessageQueue _persistentMetadataQueue;
+    private readonly PersistentOmfMessageQueue _persistentDataQueue;
     private readonly Task _bufferConsumerTask;
     private readonly CancellationTokenSource _writerCts;
     private readonly TimeSpan _maxRetryDelay = TimeSpan.FromMinutes(5);
     private readonly TimeSpan _retryFirstDelay = TimeSpan.FromSeconds(1);
     private readonly OmfWriterType _writerType;
+    private readonly OmfAwaitableCoordinator _awaitableCoordinator;
 
     private Action<bool> _statusUpdateCallback = obj => { };
     private IEndpointConfiguration _configuration;
@@ -89,7 +93,9 @@ public class OmfWriter : IOmfWriter
     private long _eventCount;
     private MessageType _messageType;
     private bool _shouldRetry404 = true;
+    private bool _nonAcceptedSuccessWarned;
     private EndpointResponse _cachedResponse;
+    private Guid? _cachedResponseBodyId;
 
     #endregion
 
@@ -110,6 +116,7 @@ public class OmfWriter : IOmfWriter
     /// <param name="writerType">Type of the OMF writer instance (Data or Health).</param>
     /// <param name="inErrorStatusCallback">Will send true if endpoint in error, false if OK.</param>
     /// <param name="edgeEventProvider">Optional <see cref="IEdgeEventProvider"/> instance.</param>
+    /// <param name="awaitableCoordinator">Optional coordinator that receives attempts and dispositions for bodies with a serialized message ID.</param>
     public OmfWriter(
         IEndpointConfiguration writerConfiguration,
         ILogger logger,
@@ -122,7 +129,8 @@ public class OmfWriter : IOmfWriter
         string debugLogsPath,
         OmfWriterType writerType,
         Action<bool> inErrorStatusCallback,
-        IEdgeEventProvider edgeEventProvider = null)
+        IEdgeEventProvider edgeEventProvider = null,
+        OmfAwaitableCoordinator awaitableCoordinator = null)
     {
         ThrowHelper.ThrowIfArgumentNull(writerConfiguration, nameof(writerConfiguration));
         ThrowHelper.ThrowIfArgumentNull(logger, nameof(logger));
@@ -154,6 +162,7 @@ public class OmfWriter : IOmfWriter
 
         _writerType = writerType;
         _writerCts = new CancellationTokenSource();
+        _awaitableCoordinator = awaitableCoordinator;
 
         if (bufferingConfiguration.EnablePersistentBuffering)
         {
@@ -178,6 +187,8 @@ public class OmfWriter : IOmfWriter
 
         _metadataQueue = new BackedUpOmfMessageQueue(DefaultVolatileMemorySizeMb, DefaultMessageExpirationTime, _persistentMetadataQueue, logger);
         _dataQueue = new BackedUpOmfMessageQueue(GetDataQueueVolatileMemorySize(bufferingConfiguration, writerType), DefaultMessageExpirationTime, _persistentDataQueue, logger);
+
+        SubscribeToQueueReports();
         _bufferConsumerTask = Task.Run(BufferedOmfMessageHandlerAsync);
     }
 
@@ -186,6 +197,25 @@ public class OmfWriter : IOmfWriter
     #region Properties
 
     public string Id { get; }
+
+    /// <inheritdoc/>
+    public Uri TargetUri => SanitizeTargetUri(_client.Uri);
+
+    /// <summary>
+    /// Removes user info, query string and fragment, so acceptance results never expose credentials or tokens from the endpoint URL.
+    /// </summary>
+    /// <param name="uri">The endpoint URL.</param>
+    /// <returns>The URL without user info, query string and fragment, or <paramref name="uri"/> if it isn't absolute.</returns>
+    internal static Uri SanitizeTargetUri(Uri uri)
+    {
+        if (uri is not { IsAbsoluteUri: true }
+            || (uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0))
+        {
+            return uri;
+        }
+
+        return new UriBuilder(uri) { UserName = string.Empty, Password = string.Empty, Query = string.Empty, Fragment = string.Empty }.Uri;
+    }
 
     private bool EndpointInError
     {
@@ -290,6 +320,7 @@ public class OmfWriter : IOmfWriter
         if (disposing)
         {
             _statusUpdateCallback = obj => { };
+            UnsubscribeFromQueueReports();
             _writerCts.Cancel();
 
             if (_bufferConsumerTask != null)
@@ -399,37 +430,63 @@ public class OmfWriter : IOmfWriter
     private async Task ProcessMessageAsync(MessageLease<ISerializedOmfMessage> lease, BackedUpOmfMessageQueue queue)
     {
         var message = lease.Message;
-        var processed = false;
-        var delivered = false;
+        if (ShouldNotRetryFailed404Message(message))
+        {
+            HandleResponse(_cachedResponse, message);
+            _messageType = message.MessageType;
+            CompleteLease(lease, queue);
+
+            // Dropped without being sent. IORate still counts it (ItemCount), as it did before resource counts
+            // existed, but the resource rates only count messages the endpoint accepted.
+            Interlocked.Add(ref _valueCount, message.ItemCount);
+            if (message.SerializedMessageId is { } id && id == _cachedResponseBodyId)
+            {
+                ReportDisposition(message, _cachedResponse);
+            }
+            else
+            {
+                ReportSkippedAfterNotFound(message);
+            }
+
+            return;
+        }
+
+        EndpointResponse? finalResponse = null;
         try
         {
-            (processed, delivered) = await SendBufferedMessageAsync(message);
+            finalResponse = await SendBufferedMessageAsync(message);
         }
         finally
         {
-            if (!processed)
+            if (finalResponse is null)
             {
                 queue.Abandon(lease);
             }
         }
 
-        if (!processed)
+        if (finalResponse is not { } response)
         {
             return;
         }
 
-        if (!queue.Complete(lease))
-        {
-            _logger.LogWarning(LeasedMessageDiscardedMessage, OmfByteHttpClient.GetOmfMessageType(message.MessageType).ToString().ToUpperInvariant(), _client.Uri);
-        }
-
+        CompleteLease(lease, queue);
         Interlocked.Add(ref _valueCount, message.ItemCount);
 
         // Resource counters only reflect successful delivery. Counting here, once per processed message,
         // rather than in HandleResponse keeps retried attempts from being counted more than once.
-        if (delivered)
+        if (response.ResponseStatus == ResponseStatusEnum.Success)
         {
             AddEgressedResourceCounts(message.ResourceCounts);
+        }
+
+        ReportDisposition(message, response);
+    }
+
+    private void CompleteLease(MessageLease<ISerializedOmfMessage> lease, BackedUpOmfMessageQueue queue)
+    {
+        if (!queue.Complete(lease))
+        {
+            _logger.LogWarning(LeasedMessageDiscardedMessage, OmfByteHttpClient.GetOmfMessageType(lease.Message.MessageType).ToString().ToUpperInvariant(), _client.Uri);
         }
     }
 
@@ -446,24 +503,12 @@ public class OmfWriter : IOmfWriter
     }
 
     /// <summary>
-    /// Sends a buffered message, retrying as needed.
+    /// Sends a buffered body, retrying failures and endpoint-requested delays.
     /// </summary>
-    /// <returns>
-    /// Processed is true when the message should be removed from the queue.
-    /// Delivered is true when the endpoint reported that it successfully processed the message.
-    /// </returns>
-    private async Task<(bool Processed, bool Delivered)> SendBufferedMessageAsync(ISerializedOmfMessage serializedMessage)
+    /// <param name="serializedMessage">The body to send.</param>
+    /// <returns>The response that decided the body's final state, or <c>null</c> when the body stays queued for another attempt.</returns>
+    private async Task<EndpointResponse?> SendBufferedMessageAsync(ISerializedOmfMessage serializedMessage)
     {
-        if (ShouldNotRetryFailed404Message(serializedMessage))
-        {
-            HandleResponse(_cachedResponse, serializedMessage);
-            _messageType = serializedMessage.MessageType;
-
-            // Dropped without being sent. IORate still counts it (ItemCount), as it did before resource counts
-            // existed, but the resource rates only count messages the endpoint accepted.
-            return (true, false);
-        }
-
         _messageType = serializedMessage.MessageType;
 
         var body = serializedMessage.MessageBody;
@@ -483,21 +528,25 @@ public class OmfWriter : IOmfWriter
             {
                 var response = await policy.ExecuteAsync(ct => SendMessageAndProcessResponseAsync(_messageType, body, serializedMessage, messageAction, omfVersion, ct),
                     _writerCts.Token);
-
                 if (!RequiresRequeue(response))
                 {
-                    return (true, response.ResponseStatus == ResponseStatusEnum.Success);
+                    return response;
                 }
 
-                return (false, false);
+                if (response.ResponseStatus == ResponseStatusEnum.NotFound)
+                {
+                    _cachedResponseBodyId = serializedMessage.SerializedMessageId;
+                }
+
+                return null;
             }
             catch (OperationCanceledException)
             {
-                return (false, false);
+                return null;
             }
         }
 
-        return (false, false);
+        return null;
     }
 
     private bool ShouldNotRetryFailed404Message(ISerializedOmfMessage serializedMessage)
@@ -517,8 +566,11 @@ public class OmfWriter : IOmfWriter
         OmfVersion omfVersion,
         CancellationToken cancellationToken)
     {
-        var response = await _client.SendMessageAsync(messageType, messageBody, messageAction, omfVersion, cancellationToken, serializedMessage.PartitionKey);
+        var readReceipt = serializedMessage.SerializedMessageId is { } serializedMessageId
+            && _awaitableCoordinator?.IsDeliveryPending(serializedMessageId, Id) == true;
+        var response = await _client.SendMessageAsync(messageType, messageBody, messageAction, omfVersion, serializedMessage.PartitionKey, readReceipt, cancellationToken);
         HandleResponse(response, serializedMessage, true);
+        ReportAttempt(serializedMessage, response);
         return response;
     }
 
@@ -647,6 +699,165 @@ public class OmfWriter : IOmfWriter
     private object GetOmfMessageText(byte[] omfMessageSent)
     {
         return _serializer.Deserialize(_compressor?.Decompress(omfMessageSent) ?? omfMessageSent);
+    }
+
+    /// <summary>
+    /// Reports a retryable attempt for a body with a serialized message ID.
+    /// </summary>
+    /// <param name="message">The body that was sent.</param>
+    /// <param name="response">The endpoint response.</param>
+    private void ReportAttempt(ISerializedOmfMessage message, EndpointResponse response)
+    {
+        if (_awaitableCoordinator is null || message.SerializedMessageId is not { } serializedMessageId
+            || response.ResponseStatus is not (ResponseStatusEnum.Fail or ResponseStatusEnum.DelayRequired))
+        {
+            return;
+        }
+
+        _awaitableCoordinator.RecordAttempt(serializedMessageId, Id, response.StatusCode, new OmfOutcomeReason(OmfReasonCode.Retrying, response.Message));
+    }
+
+    /// <summary>
+    /// Reports the final state of a dequeued body with a serialized message ID: accepted only for an exact 202.
+    /// </summary>
+    /// <param name="message">The dequeued body.</param>
+    /// <param name="response">The response that decided the dequeue.</param>
+    private void ReportDisposition(ISerializedOmfMessage message, EndpointResponse response)
+    {
+        if (_awaitableCoordinator is null || message.SerializedMessageId is not { } serializedMessageId)
+        {
+            return;
+        }
+
+        if (response.ResponseStatus != ResponseStatusEnum.Success)
+        {
+            _awaitableCoordinator.RecordDisposition(
+                serializedMessageId, Id, OmfDeliveryState.Rejected, response.StatusCode, new OmfOutcomeReason(OmfReasonCode.RejectedByEndpoint, response.Message));
+        }
+        else if (response.StatusCode == HttpStatusCode.Accepted)
+        {
+            _awaitableCoordinator.RecordDisposition(serializedMessageId, Id, OmfDeliveryState.Accepted, response.StatusCode, null, response.Receipt);
+        }
+        else
+        {
+            if (!_nonAcceptedSuccessWarned)
+            {
+                _nonAcceptedSuccessWarned = true;
+                _logger.LogWarning(
+                    "Endpoint {Endpoint} returned {StatusCode} instead of 202 Accepted. Data was delivered, but awaitable scopes that include this endpoint are reported as rejected with NonAcceptedSuccess. This warning is logged once per endpoint.",
+                    TargetUri,
+                    (int?)response.StatusCode);
+            }
+
+            var reason = new OmfOutcomeReason(
+                OmfReasonCode.NonAcceptedSuccess,
+                string.Create(CultureInfo.InvariantCulture, $"The endpoint returned {(int?)response.StatusCode} instead of 202 Accepted."));
+            _awaitableCoordinator.RecordDisposition(serializedMessageId, Id, OmfDeliveryState.Rejected, response.StatusCode, reason, response.Receipt);
+        }
+    }
+
+    /// <summary>
+    /// Reports a body the writer dequeued without sending, because an earlier data body got 404 and no type or container was sent since.
+    /// </summary>
+    /// <param name="message">The skipped body.</param>
+    private void ReportSkippedAfterNotFound(ISerializedOmfMessage message)
+    {
+        if (_awaitableCoordinator is null || message.SerializedMessageId is not { } serializedMessageId)
+        {
+            return;
+        }
+
+        _awaitableCoordinator.RecordDisposition(
+            serializedMessageId,
+            Id,
+            OmfDeliveryState.Discarded,
+            null,
+            new OmfOutcomeReason(OmfReasonCode.SkippedAfterNotFound, "An earlier data body got 404 Not Found and no type or container was sent since, so this body wasn't sent."));
+    }
+
+    /// <summary>
+    /// Subscribes to the reports both queues raise for bodies with a serialized message ID when a coordinator is set.
+    /// </summary>
+    private void SubscribeToQueueReports()
+    {
+        if (_awaitableCoordinator is null)
+        {
+            return;
+        }
+
+        foreach (var queue in new[] { _metadataQueue, _dataQueue })
+        {
+            queue.SerializedBodiesDiscarded += OnSerializedBodiesDiscarded;
+        }
+
+        foreach (var persistentQueue in new[] { _persistentMetadataQueue, _persistentDataQueue })
+        {
+            if (persistentQueue is not null)
+            {
+                persistentQueue.SerializedBodiesDiscarded += OnSerializedBodiesDiscarded;
+                persistentQueue.SerializedBodyWriteFailed += OnSerializedBodyWriteFailed;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stops reporting before the queues are disposed, so shutdown and removal don't report losses.
+    /// </summary>
+    private void UnsubscribeFromQueueReports()
+    {
+        if (_awaitableCoordinator is null)
+        {
+            return;
+        }
+
+        foreach (var queue in new[] { _metadataQueue, _dataQueue })
+        {
+            queue.SerializedBodiesDiscarded -= OnSerializedBodiesDiscarded;
+        }
+
+        foreach (var persistentQueue in new[] { _persistentMetadataQueue, _persistentDataQueue })
+        {
+            if (persistentQueue is not null)
+            {
+                persistentQueue.SerializedBodiesDiscarded -= OnSerializedBodiesDiscarded;
+                persistentQueue.SerializedBodyWriteFailed -= OnSerializedBodyWriteFailed;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reports bodies a queue lost as discarded for this endpoint.
+    /// </summary>
+    /// <param name="sender">The queue.</param>
+    /// <param name="e">The lost bodies and the reason.</param>
+    private void OnSerializedBodiesDiscarded(object sender, SerializedBodiesEventArgs e)
+    {
+        var reason = new OmfOutcomeReason(e.Reason, e.Reason switch
+        {
+            OmfReasonCode.BufferFull => "A buffer limit evicted the body.",
+            OmfReasonCode.CorruptRecord => "The body's buffer record couldn't be read.",
+            OmfReasonCode.EnqueueFailed => "The body couldn't be added to the disk buffer.",
+            _ => "The endpoint's buffers were deleted.",
+        });
+
+        foreach (var serializedMessageId in e.SerializedMessageIds)
+        {
+            _awaitableCoordinator.RecordDisposition(serializedMessageId, Id, OmfDeliveryState.Discarded, null, reason);
+        }
+    }
+
+    /// <summary>
+    /// Reports a failed disk write as the delivery's current state. The queue keeps the body, so the delivery stays pending.
+    /// </summary>
+    /// <param name="sender">The queue.</param>
+    /// <param name="e">The bodies and the reason.</param>
+    private void OnSerializedBodyWriteFailed(object sender, SerializedBodiesEventArgs e)
+    {
+        var reason = new OmfOutcomeReason(e.Reason, "Writing the body to the disk buffer failed. It's written on a later flush.");
+        foreach (var serializedMessageId in e.SerializedMessageIds)
+        {
+            _awaitableCoordinator.RecordAttempt(serializedMessageId, Id, null, reason);
+        }
     }
 
     #endregion

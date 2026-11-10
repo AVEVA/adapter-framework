@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
+using System.Text.Json.Serialization;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
+
 namespace AdapterFramework.Data.Framework.Messages;
 
 /// <summary>
@@ -19,4 +22,9 @@ namespace AdapterFramework.Data.Framework.Messages;
 /// </summary>
 public abstract class Message
 {
+    /// <summary>
+    /// Gets or sets the awaitable scope whose write created this message, or null for unscoped writes. It's never serialized.
+    /// </summary>
+    [JsonIgnore]
+    public ScopeToken Scope { get; set; }
 }

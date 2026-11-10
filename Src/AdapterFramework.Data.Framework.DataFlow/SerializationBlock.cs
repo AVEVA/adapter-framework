@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,9 +22,11 @@ using System.Threading.Tasks.Dataflow;
 using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.DataFlow;
+using AdapterFramework.Data.Framework.Abstractions.MessageProcessing.Awaitable;
 using AdapterFramework.Data.Framework.Abstractions.Messages;
 using AdapterFramework.Data.Framework.Extensions;
 using AdapterFramework.Data.Framework.Messages;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 
 namespace AdapterFramework.Data.Framework.DataFlow;
 
@@ -50,6 +53,8 @@ public class SerializationBlock : BaseBlock<Message>
     private readonly ILogger _logger;
     private readonly int _maxByteCount;
     private readonly OmfVersion _omfVersion;
+    private readonly OmfAwaitableCoordinator _coordinator;
+    private readonly Dictionary<ScopeToken, int> _materializationBarrierCounts = [];
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SerializationBlock"/> class.
@@ -64,6 +69,7 @@ public class SerializationBlock : BaseBlock<Message>
     /// <param name="flushAction">The action to be performed when <see cref="SerializedOmfMessage"/> message is created.</param>
     /// <param name="token">Cancellation token.</param>
     /// <param name="omfVersion">Version of OMF to be emitted.</param>
+    /// <param name="awaitableCoordinator">The coordinator that tracks awaitable scopes, or <c>null</c> when scopes are not supported.</param>
     public SerializationBlock(
         BatchingStrategyOptimizer dataBatchingStrategyOptimizer,
         BatchingStrategyOptimizer streamsBatchingStrategyOptimizer,
@@ -74,8 +80,11 @@ public class SerializationBlock : BaseBlock<Message>
         ICompressor compressor,
         Action<ISerializedOmfMessage> flushAction,
         CancellationToken token,
-        OmfVersion omfVersion = OmfVersion.Omf12)
-        : base(logger, capacity, false, true, token)
+        OmfVersion omfVersion = OmfVersion.Omf12,
+        OmfAwaitableCoordinator awaitableCoordinator = null)
+
+        // Not single-producer: both grouping blocks and the seal handler's stand-in barrier post here concurrently.
+        : base(logger, capacity, false, false, token)
     {
         ThrowHelper.ThrowIfArgumentNull(serializer, nameof(serializer));
 
@@ -87,6 +96,7 @@ public class SerializationBlock : BaseBlock<Message>
         _flushAction = flushAction;
         _logger = logger;
         _omfVersion = omfVersion;
+        _coordinator = awaitableCoordinator;
     }
 
     /// <inheritdoc/>
@@ -122,6 +132,9 @@ public class SerializationBlock : BaseBlock<Message>
                 break;
             case OmfMessage<DynamicStreamData> dynamicStreamData:
                 Process(dynamicStreamData.Count, dynamicStreamData.Values, MessageType.DynamicData, dynamicStreamData.MessageAction, dynamicStreamData.PartitionKey);
+                break;
+            case ScopeMaterializationBarrier barrier:
+                ProcessMaterializationBarrier(barrier);
                 break;
             case FlushThenForwardMessage envelope:
                 envelope.ReleaseMisrouted(Logger);
@@ -225,15 +238,24 @@ public class SerializationBlock : BaseBlock<Message>
         if (bytes.Length > _maxByteCount)
         {
             _rangeDeleteTooLarge(_logger, bytes.Length, _maxByteCount, null);
+            if (message.Scope is { } discardedScope)
+            {
+                _coordinator?.RecordItemsDiscarded(discardedScope, 1, new OmfOutcomeReason(
+                    OmfReasonCode.ItemTooLarge,
+                    string.Create(CultureInfo.InvariantCulture, $"A range delete serializes to {bytes.Length} bytes, more than the maximum of {_maxByteCount}.")));
+            }
+
             return;
         }
 
         // The number of values removed is unknown; do not report the range as an inserted value.
-        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey);
+        Flush(0, MessageType.Instance, bytes, MessageAction.Delete, message.PartitionKey,
+            membership: message.Scope is { } scope ? new Dictionary<ScopeToken, int> { [scope] = 1 } : null);
     }
 
     private void ProcessInstance(InstanceMessage message)
     {
+        var sidecar = message.Sidecar;
         ArraySegment<StreamData> streamingDataSegment = default;
         ArraySegment<StaticStreamData> entitiesSegment = default;
         ArraySegment<Event> eventsSegment = default;
@@ -294,7 +316,8 @@ public class SerializationBlock : BaseBlock<Message>
                 else // if Events + Entities + Relationships not oversize
                 {
                     Flush(message.EventsCount + message.EntitiesCount + message.RelationshipCount, MessageType.Instance, bytesWithoutStreamingData, message.MessageAction,
-                        resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, message.EventsCount));
+                        resourceCounts: new OmfResourceCounts(0, message.EntitiesCount, message.EventsCount),
+                        membership: DiscreteMembership(message));
                 }
             }
 
@@ -308,19 +331,21 @@ public class SerializationBlock : BaseBlock<Message>
                 if (streamingDataBytes.Length > _maxByteCount)
                 {
                     _logger.LogTrace("The Instance message's StreamingData byte count {StreamingDataByteCount} is larger than {MaxByteCount}. Flushing the StreamingData in chunks.", streamingDataBytes.Length, _maxByteCount);
-                    FlushInChunksInstance(streamingDataSegment.ToArray(), streamingDataBytes.Length, message.MessageAction, message.PartitionKey);
+                    FlushInChunksInstance(streamingDataSegment.ToArray(), streamingDataBytes.Length, message.MessageAction, message.PartitionKey, new Slice(sidecar, ScopeSidecarKind.StreamingData));
                 }
                 else
                 {
                     Flush(message.StreamingDataTotalCount, MessageType.Instance, streamingDataBytes, message.MessageAction, message.PartitionKey,
-                        new OmfResourceCounts(message.StreamingDataTotalCount, 0, 0));
+                        new OmfResourceCounts(message.StreamingDataTotalCount, 0, 0),
+                        Membership(sidecar, ScopeSidecarKind.StreamingData, message.StreamingDataObjectCount));
                 }
             }
         }
         else // if the whole Instance message is not oversize
         {
             Flush(instanceItemCount, MessageType.Instance, bytes, message.MessageAction, message.PartitionKey,
-                new OmfResourceCounts(message.StreamingDataTotalCount, message.EntitiesCount, message.EventsCount));
+                new OmfResourceCounts(message.StreamingDataTotalCount, message.EntitiesCount, message.EventsCount),
+                Membership(sidecar, ScopeSidecarKind.StreamingData, message.StreamingDataObjectCount, DiscreteMembership(message)));
         }
 
         // OMF 2.0 instance messages participate in batch optimization.
@@ -380,7 +405,15 @@ public class SerializationBlock : BaseBlock<Message>
 
             if (bytes.Length <= _maxByteCount)
             {
-                Flush(chunkItemCount, MessageType.Instance, bytes, messageAction, resourceCounts: new OmfResourceCounts(0, chunk.Entities.Count, chunk.Events.Count));
+                var membership = new Slice(groups.Sidecar, ScopeSidecarKind.Events).Membership(chunk.Events.Offset, chunk.Events.Count);
+                if (membership is not null)
+                {
+                    groups.Sidecar.AddEntries(ScopeSidecarKind.Entities, chunk.Entities.Offset, chunk.Entities.Count, membership);
+                    groups.Sidecar.AddEntries(ScopeSidecarKind.Relationships, chunk.Relationships.Offset, chunk.Relationships.Count, membership);
+                }
+
+                Flush(chunkItemCount, MessageType.Instance, bytes, messageAction, resourceCounts: new OmfResourceCounts(0, chunk.Entities.Count, chunk.Events.Count),
+                    membership: membership);
                 chunkStart = chunkEnd;
             }
             else if (chunkEnd - chunkStart == 1)
@@ -396,36 +429,42 @@ public class SerializationBlock : BaseBlock<Message>
     private void FlushOversizeInstanceGroup(InstanceGroups groups, int group, int byteCount, MessageAction messageAction, OversizeGroupStats oversize)
     {
         var itemCount = groups.ItemCount(group, group + 1);
+        var wrapper = groups.CreateWrapper(group, group + 1);
+        var eventSlice = new Slice(groups.Sidecar, ScopeSidecarKind.Events, wrapper.Events.Offset);
+        var entitySlice = new Slice(groups.Sidecar, ScopeSidecarKind.Entities, wrapper.Entities.Offset);
+        var relationshipSlice = new Slice(groups.Sidecar, ScopeSidecarKind.Relationships, wrapper.Relationships.Offset);
 
         if (itemCount <= 1)
         {
             _logger.LogError("One Instance item is too big to be sent and cannot be reduced. Final byte size {ByteCount}, max {MaxByteCount}.", byteCount, _maxByteCount);
+            Discard(eventSlice, 0, wrapper.Events.Count, byteCount);
+            Discard(entitySlice, 0, wrapper.Entities.Count, byteCount);
+            Discard(relationshipSlice, 0, wrapper.Relationships.Count, byteCount);
             return;
         }
 
         oversize.GroupCount++;
         oversize.ItemCount += itemCount;
 
-        var wrapper = groups.CreateWrapper(group, group + 1);
-
         if (wrapper.Events.Count > 0)
         {
-            FlushInChunksInstance(wrapper.Events.ToArray(), byteCount, messageAction);
+            FlushInChunksInstance(wrapper.Events.ToArray(), byteCount, messageAction, slice: eventSlice);
         }
 
         if (wrapper.Entities.Count > 0)
         {
-            FlushInChunksInstance(wrapper.Entities.ToArray(), byteCount, messageAction);
+            FlushInChunksInstance(wrapper.Entities.ToArray(), byteCount, messageAction, slice: entitySlice);
         }
 
         if (wrapper.Relationships.Count > 0)
         {
-            FlushInChunksInstance(wrapper.Relationships.ToArray(), byteCount, messageAction);
+            FlushInChunksInstance(wrapper.Relationships.ToArray(), byteCount, messageAction, slice: relationshipSlice);
         }
     }
 
     private void ProcessSchema(SchemaMessage message)
     {
+        var sidecar = message.Sidecar;
         ArraySegment<DataType> typesSegment = null;
         ArraySegment<DataStream> streamsSegment = null;
         ArraySegment<Link> relationshipsSegment = null;
@@ -466,11 +505,12 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (typesBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction, message.PartitionKey);
+                    FlushInChunksSchema(typesSegment.ToArray(), typesBytes.Length, message.MessageAction, message.PartitionKey, new Slice(sidecar, ScopeSidecarKind.Types));
                 }
                 else
                 {
-                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction, message.PartitionKey);
+                    Flush(message.TypeCount, MessageType.Schema, typesBytes, message.MessageAction, message.PartitionKey,
+                        membership: Membership(sidecar, ScopeSidecarKind.Types, message.TypeCount));
                 }
             }
 
@@ -480,11 +520,12 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (streamsBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction, message.PartitionKey);
+                    FlushInChunksSchema(streamsSegment.ToArray(), streamsBytes.Length, message.MessageAction, message.PartitionKey, new Slice(sidecar, ScopeSidecarKind.Containers));
                 }
                 else
                 {
-                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction, message.PartitionKey);
+                    Flush(message.ContainerCount, MessageType.Schema, streamsBytes, message.MessageAction, message.PartitionKey,
+                        membership: Membership(sidecar, ScopeSidecarKind.Containers, message.ContainerCount));
                 }
             }
 
@@ -494,17 +535,19 @@ public class SerializationBlock : BaseBlock<Message>
 
                 if (linksBytes.Length > _maxByteCount)
                 {
-                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction, message.PartitionKey);
+                    FlushInChunksSchema(relationshipsSegment.ToArray(), linksBytes.Length, message.MessageAction, message.PartitionKey, new Slice(sidecar, ScopeSidecarKind.Relationships));
                 }
                 else
                 {
-                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction, message.PartitionKey);
+                    Flush(message.RelationshipCount, MessageType.Schema, linksBytes, message.MessageAction, message.PartitionKey,
+                        membership: Membership(sidecar, ScopeSidecarKind.Relationships, message.RelationshipCount));
                 }
             }
         }
         else
         {
-            Flush(count, MessageType.Schema, bytes, message.MessageAction, message.PartitionKey);
+            Flush(count, MessageType.Schema, bytes, message.MessageAction, message.PartitionKey, membership: Membership(sidecar, ScopeSidecarKind.Types, message.TypeCount,
+                Membership(sidecar, ScopeSidecarKind.Containers, message.ContainerCount, Membership(sidecar, ScopeSidecarKind.Relationships, message.RelationshipCount))));
         }
 
         if (count > 0)
@@ -559,7 +602,7 @@ public class SerializationBlock : BaseBlock<Message>
             ?? _serializer.Serialize(array);
     }
 
-    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey)
+    private void FlushInChunksSchema<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey, Slice slice = default)
     {
         if (typeof(T) != typeof(DataType) && typeof(T) != typeof(DataStream) && typeof(T) != typeof(Link))
         {
@@ -587,16 +630,24 @@ public class SerializationBlock : BaseBlock<Message>
 
             if (bytes.Length > _maxByteCount)
             {
-                FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction, partitionKey);
+                if (segment.Count == 1)
+                {
+                    _logger.LogError("One {Type} is too big to be sent and cannot be reduced. Final byte size {ByteCount}, max {MaxByteCount}.", typeof(T).Name, bytes.Length, _maxByteCount);
+                    Discard(slice, segment.Offset, 1, bytes.Length);
+                }
+                else
+                {
+                    FlushInChunksSchema(segment.ToArray(), bytes.Length, messageAction, partitionKey, slice.At(segment.Offset));
+                }
             }
             else
             {
-                Flush(segment.Count, MessageType.Schema, bytes, messageAction, partitionKey);
+                Flush(segment.Count, MessageType.Schema, bytes, messageAction, partitionKey, membership: slice.Membership(segment.Offset, segment.Count));
             }
         }
     }
 
-    private void FlushInChunksInstance<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey = null)
+    private void FlushInChunksInstance<T>(T[] array, int byteCount, MessageAction messageAction, PartitionKey? partitionKey = null, Slice slice = default)
     {
         if (typeof(T) != typeof(StaticStreamData) && typeof(T) != typeof(Event) && typeof(T) != typeof(Link) && typeof(T) != typeof(StreamData))
         {
@@ -626,15 +677,16 @@ public class SerializationBlock : BaseBlock<Message>
             {
                 if (typeof(T) == typeof(StreamData))
                 {
-                    FlushInChunks(segment.ToArray(), bytes.Length, MessageType.Instance, messageAction, partitionKey);
+                    FlushInChunks(segment.ToArray(), bytes.Length, MessageType.Instance, messageAction, partitionKey, slice.At(segment.Offset));
                 }
                 else if (segment.Count == 1)
                 {
-                    _logger.LogError("One Instance item of type {Type} is too big to be sent and cannot be reduced. Final byte size {ByteCount}, max {MaxByteCount}.", typeof(T).Name, bytes.Length, _maxByteCount);
+                    _logger.LogError("One {Type} is too big to be sent and cannot be reduced. Final byte size {ByteCount}, max {MaxByteCount}.", typeof(T).Name, bytes.Length, _maxByteCount);
+                    Discard(slice, segment.Offset, 1, bytes.Length);
                 }
                 else
                 {
-                    FlushInChunksInstance(segment.ToArray(), bytes.Length, messageAction);
+                    FlushInChunksInstance(segment.ToArray(), bytes.Length, messageAction, slice: slice.At(segment.Offset));
                 }
             }
             else
@@ -642,11 +694,12 @@ public class SerializationBlock : BaseBlock<Message>
                 if (typeof(T) == typeof(StreamData))
                 {
                     var count = GetStreamDataValuesCount(segment, MessageType.Instance);
-                    Flush(count, MessageType.Instance, bytes, messageAction, partitionKey, new OmfResourceCounts(count, 0, 0));
+                    Flush(count, MessageType.Instance, bytes, messageAction, partitionKey, new OmfResourceCounts(count, 0, 0), slice.Membership(segment.Offset, segment.Count));
                 }
                 else
                 {
-                    Flush(segment.Count, MessageType.Instance, bytes, messageAction, resourceCounts: GetInstanceResourceCounts<T>(segment.Count));
+                    Flush(segment.Count, MessageType.Instance, bytes, messageAction, resourceCounts: GetInstanceResourceCounts<T>(segment.Count),
+                        membership: slice.Membership(segment.Offset, segment.Count));
                 }
             }
         }
@@ -657,7 +710,8 @@ public class SerializationBlock : BaseBlock<Message>
         int byteCount,
         MessageType messageType,
         MessageAction messageAction,
-        PartitionKey? partitionKey = null)
+        PartitionKey? partitionKey = null,
+        Slice slice = default)
     {
         SetTuningParameters(array, byteCount, out int maxSegmentLength, out var numberOfSegments, out var offset);
 
@@ -692,16 +746,18 @@ public class SerializationBlock : BaseBlock<Message>
                     {
                         if (array is StreamData[] dataArray)
                         {
-                            FlushInChunksData([.. dataArray[0].Values], byteCount, dataArray[0], messageType, messageAction, partitionKey);
+                            FlushInChunksData([.. dataArray[0].Values], byteCount, dataArray[0], messageType, messageAction, partitionKey, slice.ValuesOfFirstStream());
                         }
                         else
                         {
+                            // Only OMF 1.2 reaches this drop, and it has no scopes to report it to.
                             _logger.LogError("Data array cannot be converted to {Type}. Skipping the message.", nameof(StreamData));
                         }
                     }
                     else
                     {
                         // very unlikely. Requires a single type or container to be so big that it is > _maxByteCount
+                        // Only OMF 1.2 reaches this drop, and it has no scopes to report it to.
                         _logger.LogError("One message of type {Type} is too big to be sent and cannot be reduced. " +
                                          "Final byte size {ByteCount}, max {MaxByteCount}.", messageType, byteCount, _maxByteCount);
                         return;
@@ -709,7 +765,7 @@ public class SerializationBlock : BaseBlock<Message>
                 }
                 else
                 {
-                    FlushInChunks(segment.ToArray(), bytes.Length, messageType, messageAction, partitionKey);
+                    FlushInChunks(segment.ToArray(), bytes.Length, messageType, messageAction, partitionKey, slice.At(segment.Offset));
                 }
             }
             else
@@ -717,11 +773,12 @@ public class SerializationBlock : BaseBlock<Message>
                 // do not flush [] message
                 if (bytes.Length <= EmptyMessageLength)
                 {
+                    DiscardEmptyBody(slice.Membership(segment.Offset, segment.Count));
                     return;
                 }
 
                 var count = GetStreamDataValuesCount(segment, messageType);
-                Flush(count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, count));
+                Flush(count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, count), slice.Membership(segment.Offset, segment.Count));
             }
         }
     }
@@ -732,7 +789,8 @@ public class SerializationBlock : BaseBlock<Message>
         StreamData streamData,
         MessageType messageType,
         MessageAction messageAction,
-        PartitionKey? partitionKey = null)
+        PartitionKey? partitionKey = null,
+        Slice slice = default)
     {
         SetTuningParameters(array, byteCount, out int maxSegmentLength, out var numberOfSegments, out var offset);
 
@@ -765,14 +823,15 @@ public class SerializationBlock : BaseBlock<Message>
                 {
                     _logger.LogError("One message of type OmfData is too big to be sent and cannot be reduced. " +
                                      "Final byte size {ByteCount}, max {MaxByteCount}.", byteCount, _maxByteCount);
+                    Discard(slice, segment.Offset, segment.Count, bytes.Length);
                     return;
                 }
 
-                FlushInChunksData([.. segment], bytes.Length, streamData, messageType, messageAction, partitionKey);
+                FlushInChunksData([.. segment], bytes.Length, streamData, messageType, messageAction, partitionKey, slice.At(segment.Offset));
             }
             else
             {
-                Flush(segment.Count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, segment.Count));
+                Flush(segment.Count, messageType, bytes, messageAction, partitionKey, GetStreamValueResourceCounts(messageType, segment.Count), slice.Membership(segment.Offset, segment.Count));
             }
         }
     }
@@ -783,14 +842,92 @@ public class SerializationBlock : BaseBlock<Message>
         byte[] bytes,
         MessageAction messageAction,
         PartitionKey? partitionKey = null,
-        OmfResourceCounts resourceCounts = default)
+        OmfResourceCounts resourceCounts = default,
+        Dictionary<ScopeToken, int> membership = null)
     {
-        _flushAction(new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey)
+        var message = new SerializedOmfMessage(messageType, bytes, messageAction, count, _omfVersion, partitionKey)
         {
             // OMF 1.3 also uses instance messages, but per-resource egress rates are only published for OMF 2.0 and later.
             // Deletes still count toward IORate through ItemCount, but not toward the resource rates, matching EventCount.
             ResourceCounts = _omfVersion >= OmfVersion.Omf20 && messageAction != MessageAction.Delete ? resourceCounts : default,
-        });
+        };
+        if (_coordinator is not null && membership?.Count > 0)
+        {
+            var serializedMessageId = Guid.NewGuid();
+            try
+            {
+                _coordinator.RegisterBody(serializedMessageId, membership);
+                message.SerializedMessageId = serializedMessageId;
+            }
+            catch (Exception ex)
+            {
+                // Tracking failures must not stop delivery. The unregistered items surface as a count mismatch when the scope materializes.
+                _logger.LogError(ex, "Failed to register a serialized message for acceptance tracking. The message will still be sent.");
+            }
+        }
+
+        _flushAction(message);
+    }
+
+    private static Dictionary<ScopeToken, int> Membership(ScopeSidecar sidecar, ScopeSidecarKind kind, int count, Dictionary<ScopeToken, int> membership = null)
+    {
+        if (sidecar is null || count <= 0)
+        {
+            return membership;
+        }
+
+        membership ??= [];
+        sidecar.AddEntries(kind, 0, count, membership);
+        return membership;
+    }
+
+    private static Dictionary<ScopeToken, int> DiscreteMembership(InstanceMessage message) =>
+        Membership(message.Sidecar, ScopeSidecarKind.Events, message.EventsCount,
+            Membership(message.Sidecar, ScopeSidecarKind.Entities, message.EntitiesCount,
+                Membership(message.Sidecar, ScopeSidecarKind.Relationships, message.RelationshipCount)));
+
+    private void Discard(Slice slice, int start, int count, int byteCount)
+    {
+        var membership = slice.Membership(start, count);
+        if (_coordinator is null || membership is null)
+        {
+            return;
+        }
+
+        var reason = new OmfOutcomeReason(
+            OmfReasonCode.ItemTooLarge,
+            string.Create(CultureInfo.InvariantCulture, $"An item serializes to {byteCount} bytes, more than the maximum of {_maxByteCount}."));
+        foreach (var (scope, itemCount) in membership)
+        {
+            _coordinator.RecordItemsDiscarded(scope, itemCount, reason);
+        }
+    }
+
+    private void DiscardEmptyBody(Dictionary<ScopeToken, int> membership)
+    {
+        if (_coordinator is null || membership is null)
+        {
+            return;
+        }
+
+        var reason = new OmfOutcomeReason(OmfReasonCode.EmptyBody, "Items serialized to an empty body, which isn't sent.");
+        foreach (var (scope, itemCount) in membership)
+        {
+            _coordinator.RecordItemsDiscarded(scope, itemCount, reason);
+        }
+    }
+
+    private void ProcessMaterializationBarrier(ScopeMaterializationBarrier barrier)
+    {
+        _materializationBarrierCounts.TryGetValue(barrier.Scope, out var received);
+        if (++received < barrier.ExpectedBarrierCount)
+        {
+            _materializationBarrierCounts[barrier.Scope] = received;
+            return;
+        }
+
+        _materializationBarrierCounts.Remove(barrier.Scope);
+        _coordinator?.CloseMaterialization(barrier.Scope);
     }
 
     private void SetTuningParameters<T>(
@@ -812,6 +949,40 @@ public class SerializationBlock : BaseBlock<Message>
 
         numberOfSegments = factor;
         offset = 0;
+    }
+
+    /// <summary>
+    /// Locates an array being chunked within the grouped message whose <see cref="ScopeSidecar"/> describes it.
+    /// </summary>
+    /// <param name="Sidecar">The sidecar of the grouped message, or <c>null</c> when no item belongs to a scope.</param>
+    /// <param name="Kind">The list the array was taken from.</param>
+    /// <param name="Offset">The position of the array's first entry in the message's list, or of its first value in the stream's values.</param>
+    /// <param name="Stream">The stream whose values the array holds, or -1 when the array holds entries.</param>
+    private readonly record struct Slice(ScopeSidecar Sidecar, ScopeSidecarKind Kind, int Offset = 0, int Stream = -1)
+    {
+        public Slice At(int offset) => this with { Offset = Offset + offset };
+
+        public Slice ValuesOfFirstStream() => this with { Kind = ScopeSidecarKind.StreamingData, Stream = Offset, Offset = 0 };
+
+        public Dictionary<ScopeToken, int> Membership(int start, int count)
+        {
+            if (Sidecar is null)
+            {
+                return null;
+            }
+
+            var membership = new Dictionary<ScopeToken, int>();
+            if (Stream >= 0)
+            {
+                Sidecar.AddValues(Stream, Offset + start, count, membership);
+            }
+            else
+            {
+                Sidecar.AddEntries(Kind, Offset + start, count, membership);
+            }
+
+            return membership;
+        }
     }
 
     /// <summary>

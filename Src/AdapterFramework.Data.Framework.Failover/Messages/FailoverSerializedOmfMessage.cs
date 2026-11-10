@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,29 +29,16 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     /// <param name="body">Message body in byte array.</param>
     /// <param name="messageAction">The <see cref="Abstractions.Messages.MessageAction"/> that will be sent with the message.</param>
     /// <param name="valueCount">The number of values contained inside the <see paramref="body"/>.</param>
-    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount = 0) 
-        : this(type, body, messageAction, valueCount, OmfVersion.Omf12)
-    {
-    }
-
-    /// <summary>
-    /// Initializes a failover message that preserves the source protocol version and partition key.
-    /// </summary>
-    /// <param name="type">OMF message type.</param>
-    /// <param name="body">Serialized message body.</param>
-    /// <param name="messageAction">The requested schema or data action.</param>
-    /// <param name="valueCount">The number of values in the body.</param>
-    /// <param name="omfVersion">The protocol version used to send the message.</param>
-    /// <param name="partitionKey">The routing key, or null for the default partition.</param>
-    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount,
-        OmfVersion omfVersion, PartitionKey? partitionKey = null)
+    /// <param name="omfVersion">The OMF version that should be used to send this message.</param>
+    /// <param name="partitionKey">The PartitionKey that will be sent with the message to the OMFIngress Service.</param>
+    public FailoverSerializedOmfMessage(MessageType type, byte[] body, MessageAction messageAction, int valueCount = 0, OmfVersion omfVersion = OmfVersion.Omf12, PartitionKey? partitionKey = null)
         : base(type, body, messageAction, valueCount, omfVersion, partitionKey)
     {
     }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FailoverSerializedOmfMessage"/> class,
-    /// preserving delivery metadata from the original message.
+    /// preserving delivery metadata from the original message. The serialized message ID is not copied.
     /// </summary>
     /// <param name="message">The original serialized message.</param>
     public FailoverSerializedOmfMessage(ISerializedOmfMessage message)
@@ -63,7 +50,14 @@ public class FailoverSerializedOmfMessage : SerializedOmfMessage, IFailoverSeria
     public long ProcessTimeTicks { get; set; }
 
     /// <inheritdoc/>
-    public override int GetMessageSizeInBytes() =>
-        MessageBody.Length + MessageTypeEnumSize + ValueCountSize + MessageActionEnumSize + BufferingConstants.ProcessTimeTicksLength
-        + (OmfVersion != OmfVersion.Omf12 || PartitionKey.HasValue ? OmfVersionEnumSize + PartitionKeyEnumSize : 0);
+    public override int GetMessageSizeInBytes() => GetRecordSizeInBytes(MessageBody.Length);
+
+    /// <summary>
+    /// Gets the size of a V6 failover buffer record, which always stores the process time.
+    /// </summary>
+    /// <param name="bodyLength">The length of the message body in bytes.</param>
+    /// <returns>The record size in bytes.</returns>
+    internal static int GetRecordSizeInBytes(int bodyLength) =>
+        MessageTypeEnumSize + ValueCountSize + bodyLength + BufferingConstants.ProcessTimeTicksLength
+        + PartitionKeyEnumSize + MessageActionEnumSize + OmfVersionEnumSize;
 }

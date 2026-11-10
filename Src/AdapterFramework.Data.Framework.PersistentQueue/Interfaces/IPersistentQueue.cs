@@ -35,6 +35,16 @@ namespace AdapterFramework.Data.Framework.PersistentQueue.Interfaces;
 public interface IPersistentQueue : IDisposable
 {
     /// <summary>
+    /// Raised when written items with a <see cref="DataItem.TrackingId"/> are lost before they are dequeued.
+    /// Handlers run while the queue holds its locks, so they must not call back into the queue.
+    /// </summary>
+    event EventHandler<TrackedItemsLostEventArgs> TrackedItemsLost
+    {
+        add { }
+        remove { }
+    }
+
+    /// <summary>
     /// Gets a value that changes whenever retention or repair moves the reader past unread data.
     /// </summary>
     long ReaderEpoch => 0;

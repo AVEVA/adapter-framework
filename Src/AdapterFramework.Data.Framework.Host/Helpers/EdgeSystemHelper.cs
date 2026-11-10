@@ -20,6 +20,7 @@ using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
 using AdapterFramework.Data.Framework.Host.Configuration;
 using AdapterFramework.Data.Framework.Host.Utilities;
+using AdapterFramework.Data.Framework.Messages.Awaitable;
 using Directory = System.IO.Directory;
 using IConfigurationProvider = AdapterFramework.Data.Framework.Abstractions.Configuration.IConfigurationProvider;
 
@@ -47,6 +48,18 @@ public static class EdgeSystemHelper
         }
 
         return portNumber;
+    }
+
+    internal static int GetMaxActiveAwaitableScopes(IConfiguration configuration)
+    {
+        var maxActiveScopes = configuration.GetValue(ConfigurationConstants.MaxActiveAwaitableScopesKey, OmfAwaitableCoordinator.DefaultMaxActiveScopes);
+
+        if (maxActiveScopes < 1)
+        {
+            throw new ArgumentException($"Invalid maximum number of active awaitable scopes '{maxActiveScopes}' specified in appSettings file. It must be at least 1.");
+        }
+
+        return maxActiveScopes;
     }
 
     internal static void PerformSystemReset(IConfigurationProvider configurationProvider)
