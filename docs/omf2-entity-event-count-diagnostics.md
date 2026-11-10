@@ -6,7 +6,7 @@ Adapter components already publish diagnostics streams next to their OMF health 
 
 The implementation defines streams and health links in [AdapterDiagnosticsOmfMessageCreator.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsOmfMessageCreator.cs), samples and publishes values in [AdapterDiagnosticsService.cs](../Src/AdapterFramework.Data.Framework.AdapterCommon/Diagnostics/AdapterDiagnosticsService.cs), and defines stream names and type IDs in [DiagnosticsConstants.cs](../Src/AdapterFramework.Data.Framework.Common/Constants/DiagnosticsConstants.cs). The counts come from [InstrumentedMessageProcessor.cs](../Src/AdapterFramework.Data.Framework.MessageProcessor/InstrumentedMessageProcessor.cs).
 
-This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology. [PR #21](https://github.com/AVEVA/adapter-framework/pull/21) uses the same term for its proposed `EntityIORate` stream.
+This document describes the two counts added in [PR #6](https://github.com/AVEVA/adapter-framework/pull/6). They extend the existing component diagnostics rather than introducing a separate diagnostics model. The PR first named the entity count `AssetCount`. It is now `EntityCount`, to match OMF 2.0 terminology. [PR #21](https://github.com/AVEVA/adapter-framework/pull/21) uses the same term for its `EntityIORate` stream.
 
 ## Design
 
@@ -77,7 +77,7 @@ Data selection changes do not affect `EntityCount`. Selection is keyed by stream
 
 ## Summary
 
-The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible.
+The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible. The resource IO rate streams are described in [Component-scoped OMF 2 resource IO rate diagnostics](Component-scoped%20OMF%202%20resource%20IO%20rate%20diagnostics.md).
 
 - **Adapters** (static DataCollectors)
   - **{host}.{service name}** (static DataCollectorService) *
@@ -89,6 +89,7 @@ The following shows where the new streams appear in the existing health hierarch
       - **IORate** (dynamic Diagnostics.IORate)
       - **EntityCount** (dynamic Diagnostics.EntityCount), OMF 2.0, **New**
       - **EventCount** (dynamic Diagnostics.EventCount), OMF 2.0, **New**
+      - **StreamIORate**, **EntityIORate**, **EventIORate** (dynamic Diagnostics.IORate), OMF 2.0
 
 ## Constraints
 
