@@ -19,10 +19,6 @@ Consider moving these to their own commit, or calling them out in the PR descrip
 - [SerializationBlock_Tests.cs](../../Tests/AdapterFramework.Data.Framework.DataFlow.Tests/SerializationBlock_Tests.cs): `compressor.Object` is pulled into a local variable. No behaviour change; probably an analyzer fix.
 - [FileQueue_IntegrationTests.cs](../../Tests/AdapterFramework.Data.Framework.PersistentQueue.Tests/FileQueue_IntegrationTests.cs): an explicit `Assert.NotNull` is added before `TestHelper.AssertEqual`. Fine; it makes failures clearer.
 
-## Minor
-
-- `CollectMessageProcessorStatistics_OtherDiagnosticFailure_DoesNotStopResourceIoRates_Test` came from `main` without a merge conflict and still referenced `.AssetCount` / `GetAssetCount()`. It was updated to `.EntityCount` / `GetEntityCount()` while resolving the merge.
-
 ## Verification
 
 - `AdapterFramework.Data.Framework.AdapterCommon.Tests`, filtered to `Diagnostics` and `AdapterMainBase`: 115 passed, 0 failed.
