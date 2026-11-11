@@ -18,6 +18,7 @@ Each adapter component publishes three more diagnostics streams next to its exis
 | --- | --- | --- |
 | Scope | Per adapter component | Per adapter component |
 | Stream ID | `{prefix}{componentId}.IORate` | `{prefix}{componentId}.StreamIORate`, `.EntityIORate`, `.EventIORate` |
+| Stream name | `IORate` (OMF 1.x), `{componentId}.IORate` (OMF 2.0) | `{componentId}.StreamIORate`, `.EntityIORate`, `.EventIORate` |
 | OMF type | `Diagnostics.IORate` | `Diagnostics.IORate` (reused, no new types) |
 | Linked to | Component health asset | Component health asset |
 | Sampling | Every 1 second | Every 1 second |
@@ -27,6 +28,8 @@ Each adapter component publishes three more diagnostics streams next to its exis
 | OMF version | All | OMF 2.0 only |
 
 `{prefix}` is the diagnostics stream ID prefix: `{health prefix}{host}.{service name}.`.
+
+With OMF 2.0, the health asset links set the OMF link `property` to the short stream name, so attribute names under the DataCollectorHealth asset stay short. See [Stream names and link property](omf2-entity-event-count-diagnostics.md#stream-names-and-link-property).
 
 ### What each stream measures
 
@@ -104,10 +107,10 @@ The following shows where the new streams appear in the existing health hierarch
 
 For component `Source1` on host `MachineNameX` in service `Adapter`, with no health prefix, the new streams are:
 
-| Stream ID | Example `IORate` value | Meaning |
-| --- | --- | --- |
-| `MachineNameX.Adapter.Source1.StreamIORate` | 512.4 | 512.4 stream values written per second |
-| `MachineNameX.Adapter.Source1.EntityIORate` | 0.2 | 0.2 entity writes per second |
-| `MachineNameX.Adapter.Source1.EventIORate` | 3.5 | 3.5 event writes per second |
+| Stream ID | Stream name | Example `IORate` value | Meaning |
+| --- | --- | --- | --- |
+| `MachineNameX.Adapter.Source1.StreamIORate` | `Source1.StreamIORate` | 512.4 | 512.4 stream values written per second |
+| `MachineNameX.Adapter.Source1.EntityIORate` | `Source1.EntityIORate` | 0.2 | 0.2 entity writes per second |
+| `MachineNameX.Adapter.Source1.EventIORate` | `Source1.EventIORate` | 3.5 | 3.5 event writes per second |
 
 All three reuse `Diagnostics.IORate` and link to the component's health asset, alongside `MachineNameX.Adapter.Source1.IORate`. Each published sample contains a UTC `Timestamp` and an `IORate` value representing the moving average, not the total number of writes during that minute.

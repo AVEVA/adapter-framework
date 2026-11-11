@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.AdapterCommon.Diagnostics;
 using AdapterFramework.Data.Framework.Common.Constants;
@@ -71,7 +72,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         {
             Assert.NotEmpty(dataStream.Metadata);
             Assert.NotNull(dataStream.Name);
-            Assert.Equal(dataStream.Id.Substring(dataStream.Id.LastIndexOf('.') + 1), dataStream.Name);
+            Assert.Equal($"{UnitTestComponentId}.{dataStream.Id.Substring(dataStream.Id.LastIndexOf('.') + 1)}", dataStream.Name);
             Assert.Equal(ExpectedMetadataItemCount, dataStream.Metadata.Count);
             Assert.Equal(UnitTestComponentId, dataStream.Metadata[DataSourceKey].ToString());
             Assert.Equal(UnitTestComponentType, dataStream.Metadata[AdapterTypeKey].ToString());
@@ -145,11 +146,12 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         {
             var stream = Assert.Single(_dataStreams, x => x.Id == id);
             Assert.Equal(DiagnosticsConstants.IoRateTypeId, stream.TypeId);
-            Assert.Equal(name, stream.Name);
+            Assert.Equal($"{UnitTestComponentId}.{name}", stream.Name);
             Assert.Contains("written by this adapter component per second", stream.Description, StringComparison.Ordinal);
 
-            // Each stream is linked to the component's health asset.
-            Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == id);
+            // Each stream is linked to the component's health asset under its short name.
+            var link = Assert.Single(_messageProcessor.GetWrittenValues().Select(x => x.Instance).OfType<Link>(), x => x.Target.Id == id);
+            Assert.Equal(name, link.Target.Property);
         }
     }
 
@@ -169,9 +171,49 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
 
         var dataStream = Assert.Single(_dataStreams, x => x.TypeId == expectedTypeId);
         Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{expectedName}", dataStream.Id);
-        Assert.Equal(expectedName, dataStream.Name);
+        Assert.Equal($"{UnitTestComponentId}.{expectedName}", dataStream.Name);
         Assert.False(string.IsNullOrWhiteSpace(dataStream.Description));
         Assert.Equal(dataType.Description, dataStream.Description);
-        Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == dataStream.Id);
+        var link = Assert.Single(_messageProcessor.GetWrittenValues().Select(x => x.Instance).OfType<Link>(), x => x.Target.Id == dataStream.Id);
+        Assert.Equal(expectedName, link.Target.Property);
+    }
+
+    [Theory]
+    [InlineData(OmfVersion.Omf12)]
+    [InlineData(OmfVersion.Omf13)]
+    [InlineData(OmfVersion.Omf20)]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_StreamNamesAndLinkProperties_Test(OmfVersion omfVersion)
+    {
+        var assetNode = new DataTypeLinkNode("a", "b");
+        var messageCreator = new AdapterDiagnosticsOmfMessageCreator(UnitTestComponentId, _streamIdPrefix, assetNode, omfVersion);
+
+        messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
+
+        var isOmf20 = omfVersion >= OmfVersion.Omf20;
+        var links = _messageProcessor.GetWrittenValues().Select(x => x.Instance).OfType<Link>().ToList();
+        Assert.Equal(_dataStreams.Count, links.Count);
+
+        foreach (var dataStream in _dataStreams)
+        {
+            var shortName = dataStream.Id.Substring(dataStream.Id.LastIndexOf('.') + 1);
+            var link = Assert.Single(links, x => x.Target.Id == dataStream.Id);
+            Assert.Same(assetNode, link.Source);
+            Assert.IsType<DataStreamLinkNode>(link.Target);
+
+            // OMF 1.x keeps the short stream name and sends no link property, so its OMF messages are unchanged.
+            Assert.Equal(isOmf20 ? $"{UnitTestComponentId}.{shortName}" : shortName, dataStream.Name);
+            Assert.Equal(isOmf20 ? shortName : null, link.Target.Property);
+        }
+    }
+
+    [Fact]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_NullStreamIdPrefix_QualifiesNameWithComponentId_Test()
+    {
+        var messageCreator = new AdapterDiagnosticsOmfMessageCreator(UnitTestComponentId, null, new DataTypeLinkNode("a", "b"), OmfVersion.Omf20);
+
+        messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
+
+        var stream = Assert.Single(_dataStreams, x => x.Id == $"{UnitTestComponentId}.{DiagnosticsConstants.ErrorRateStreamName}");
+        Assert.Equal($"{UnitTestComponentId}.{DiagnosticsConstants.ErrorRateStreamName}", stream.Name);
     }
 }

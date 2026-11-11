@@ -322,6 +322,22 @@ public class OmfJsonSerializer_Tests
     }
 
     [Fact]
+    public void OmfJsonSerializer_Serialize_Stream_Reference_Link_With_Property_Test()
+    {
+        var jsonSerializer = new OmfJsonSerializer();
+        var expected = "{\"source\":{\"typeid\":\"Parent\",\"index\":\"ParentInstance\"},\"target\":{\"containerid\":\"Host.Service.Source1.EntityCount\",\"property\":\"EntityCount\"}}";
+        var source = new DataTypeLinkNode("Parent", "ParentInstance");
+        var target = new DataStreamLinkNode("Host.Service.Source1.EntityCount", property: "EntityCount");
+
+        var link = new Link(source, target);
+
+        var serialized = jsonSerializer.Serialize(link);
+
+        Assert.NotNull(serialized);
+        Assert.Equal(expected, Encoding.UTF8.GetString(serialized));
+    }
+
+    [Fact]
     public void OmfJsonSerializer_Serialize_Entity_To_Entity_Link_Test()
     {
         var jsonSerializer = new OmfJsonSerializer();

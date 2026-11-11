@@ -16,6 +16,7 @@ Each adapter component publishes two more diagnostics streams next to its existi
 | --- | --- | --- |
 | Scope | Per adapter component | Per adapter component |
 | Stream ID | `{prefix}{componentId}.StreamCount` | `{prefix}{componentId}.EntityCount`, `.EventCount` |
+| Stream name | `StreamCount` (OMF 1.x), `{componentId}.StreamCount` (OMF 2.0) | `{componentId}.EntityCount`, `{componentId}.EventCount` |
 | OMF type | `Diagnostics.StreamCount` | `Diagnostics.EntityCount`, `Diagnostics.EventCount` |
 | Linked to | Component health asset | Component health asset |
 | Sampling | Read every 60th tick of the 1-second timer | Read every 60th tick of the 1-second timer |
@@ -25,6 +26,14 @@ Each adapter component publishes two more diagnostics streams next to its existi
 | OMF version | All | OMF 2.0 only |
 
 `{prefix}` is the diagnostics stream ID prefix: `{health prefix}{host}.{service name}.`.
+
+### Stream names and link property
+
+With OMF 2.0, every component diagnostics stream (`ErrorRate`, `IORate`, `StreamCount`, `EntityCount`, `EventCount`, `StreamIORate`, `EntityIORate`, `EventIORate`) is named `{componentId}.{stream name}`, so the streams of different components can be told apart in stream search, data views, and stream lists. The link from the component health asset to each stream sets the OMF link `property` to the short stream name, for example `EntityCount`, so attribute names under the DataCollectorHealth asset stay short.
+
+With OMF 1.x, stream names stay short and links do not set `property`, so the OMF messages are unchanged.
+
+Stream IDs and type IDs are the same for all OMF versions. When an OMF 2.0 adapter is upgraded, endpoints that update a stream's name when the stream is re-sent rename the existing diagnostics streams. Consumers that look these streams up by name must use the stream ID or the new name.
 
 ### What each stream measures
 
@@ -77,7 +86,7 @@ Data selection changes do not affect `EntityCount`. Selection is keyed by stream
 
 ## Summary
 
-The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible. The resource IO rate streams are described in [Component-scoped OMF 2 resource IO rate diagnostics](Component-scoped%20OMF%202%20resource%20IO%20rate%20diagnostics.md).
+The following shows where the new streams appear in the existing health hierarchy. **New** marks the additions. An asterisk means multiple instances are possible. Names under the DataCollectorHealth asset are the link `property` values; with OMF 2.0 the streams themselves are named `{adapter instance id}.{name}`. The resource IO rate streams are described in [Component-scoped OMF 2 resource IO rate diagnostics](Component-scoped%20OMF%202%20resource%20IO%20rate%20diagnostics.md).
 
 - **Adapters** (static DataCollectors)
   - **{host}.{service name}** (static DataCollectorService) *
@@ -94,7 +103,7 @@ The following shows where the new streams appear in the existing health hierarch
 ## Constraints
 
 - Diagnostics follow the existing `EnableDiagnostics` general setting. If diagnostics are disabled, these streams are not published.
-- The streams are published only when the adapter uses OMF 2.0 or later. OMF 1.x adapters see no change in types, streams, or links.
+- The streams are published only when the adapter uses OMF 2.0 or later. OMF 1.x adapters see no change in types, streams, stream names, or links.
 - `IInstrumentedMessageProcessor.GetEntityCount()` and `GetEventCount()` are default interface members that return 0. Other implementations still compile and report `0`.
 - A failure writing one count stream stops only that stream. The other diagnostics streams keep publishing.
 - An adapter that drops entities across a stop and start without sending deletes keeps them in `EntityCount` until the process restarts.
@@ -103,9 +112,9 @@ The following shows where the new streams appear in the existing health hierarch
 
 For component `Source1` on host `MachineNameX` in service `Adapter`, with no health prefix, the new streams are:
 
-| Stream ID | Example value | Meaning |
-| --- | --- | --- |
-| `MachineNameX.Adapter.Source1.EntityCount` | `EntityCount`: 42 | 42 unique entities are currently tracked |
-| `MachineNameX.Adapter.Source1.EventCount` | `EventCount`: 1250 | 1250 events written since the component last started |
+| Stream ID | Stream name | Link `property` | Example value | Meaning |
+| --- | --- | --- | --- | --- |
+| `MachineNameX.Adapter.Source1.EntityCount` | `Source1.EntityCount` | `EntityCount` | `EntityCount`: 42 | 42 unique entities are currently tracked |
+| `MachineNameX.Adapter.Source1.EventCount` | `Source1.EventCount` | `EventCount` | `EventCount`: 1250 | 1250 events written since the component last started |
 
 Both link to the component's health asset, alongside `MachineNameX.Adapter.Source1.StreamCount`. Periodic samples contain a UTC `Timestamp` and the count at the time it was read, and appear only when the count has changed since the last one. `ResendTypesAndStreams()` republishes the last sent count with a new `Timestamp` even when it has not changed, so a resent timestamp is not a fresh measurement.
