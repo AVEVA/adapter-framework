@@ -1324,11 +1324,12 @@ public class SerializationBlock_Tests
 
         var compressor = new Mock<ICompressor>();
         compressor.Setup(c => c.Compress(It.IsAny<byte[]>())).Returns((byte[] data) => data);
+        var compressorObject = compressor.Object;
 
         var maxByteCount = SerializedSize(events, entities, links) / 3;
         var logger = new TestLogger();
 
-        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, 60, logger, compressor.Object);
+        var flushed = FlushInstanceMessage(NewInstanceMessage(events, entities, links), maxByteCount, 60, logger, compressorObject);
 
         Assert.False(logger.AreErrorsWarningsInLog());
         Assert.True(flushed.Count > 1);

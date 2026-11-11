@@ -376,7 +376,7 @@ public class SerializationBlock : BaseBlock<Message>
     {
         // Items differ in size across the sorted groups (e.g. an event with its links vs. a lone entity), so the number of items
         // which fit in a message is derived from the measured size of the previous attempt and refined as the groups are consumed.
-        var bytesPerItem = (double)byteCount / groups.ItemCount(groupStart, groupEnd);
+        var bytesPerItem = (double)byteCount / Math.Max(1, groups.ItemCount(groupStart, groupEnd));
         var chunkStart = groupStart;
 
         while (chunkStart < groupEnd)
@@ -401,7 +401,7 @@ public class SerializationBlock : BaseBlock<Message>
 
             var chunk = groups.CreateWrapper(chunkStart, chunkEnd);
             var bytes = SerializeWithWrapper(chunk);
-            bytesPerItem = (double)bytes.Length / chunkItemCount;
+            bytesPerItem = (double)bytes.Length / Math.Max(1, chunkItemCount);
 
             if (bytes.Length <= _maxByteCount)
             {

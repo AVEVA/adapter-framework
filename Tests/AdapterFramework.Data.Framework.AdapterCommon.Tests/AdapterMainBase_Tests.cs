@@ -944,7 +944,7 @@ public class AdapterMainBase_Tests
         // DeviceStatus and NextHealthMessageExpected
         const int ExpectedHealthStreamsCount = 2;
 
-        // ErrorRate, IORate and StreamCount always; AssetCount, EventCount, StreamIORate, EntityIORate and EventIORate only for OMF 2.0.
+        // ErrorRate, IORate and StreamCount always; EntityCount, EventCount, StreamIORate, EntityIORate and EventIORate only for OMF 2.0.
         using var cts = new CancellationTokenSource();
         using var adapter = CreateAdapter(omfVersion: omfVersion);
 

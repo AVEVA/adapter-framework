@@ -46,8 +46,8 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     /// Fed by the <c>WriteStaticValue&lt;T&gt;(typeId, id, name, ...)</c> overloads; acceptance by the processor
     /// is not a delivery guarantee. Implementations relying on the default interface member report 0.
     /// </summary>
-    /// <returns>Current asset count.</returns>
-    int GetAssetCount() => 0;
+    /// <returns>Current entity count.</returns>
+    int GetEntityCount() => 0;
 
     /// <summary>
     /// Gets the number of OMF 2.0 events accepted by the processor since start or the last <see cref="ClearCounters"/>.
@@ -77,7 +77,7 @@ public interface IInstrumentedMessageProcessor : IMessageProcessor
     /// Clears the counters in the <see cref="IInstrumentedMessageProcessor"/> service. Number of Types, Streams,
     /// data events (<see cref="GetAndResetEventsCounter"/>), resource counts (<see cref="GetAndResetResourceCounters"/>)
     /// and OMF 2.0 events (<see cref="GetEventCount"/>) are going to be cleared.
-    /// Tracked asset identities are retained, so <see cref="GetAssetCount"/> is not affected. An adapter that drops assets
+    /// Tracked entity identities are retained, so <see cref="GetEntityCount"/> is not affected. An adapter that drops entities
     /// across a stop and start without sending deletes keeps them counted until the process restarts.
     /// </summary>
     void ClearCounters();

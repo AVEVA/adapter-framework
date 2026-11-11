@@ -106,7 +106,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
     [InlineData(OmfVersion.Omf12, 3, 3)]
     [InlineData(OmfVersion.Omf13, 3, 3)]
     [InlineData(OmfVersion.Omf20, 5, 8)]
-    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesAssetAndEventCount_Test(OmfVersion omfVersion, int expectedTypeCount, int expectedStreamCount)
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_OmfVersionGatesEntityAndEventCount_Test(OmfVersion omfVersion, int expectedTypeCount, int expectedStreamCount)
     {
         const string UnitTestComponentType = "UnitTestComponentType";
 
@@ -118,7 +118,7 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
         Assert.Equal(expectedStreamCount, _dataStreams.Count);
 
         var isOmf20 = omfVersion == OmfVersion.Omf20;
-        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.AssetCountStreamName}", StringComparison.Ordinal)));
+        Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EntityCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id.EndsWith($".{DiagnosticsConstants.EventCountStreamName}", StringComparison.Ordinal)));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetStreamIoRateStreamId()));
         Assert.Equal(isOmf20, _dataStreams.Exists(x => x.Id == messageCreator.GetEntityIoRateStreamId()));
@@ -151,5 +151,27 @@ public class AdapterDiagnosticsOmfMessageCreator_Tests
             // Each stream is linked to the component's health asset.
             Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == id);
         }
+    }
+
+    // Literals intentionally pin the OMF wire contract so a constant rename fails here.
+    [Theory]
+    [InlineData("Diagnostics.EntityCount", "EntityCount", "int32")]
+    [InlineData("Diagnostics.EventCount", "EventCount", "int64")]
+    public void AdapterDiagnosticsOmfMessageCreator_CreateAndSendStructure_CountWireContract_Test(string expectedTypeId, string expectedName, string expectedFormat)
+    {
+        _messageCreator.CreateAndSendStructure(_messageProcessor, UnitTestComponentId, "UnitTestComponentType");
+
+        var dataType = Assert.Single(_dataTypes, x => x.Id == expectedTypeId);
+        Assert.True(dataType.Properties.TryGetValue(expectedName, out var property));
+        Assert.Equal("integer", property.Type);
+        Assert.Equal(expectedFormat, property.Format);
+        Assert.False(string.IsNullOrWhiteSpace(dataType.Description));
+
+        var dataStream = Assert.Single(_dataStreams, x => x.TypeId == expectedTypeId);
+        Assert.Equal($"{_streamIdPrefix}{UnitTestComponentId}.{expectedName}", dataStream.Id);
+        Assert.Equal(expectedName, dataStream.Name);
+        Assert.False(string.IsNullOrWhiteSpace(dataStream.Description));
+        Assert.Equal(dataType.Description, dataStream.Description);
+        Assert.Single(_messageProcessor.GetWrittenValues(), x => x.Instance is Link link && link.Target.Id == dataStream.Id);
     }
 }

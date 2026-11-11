@@ -28,6 +28,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 {
     #region Private Fields
 
+    private const string EntityCountDescription = "Number of unique OMF 2.0 entities currently tracked by the adapter. Entities are removed only by an explicit delete and are retained when the adapter stops and starts.";
     private const string EventCountDescription = "Cumulative number of OMF 2.0 events accepted by the adapter since it started or the counters were last reset. Deletes are not counted.";
     private const string StreamIoRateDescription = "Stream values written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
     private const string EntityIoRateDescription = "Entities written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
@@ -87,7 +88,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 
     public string GetStreamCountStreamId() => $"{_streamIdPrefix}.{StreamCountStreamName}";
 
-    public string GetAssetCountStreamId() => $"{_streamIdPrefix}.{AssetCountStreamName}";
+    public string GetEntityCountStreamId() => $"{_streamIdPrefix}.{EntityCountStreamName}";
 
     public string GetEventCountStreamId() => $"{_streamIdPrefix}.{EventCountStreamName}";
 
@@ -135,13 +136,14 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        var assetCountDiagnosticsType = new DynamicDataType
+        var entityCountDiagnosticsType = new DynamicDataType
         {
-            Id = AssetCountTypeId,
+            Id = EntityCountTypeId,
+            Description = EntityCountDescription,
             Properties = new Dictionary<string, PropertyDefinition>
             {
-                [nameof(AssetCountEvent.Timestamp)] = timestampProperty,
-                [nameof(AssetCountEvent.AssetCount)] = integerProperty,
+                [nameof(EntityCountEvent.Timestamp)] = timestampProperty,
+                [nameof(EntityCountEvent.EntityCount)] = integerProperty,
             },
         };
 
@@ -166,9 +168,9 @@ public class AdapterDiagnosticsOmfMessageCreator
             },
         };
 
-        // AssetCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        // EntityCount and EventCount are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
         return _publishOmf20Diagnostics
-            ? new DataType[] { streamCountDiagnosticsType, assetCountDiagnosticsType, eventCountDiagnosticsType, dataRateDiagnosticsType }
+            ? new DataType[] { streamCountDiagnosticsType, entityCountDiagnosticsType, eventCountDiagnosticsType, dataRateDiagnosticsType }
             : new DataType[] { streamCountDiagnosticsType, dataRateDiagnosticsType };
     }
 
@@ -220,10 +222,10 @@ public class AdapterDiagnosticsOmfMessageCreator
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
-        // AssetCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
+        // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
         if (_publishOmf20Diagnostics)
         {
-            foreach (var streamId in new[] { GetAssetCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
+            foreach (var streamId in new[] { GetEntityCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
             {
                 targetLink = new DataStreamLinkNode(streamId);
                 link = new Link(sourceLink, targetLink);
@@ -267,7 +269,7 @@ public class AdapterDiagnosticsOmfMessageCreator
             Name = IoRateStreamName,
         };
 
-        // AssetCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
+        // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
         if (!_publishOmf20Diagnostics)
         {
             return new[] { streamCountStream, ioRateStream };
@@ -282,9 +284,10 @@ public class AdapterDiagnosticsOmfMessageCreator
             streamCountStream,
             new DataStream
             {
-                Id = GetAssetCountStreamId(),
-                TypeId = AssetCountTypeId,
-                Name = AssetCountStreamName,
+                Id = GetEntityCountStreamId(),
+                TypeId = EntityCountTypeId,
+                Name = EntityCountStreamName,
+                Description = EntityCountDescription,
             },
             new DataStream
             {

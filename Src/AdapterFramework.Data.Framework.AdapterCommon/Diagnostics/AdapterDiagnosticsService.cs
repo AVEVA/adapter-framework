@@ -33,7 +33,7 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
 
     private const int MovingAveragePeriod = 60;
     private const int SendStreamCountPeriod = 60;
-    private const int SendAssetCountPeriod = 60;
+    private const int SendEntityCountPeriod = 60;
     private const int SendEventCountPeriod = 60;
     private const int SendIoRatePeriod = 60;
     private const int SendResourceIoRatePeriod = 60;
@@ -68,16 +68,16 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     private int _timerTickIoRateCounter;
     private int _timerTickResourceIoRateCounter;
     private int _timerTickStreamCounter;
-    private int _timerTickAssetCounter;
+    private int _timerTickEntityCounter;
     private int _timerTickEventCounter;
     private int _sentStreamCount = -1;
     private int _sentTypeCount = -1;
-    private int _sentAssetCount = -1;
+    private int _sentEntityCount = -1;
     private long _sentEventCount = -1;
     private bool _failedToCreateDiagnosticsTypes;
     private bool _failedToUpdateErrorRate;
     private bool _failedToUpdateMessageProcessorStatistics;
-    private bool _failedToUpdateAssetCount;
+    private bool _failedToUpdateEntityCount;
     private bool _failedToUpdateEventCount;
     private bool _disposed;
 
@@ -202,15 +202,15 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         CreateDiagnosticsTypesStreams();
         SendStreamCountEvent(_sentStreamCount, _sentTypeCount);
 
-        // AssetCount and EventCount diagnostics only exist for OMF 2.0, and are skipped once creating the diagnostics types has failed.
+        // EntityCount and EventCount diagnostics only exist for OMF 2.0, and are skipped once creating the diagnostics types has failed.
         if (!_publishOmf20Diagnostics || _failedToCreateDiagnosticsTypes)
         {
             return;
         }
 
-        if (!_failedToUpdateAssetCount)
+        if (!_failedToUpdateEntityCount)
         {
-            ResendAssetCount();
+            ResendEntityCount();
         }
 
         if (!_failedToUpdateEventCount)
@@ -329,15 +329,15 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
                     SendStreamCountEventWhenChanged();
                 }
 
-                // AssetCount, EventCount and the resource IO rate diagnostics only exist for OMF 2.0.
+                // EntityCount, EventCount and the resource IO rate diagnostics only exist for OMF 2.0.
                 if (!_publishOmf20Diagnostics)
                 {
                     return;
                 }
 
-                if (!_failedToUpdateAssetCount)
+                if (!_failedToUpdateEntityCount)
                 {
-                    SendAssetCountEventWhenChanged();
+                    SendEntityCountEventWhenChanged();
                 }
 
                 if (!_failedToUpdateEventCount)
@@ -423,23 +423,23 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         }
     }
 
-    private void SendAssetCountEventWhenChanged()
+    private void SendEntityCountEventWhenChanged()
     {
-        if (_timerTickAssetCounter <= 0)
+        if (_timerTickEntityCounter <= 0)
         {
-            _timerTickAssetCounter = SendAssetCountPeriod;
+            _timerTickEntityCounter = SendEntityCountPeriod;
 
-            var currentAssetCount = _instrumentedMessageProcessor.GetAssetCount();
+            var currentEntityCount = _instrumentedMessageProcessor.GetEntityCount();
 
-            if (currentAssetCount != Volatile.Read(ref _sentAssetCount))
+            if (currentEntityCount != Volatile.Read(ref _sentEntityCount))
             {
-                Interlocked.Exchange(ref _sentAssetCount, currentAssetCount);
+                Interlocked.Exchange(ref _sentEntityCount, currentEntityCount);
 
-                SendAssetCountEvent(currentAssetCount);
+                SendEntityCountEvent(currentEntityCount);
             }
         }
 
-        _timerTickAssetCounter--;
+        _timerTickEntityCounter--;
     }
 
     private void SendEventCountEventWhenChanged()
@@ -462,18 +462,18 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
     }
 
     // ResendTypesAndStreams() can run on any thread, so the last sent values are always read atomically.
-    private void ResendAssetCount()
+    private void ResendEntityCount()
     {
-        var assetCount = Volatile.Read(ref _sentAssetCount);
+        var entityCount = Volatile.Read(ref _sentEntityCount);
 
-        if (assetCount < 0)
+        if (entityCount < 0)
         {
             // Nothing has been sent yet, so publish the live count and record it so the next timer tick does not publish it again.
-            assetCount = _instrumentedMessageProcessor.GetAssetCount();
-            Interlocked.Exchange(ref _sentAssetCount, assetCount);
+            entityCount = _instrumentedMessageProcessor.GetEntityCount();
+            Interlocked.Exchange(ref _sentEntityCount, entityCount);
         }
 
-        SendAssetCountEvent(assetCount);
+        SendEntityCountEvent(entityCount);
     }
 
     private void ResendEventCount()
@@ -490,23 +490,23 @@ public class AdapterDiagnosticsService : IEdgeComponentDiagnosticsService
         SendEventCountEvent(eventCount);
     }
 
-    private void SendAssetCountEvent(int assetCount)
+    private void SendEntityCountEvent(int entityCount)
     {
-        var assetCountEvent = new AssetCountEvent
+        var entityCountEvent = new EntityCountEvent
         {
             Timestamp = DateTime.UtcNow,
-            AssetCount = assetCount,
+            EntityCount = entityCount,
         };
 
         try
         {
-            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetAssetCountStreamId(), Classification.Dynamic, assetCountEvent);
+            _diagnosticsMessageProcessor.WriteDiagnosticsValue(_diagnosticsOmfMessageCreator.GetEntityCountStreamId(), Classification.Dynamic, entityCountEvent);
         }
         catch (Exception ex)
         {
-            _instrumentedLogger.LogError(ex, "Failed to process AssetCount diagnostics event. Stopping AssetCount diagnostics data collection.");
+            _instrumentedLogger.LogError(ex, "Failed to process EntityCount diagnostics event. Stopping EntityCount diagnostics data collection.");
 
-            _failedToUpdateAssetCount = true;
+            _failedToUpdateEntityCount = true;
         }
     }
 

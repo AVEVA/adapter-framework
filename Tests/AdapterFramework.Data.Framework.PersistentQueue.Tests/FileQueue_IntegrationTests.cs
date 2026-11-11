@@ -1392,7 +1392,10 @@ public class FileQueue_IntegrationTests : IDisposable
 
         var epoch = _fileQueue.ReaderEpoch;
 
-        TestHelper.AssertEqual(items[0], _fileQueue.DequeueIfEpoch(epoch));
+        var dequeued = _fileQueue.DequeueIfEpoch(epoch);
+
+        Assert.NotNull(dequeued);
+        TestHelper.AssertEqual(items[0], dequeued);
         TestHelper.AssertEqual(items[1], _fileQueue.Peek());
     }
 

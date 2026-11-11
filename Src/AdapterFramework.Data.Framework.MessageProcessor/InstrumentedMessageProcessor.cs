@@ -392,7 +392,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
     }
 
     /// <inheritdoc/>
-    public int GetAssetCount()
+    public int GetEntityCount()
     {
         // Counted from the identity set on purpose: a separate counter updated next to the set can drift permanently once there is no lock.
         return _entityIds.Count;
@@ -428,7 +428,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         Interlocked.Exchange(ref _eventCount, 0);
         GetAndResetResourceCounters();
 
-        // Tracked asset identities are retained on purpose: assets still exist downstream after a stop, so AssetCount must not
+        // Tracked entity identities are retained on purpose: entities still exist downstream after a stop, so EntityCount must not
         // fall to zero when an adapter does not re-send its static values on start.
     }
 
@@ -567,7 +567,7 @@ public class InstrumentedMessageProcessor : IInstrumentedMessageProcessor, IScop
         return string.Join('|', link.Source?.Id, link.Source?.Property, link.Target?.Id, link.Target?.Property);
     }
 
-    // Tracks unique entity identities so GetAssetCount() reports a current-state gauge, mirroring the stream/type caches.
+    // Tracks unique entity identities so GetEntityCount() reports a current-state gauge, mirroring the stream/type caches.
     private void TrackEntityIdentity(string entityId, MessageAction messageAction)
     {
         if (messageAction == MessageAction.Delete)
