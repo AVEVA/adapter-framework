@@ -35,8 +35,10 @@ public class AdapterDiagnosticsOmfMessageCreator
     private const string EventIoRateDescription = "Events written by this adapter component per second (60-second moving average). Deletes are not counted. Not delivery-confirmed; see the egress endpoint rates for accepted values.";
 
     private readonly LinkNode _assetNode;
+    private readonly string _componentId;
     private readonly string _streamIdPrefix;
     private readonly bool _publishOmf20Diagnostics;
+    private readonly bool _qualifyStreamNames;
 
     #endregion
 
@@ -56,8 +58,12 @@ public class AdapterDiagnosticsOmfMessageCreator
             ? $"{streamIdPrefix}{componentId}" 
             : componentId;
 
+        _componentId = componentId;
         _assetNode = assetNode;
         _publishOmf20Diagnostics = omfVersion >= OmfVersion.Omf20;
+
+        // The link property that keeps asset attribute names short is only sent to OMF 2.0 endpoints, so OMF 1.x keeps short stream names.
+        _qualifyStreamNames = omfVersion >= OmfVersion.Omf20;
     }
 
     #endregion
@@ -208,26 +214,33 @@ public class AdapterDiagnosticsOmfMessageCreator
         var sourceLink = _assetNode;
 
         // Link adapter error rate to adapter component health asset
-        var targetLink = new DataStreamLinkNode(GetErrorRateStreamId());
+        var targetLink = CreateStreamLinkNode(GetErrorRateStreamId(), ErrorRateStreamName);
         var link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
         // Link adapter IO rate to adapter component health asset
-        targetLink = new DataStreamLinkNode(GetIoRateStreamId());
+        targetLink = CreateStreamLinkNode(GetIoRateStreamId(), IoRateStreamName);
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
         // Link adapter stream count to adapter component health asset
-        targetLink = new DataStreamLinkNode(GetStreamCountStreamId());
+        targetLink = CreateStreamLinkNode(GetStreamCountStreamId(), StreamCountStreamName);
         link = new Link(sourceLink, targetLink);
         links.Add((Tokens.Link, Classification.Static, link));
 
         // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not linked for earlier OMF versions.
         if (_publishOmf20Diagnostics)
         {
-            foreach (var streamId in new[] { GetEntityCountStreamId(), GetEventCountStreamId(), GetStreamIoRateStreamId(), GetEntityIoRateStreamId(), GetEventIoRateStreamId() })
+            foreach (var (streamId, streamName) in new[]
             {
-                targetLink = new DataStreamLinkNode(streamId);
+                (GetEntityCountStreamId(), EntityCountStreamName),
+                (GetEventCountStreamId(), EventCountStreamName),
+                (GetStreamIoRateStreamId(), StreamIoRateStreamName),
+                (GetEntityIoRateStreamId(), EntityIoRateStreamName),
+                (GetEventIoRateStreamId(), EventIoRateStreamName),
+            })
+            {
+                targetLink = CreateStreamLinkNode(streamId, streamName);
                 link = new Link(sourceLink, targetLink);
                 links.Add((Tokens.Link, Classification.Static, link));
             }
@@ -235,6 +248,12 @@ public class AdapterDiagnosticsOmfMessageCreator
 
         return links;
     }
+
+    private DataStreamLinkNode CreateStreamLinkNode(string streamId, string streamName) =>
+        new DataStreamLinkNode(streamId, property: _qualifyStreamNames ? streamName : null);
+
+    private string GetStreamName(string streamName) =>
+        _qualifyStreamNames ? $"{_componentId}.{streamName}" : streamName;
 
     private DataStream[] GetStreams()
     {
@@ -249,7 +268,7 @@ public class AdapterDiagnosticsOmfMessageCreator
         {
             Id = GetErrorRateStreamId(),
             TypeId = ErrorRateTypeId,
-            Name = ErrorRateStreamName,
+            Name = GetStreamName(ErrorRateStreamName),
         };
     }
 
@@ -259,14 +278,14 @@ public class AdapterDiagnosticsOmfMessageCreator
         {
             Id = GetStreamCountStreamId(),
             TypeId = StreamCountTypeId,
-            Name = StreamCountStreamName,
+            Name = GetStreamName(StreamCountStreamName),
         };
 
         var ioRateStream = new DataStream
         {
             Id = GetIoRateStreamId(),
             TypeId = IoRateTypeId,
-            Name = IoRateStreamName,
+            Name = GetStreamName(IoRateStreamName),
         };
 
         // EntityCount, EventCount and the resource IO rates are OMF 2.0 only concepts, so they are not published for earlier OMF versions.
@@ -277,7 +296,7 @@ public class AdapterDiagnosticsOmfMessageCreator
 
         // The resource IO rates share the IORate type and count what this component wrote, not what was delivered.
         DataStream CreateResourceIoRateStream(string id, string name, string description) =>
-            new DataStream { Id = id, TypeId = IoRateTypeId, Name = name, Description = description };
+            new DataStream { Id = id, TypeId = IoRateTypeId, Name = GetStreamName(name), Description = description };
 
         return new[]
         {
@@ -286,14 +305,14 @@ public class AdapterDiagnosticsOmfMessageCreator
             {
                 Id = GetEntityCountStreamId(),
                 TypeId = EntityCountTypeId,
-                Name = EntityCountStreamName,
+                Name = GetStreamName(EntityCountStreamName),
                 Description = EntityCountDescription,
             },
             new DataStream
             {
                 Id = GetEventCountStreamId(),
                 TypeId = EventCountTypeId,
-                Name = EventCountStreamName,
+                Name = GetStreamName(EventCountStreamName),
                 Description = EventCountDescription,
             },
             ioRateStream,
