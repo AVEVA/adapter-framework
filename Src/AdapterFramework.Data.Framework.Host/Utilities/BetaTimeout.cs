@@ -23,7 +23,7 @@ namespace AdapterFramework.Data.Framework.Host.Utilities;
 public static class BetaTimeout
 {
     // Should be the next first Wednesday in either June or December
-    private static readonly DateTime _timeoutDate = new(2026, 12, 2);
+    private static readonly DateTime _timeoutDate = new(2027, 06, 2);
 
     /// <summary>
     /// Returns true if expired, false if valid.

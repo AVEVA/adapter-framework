@@ -23,11 +23,12 @@ SPDX-License-Identifier: Apache-2.0
 
   <ItemGroup>
     <PackageReference Include="Crc32.NET" Version="1.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.15" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Abstractions\AdapterFramework.Data.Framework.Abstractions.csproj" />
   </ItemGroup>
+
 
 </Project>
