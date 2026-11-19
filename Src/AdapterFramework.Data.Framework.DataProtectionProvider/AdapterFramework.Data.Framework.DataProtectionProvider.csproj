@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.DataProtection.Extensions" Version="10.0.14" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection.Extensions" Version="10.0.15" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,5 +30,6 @@ SPDX-License-Identifier: Apache-2.0
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Common\AdapterFramework.Data.Framework.Common.csproj" />
     <ProjectReference Include="..\AdapterFramework.Data.Framework.Extensions\AdapterFramework.Data.Framework.Extensions.csproj" />
   </ItemGroup>
+
 
 </Project>
