@@ -90,5 +90,6 @@ format. Drain endpoint and failover buffers before rolling back to an earlier re
 - Hot failover buffer records are written as V6. Earlier releases skip V6 records as corrupt, so
   those bodies are lost.
 
+- [Scoped writes](docs/acceptance-api/ScopedWrites.md) - How to use awaitable scopes (the acceptance API) to wait for endpoint acceptance of OMF 2.0 writes.
 - [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute changes, tests, and documentation.
 - [SECURITY.md](SECURITY.md) - How to report suspected vulnerabilities responsibly.
