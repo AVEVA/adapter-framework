@@ -2,9 +2,9 @@
 
 ## Purpose and scope
 
-This walkthrough explains how OpenAFx tracks scoped writes as data moves through grouping and serialization. It follows three examples: streaming values, schema items, and static data together with its type. It describes how a scope's items are counted when admitted, tagged in grouped messages, split across serialized HTTP bodies, and counted again so the coordinator can determine when the complete set of bodies for a scope is known.
+This walkthrough explains how the Adapter Framework tracks scoped writes as data moves through grouping and serialization. It follows three examples: streaming values, schema items, and static data together with its type. It describes how a scope's items are counted when admitted, tagged in grouped messages, split across serialized HTTP bodies, and counted again so the coordinator can determine when the complete set of bodies for a scope is known.
 
-The explanation is self-contained. It defines the terms and pipeline stages used below and does not rely on another repository, document, or plan. The class names are included to identify the OpenAFx components responsible for the described behavior; line numbers and external document references are intentionally omitted.
+The explanation is self-contained. It defines the terms and pipeline stages used below and does not rely on another repository, document, or plan. The class names are included to identify the Adapter Framework components responsible for the described behavior; line numbers and external document references are intentionally omitted.
 
 ## 1. Key ideas
 
@@ -225,7 +225,7 @@ A scope's schema items can appear in bodies of different kinds. Its delivery out
 
 ## 5. Element example: static data and its type
 
-In OMF 2.0, an element is static data, also called an entity, and its type is schema. In OpenAFx, type writes and static-value writes travel through separate grouping blocks. A scope that writes both can therefore contribute to both a schema message and an instance message.
+In OMF 2.0, an element is static data, also called an entity, and its type is schema. In the Adapter Framework, type writes and static-value writes travel through separate grouping blocks. A scope that writes both can therefore contribute to both a schema message and an instance message.
 
 ### 5.1 Writes, routing, and admitted counts
 

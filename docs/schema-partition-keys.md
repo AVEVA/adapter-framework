@@ -53,8 +53,8 @@ For example, create a type with `Key1` and `Key2`, then delete that type with `K
 
 ## Hot failover and disk buffers
 
-Hot failover retains the source OMF version and partition key in memory and on disk. Messages with OMF 1.2 and no key still use the existing V2 failover record. Messages with another OMF version or a key use V3 records. The V3 failover payload contains the type, count, body, process timestamp, key, action, and OMF version. A zero key byte represents no key.
+Hot failover retains the source OMF version and partition key in memory and on disk. Every message in the hot-failover disk buffer is written as a V6 record, regardless of OMF version or key. The V6 failover payload contains the type, count, body, process timestamp, key, action, and OMF version. A zero key byte represents no key.
 
-The new reader accepts legacy V2 records with OMF 1.2 and no key. It can't recover metadata that an older writer discarded.
+The reader also accepts legacy V2 records, which it reads as OMF 1.2 with no key, and V3 failover records written by earlier builds, which use the same layout as V6. It can't recover metadata that an older writer discarded.
 
-**Rollback warning:** An older failover reader doesn't understand the V3 payload layout. It can include the new metadata bytes in the body and read the wrong action. Drain the hot-failover disk buffer before a downgrade. If a drain isn't possible, archive or clear that buffer before an older release reads it; a clear discards pending messages.
+**Rollback warning:** Earlier releases don't recognize V6 records. They skip them as corrupt, so those buffered messages are lost. Drain the hot-failover disk buffer before rolling back to an earlier release. Endpoint buffers have the same limitation for scoped bodies, which are written as V5 records. For more information, see [Additional documentation](../README.md#additional-documentation).
