@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,8 +18,12 @@ internal static class ConfigurationConstants
 {
     internal const string ApplicationDataDirectoryKey = "ApplicationSettings:ApplicationDataDirectory";
     internal const string ApplicationPortKey = "ApplicationSettings:Port";
+    internal const string ApplicationBindAddressKey = "ApplicationSettings:BindAddress";
     internal const string DeviceNameKey = "ApplicationSettings:DeviceName";
     internal const string MaxActiveAwaitableScopesKey = "ApplicationSettings:MaxActiveAwaitableScopes";
+    internal const string AuthModeKey = "ApplicationSettings:Authentication:Mode";
+    internal const string KerberosLocalGroupNameKey = "ApplicationSettings:Authorization:AccessAdapter:Kerberos:LocalGroup:Name";
+    internal const string KerberosLocalGroupSidKey = "ApplicationSettings:Authorization:AccessAdapter:Kerberos:LocalGroup:Sid";
     internal const string DefaultAppSettingsFileName = "appsettings.json";
     internal const string AppSettingsFileTemplate = "appsettings.{0}.json";
     internal const string DefaultInstanceId = "1";
@@ -27,8 +31,10 @@ internal static class ConfigurationConstants
     internal const string ApplicationPortParameter = "--port:";
     internal const string DeviceNameParameter = "--devicename:";
     internal const string InstanceParameter = "--instance:";
+    internal const string KerberosLocalGroupParameter = "--kerberoslocalgroup:";
+    internal const string KerberosLocalGroupSidParameter = "--kerberoslocalgroupsid:";
 
-    internal const string BaseUri = "http://127.0.0.1:{0}";
+    internal const string BaseUri = "http://{0}:{1}";
 
     internal const int MinPortNumber = 1024;
     internal const int MaxPortNumber = 49151;
