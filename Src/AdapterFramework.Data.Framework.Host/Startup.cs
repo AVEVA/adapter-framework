@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using AdapterFramework.Data.Framework.Abstractions.Administration;
@@ -29,11 +30,6 @@ using AdapterFramework.Data.Framework.Abstractions.MessageProcessing;
 using AdapterFramework.Data.Framework.Abstractions.Security;
 using AdapterFramework.Data.Framework.Abstractions.Services;
 using AdapterFramework.Data.Framework.CancellationTokenService;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.DataProtection;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using AdapterFramework.Data.Framework.Common;
 using AdapterFramework.Data.Framework.Common.Security;
 using AdapterFramework.Data.Framework.ComponentIdProvider;
@@ -45,6 +41,7 @@ using AdapterFramework.Data.Framework.DataProtector;
 using AdapterFramework.Data.Framework.Diagnostics;
 using AdapterFramework.Data.Framework.EndpointManager;
 using AdapterFramework.Data.Framework.Extensions;
+using AdapterFramework.Data.Framework.Host.Authentication;
 using AdapterFramework.Data.Framework.Host.ComponentServices;
 using AdapterFramework.Data.Framework.Host.Configuration;
 using AdapterFramework.Data.Framework.Host.Helpers;
@@ -55,6 +52,16 @@ using AdapterFramework.Data.Framework.MessageProcessor;
 using AdapterFramework.Data.Framework.Messages.Awaitable;
 using AdapterFramework.Data.Framework.Registry;
 using AdapterFramework.Data.Framework.Serialization;
+using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Mvc.Authorization;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using IConfigurationProvider = AdapterFramework.Data.Framework.Abstractions.Configuration.IConfigurationProvider;
 
 namespace AdapterFramework.Data.Framework.Host;
@@ -71,6 +78,7 @@ public class Startup
     #region Private Fields
 
     private JsonConfigurationProvider _configurationProvider;
+    private IConfiguration _appSettingsConfiguration;
     private IEnumerable<Type> _sinkImplementations;
     private IEnumerable<Type> _adapterImplementations;
     private IEnumerable<Type> _edgeServiceImplementations;
@@ -78,6 +86,13 @@ public class Startup
     #endregion
 
     #region Public Methods
+
+    public Startup(IConfiguration appSettingsConfiguration)
+    {
+        _appSettingsConfiguration = appSettingsConfiguration
+            ?? throw new ArgumentNullException(
+                nameof(appSettingsConfiguration));
+    }
 
     public void ConfigureServices(IServiceCollection services)
     {
@@ -103,6 +118,7 @@ public class Startup
         services.Configure<KestrelServerOptions>(options =>
         {
             options.AllowSynchronousIO = true;
+            options.ConfigureEndpointDefaults(o => o.Protocols = HttpProtocols.Http1);
         });
 
         services.AddSingleton<IRequestMetricsTracker, RequestMetricsTracker>();
@@ -166,8 +182,70 @@ public class Startup
         services.AddSingleton<IEdgeDataProtector>(x => x.GetRequiredService<SecretsManager>());
         services.AddSingleton<ISecretsManager>(x => x.GetRequiredService<SecretsManager>());
 
+        var authenticationMode = _appSettingsConfiguration.GetValue<String>(ConfigurationConstants.AuthModeKey);
+        AuthorizationPolicy accessAdapterPolicy = null;
+
+        switch (authenticationMode)
+        {
+            case ConfigurationConstants.KerberosModeStr:
+                // Get info from appSettings and .env variables
+                var kerberosSection = _appSettingsConfiguration.GetSection(AccessAdapterAuthorizationOptions.KerberosSectionName);
+
+                // Add singletons for startup validation and authorization
+                services.AddSingleton<IValidateOptions<AccessAdapterAuthorizationOptions>,
+                    KerberosOptionsStartupValidator>();
+                services.AddSingleton<IGroupMembershipEvaluator, WindowsGroupMembershipEvaluator>();
+                services.AddSingleton<
+                    IAuthorizationHandler,
+                    AccessAdapterAuthorizationHandler>();
+
+                // Bind only Kerberos options section to options validator
+                services.AddOptions<AccessAdapterAuthorizationOptions>()
+                .Bind(kerberosSection)
+                .ValidateOnStart();
+
+                accessAdapterPolicy = new AuthorizationPolicyBuilder()
+                    .RequireAuthenticatedUser()
+                    .AddRequirements(new AccessAdapterRequirement())
+                    .Build();
+
+                // Add authentication and authorization middleware
+                services
+                    .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+                    .AddNegotiate("Negotiate", options =>
+                    {
+                        options.PersistKerberosCredentials = false;
+                        options.PersistNtlmCredentials = false;
+
+                        options.Events.OnAuthenticated = context =>
+                        {
+                            if (!OperatingSystem.IsWindows())
+                            {
+                                context.Fail("Kerberos authentication is only supported on Windows.");
+                            }
+                            return Task.CompletedTask;
+                        };
+                    });
+
+
+                services.AddAuthorization(options =>
+                {
+                    options.AddPolicy(
+                        AdapterPolicies.AccessAdapter,
+                        accessAdapterPolicy);
+
+                    options.DefaultPolicy = accessAdapterPolicy;
+                });
+                break;
+            default:
+                throw new InvalidOperationException("Unsupported authentication mode.");
+        }
+
         // Add System configuration controller
-        var mvcBuilder = services.AddMvc(option => option.EnableEndpointRouting = false);
+        var mvcBuilder = services.AddMvc(options =>
+        {
+            options.Filters.Add(new AuthorizeFilter(accessAdapterPolicy));
+        });
         mvcBuilder.AddApplicationPart(typeof(SystemConfigurationController).Assembly);
         mvcBuilder.AddJsonOptions(options =>
         {
@@ -226,14 +304,21 @@ public class Startup
 
         app.UseCors();
 
+        app.UseRouting();
+        app.UseAuthentication();
+        app.UseAuthorization();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
+
         // Invoke UseComponent method to allow components to perform custom setup
         Services.Use(app, _sinkImplementations);
         Services.Use(app, _adapterImplementations);
         Services.Use(app, _edgeServiceImplementations);
 
         RegisterSystemAdministrationActions(app.ApplicationServices.GetRequiredService<IRuntimeAdministrationRegistry>());
-
-        app.UseMvc();
     }
 
     #endregion

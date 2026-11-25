@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,6 +25,15 @@ internal class CommandLineArgumentHelper
 {
     internal static IConfiguration CreateConfiguration(string[] arguments, out string errorMessage)
     {
+        return CreateConfiguration(arguments, out errorMessage, out _);
+    }
+
+    internal static IConfiguration CreateConfiguration(
+        string[] arguments,
+        out string errorMessage,
+        out Dictionary<string, string> configurationValueOverride)
+    {
+        configurationValueOverride = new Dictionary<string, string>();
         var configurationBuilder = new ConfigurationBuilder();
         var baseDirectoryName = Path.GetDirectoryName(AppContext.BaseDirectory);
         if (string.IsNullOrWhiteSpace(baseDirectoryName))
@@ -36,7 +45,13 @@ internal class CommandLineArgumentHelper
         configurationBuilder.SetBasePath(baseDirectoryName);
         configurationBuilder.AddJsonFile(GetAppSettingsFileName(arguments), optional: false, reloadOnChange: false);
 
-        var configurationValueOverride = new Dictionary<string, string>();
+        var kerberosArgumentMappings = new[]
+            {
+                (ConfigurationConstants.KerberosLocalGroupParameter, ConfigurationConstants.KerberosLocalGroupNameKey),
+                (ConfigurationConstants.KerberosLocalGroupSidParameter, ConfigurationConstants.KerberosLocalGroupSidKey),
+            };
+
+
         foreach (var argument in arguments)
         {
             if (argument.Contains(ConfigurationConstants.ApplicationDataDirectoryParameter, StringComparison.InvariantCultureIgnoreCase))
@@ -72,8 +87,23 @@ internal class CommandLineArgumentHelper
 
                 configurationValueOverride[ConfigurationConstants.DeviceNameKey] = deviceName;
             }
-        }
 
+            foreach (var (parameter, configurationKey) in kerberosArgumentMappings)
+            {
+                if (!argument.StartsWith(parameter, StringComparison.InvariantCultureIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!TryGetStringArgumentValue(argument, parameter, out var value, out errorMessage))
+                {
+                    return null;
+                }
+
+                configurationValueOverride[configurationKey] = value;
+                break;
+            }
+        }
         configurationBuilder.AddInMemoryCollection(configurationValueOverride);
         errorMessage = null;
         return configurationBuilder.Build();

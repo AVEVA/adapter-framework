@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -127,6 +127,43 @@ public class CommandLineArgumentHelper_Tests : IDisposable
             }
 
             Assert.Equal(machineNameArgument, config.GetValue<string>(ConfigurationConstants.DeviceNameKey));
+        }
+        finally
+        {
+            if (File.Exists(appSettingsFilePath))
+            {
+                File.Delete(appSettingsFilePath);
+            }
+        }
+    }
+
+    [Fact]
+    internal void CreateConfiguration_KerberosArguments_OverrideSettings()
+    {
+        var appSettingsFilePath = AppContext.BaseDirectory + "appsettings.json";
+        try
+        {
+            File.WriteAllText(
+                appSettingsFilePath,
+                "{\"ApplicationSettings\":{\"Authorization\":{\"AccessAdapter\":{\"Kerberos\":{" +
+                "\"LocalGroup\":{\"Name\":\"Old Group\",\"Sid\":\"S-1-5-21-1\"}}}}}}");
+
+            var arguments = new[]
+            {
+                "--kerberoslocalgroup:AVEVA Adapter API Users",
+                "--kerberoslocalgroupsid:S-1-5-21-123",
+            };
+
+            var configuration = CommandLineArgumentHelper.CreateConfiguration(
+                arguments,
+                out var error,
+                out var kerberosOverrides);
+
+            Assert.Null(error);
+            Assert.Equal("AVEVA Adapter API Users", kerberosOverrides[ConfigurationConstants.KerberosLocalGroupNameKey]);
+            Assert.Equal("S-1-5-21-123", kerberosOverrides[ConfigurationConstants.KerberosLocalGroupSidKey]);
+            Assert.Equal("AVEVA Adapter API Users", configuration[ConfigurationConstants.KerberosLocalGroupNameKey]);
+            Assert.Equal("S-1-5-21-123", configuration[ConfigurationConstants.KerberosLocalGroupSidKey]);
         }
         finally
         {

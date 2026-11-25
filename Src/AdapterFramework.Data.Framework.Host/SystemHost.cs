@@ -1,4 +1,4 @@
-// Copyright 2018-2026 AVEVA Group Limited
+﻿// Copyright 2018-2026 AVEVA Group Limited
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 // limitations under the License.
 // SPDX-License-Identifier: Apache-2.0
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -23,6 +24,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
@@ -74,7 +76,10 @@ public static class SystemHost
         BetaTimeoutDate = betaTimeoutDate;
         OmfVersion = omfVersion;
 
-        _configuration = CommandLineArgumentHelper.CreateConfiguration(args, out var configErrorMessage);
+        _configuration = CommandLineArgumentHelper.CreateConfiguration(
+            args,
+            out var configErrorMessage,
+            out var kerberosConfigurationOverrides);
         if (_configuration == null)
         {
             Console.WriteLine(configErrorMessage);
@@ -87,7 +92,7 @@ public static class SystemHost
         var configurationProvider = new JsonConfigurationProvider(ApplicationDataDirectory);
         _loggingDirectoryPath = GetLoggingDirectoryPath(configurationProvider);
 
-        var hostBuilder = CreateHostBuilder(args);
+        var hostBuilder = CreateHostBuilder(args, kerberosConfigurationOverrides);
         try
         {
             switch (Environment.OSVersion.Platform)
@@ -112,6 +117,12 @@ public static class SystemHost
         }
         catch (Exception ex)
         {
+            if (ex is OptionsValidationException)
+            {
+                _aspNetLogger?.LogCritical(ex.InnerException, "Adapter startup option validation failed. The adapter is shutting down.");
+                return;
+            }
+
             if (ex.InnerException is AddressInUseException)
             {
                 // We don't want to restart in this case, so the exception is only logged.
@@ -124,11 +135,14 @@ public static class SystemHost
         }
     }
 
-    private static IHostBuilder CreateHostBuilder(string[] args)
+    private static IHostBuilder CreateHostBuilder(
+        string[] args,
+        Dictionary<string, string> kerberosConfigurationOverrides)
     {
         Port = EdgeSystemHelper.GetPortNumber(_configuration);
+        var bindAddr = EdgeSystemHelper.GetBindAddress(_configuration);
         MaxActiveAwaitableScopes = EdgeSystemHelper.GetMaxActiveAwaitableScopes(_configuration);
-        BaseAddress = string.Format(CultureInfo.InvariantCulture, ConfigurationConstants.BaseUri, Port);
+        BaseAddress = string.Format(CultureInfo.InvariantCulture, ConfigurationConstants.BaseUri, bindAddr, Port);
 
         return Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder(args)
             .ConfigureServices((_, services) =>
@@ -141,11 +155,15 @@ public static class SystemHost
                     option.ShutdownTimeout = TimeSpan.FromMinutes(5);
                 });
             })
+            .ConfigureAppConfiguration((_, configurationBuilder) =>
+            {
+                configurationBuilder.AddInMemoryCollection(kerberosConfigurationOverrides);
+            })
             .ConfigureWebHostDefaults(webBuilder =>
             {
                 webBuilder.UseStartup<Startup>();
                 webBuilder.UseContentRoot(Path.GetDirectoryName(AppContext.BaseDirectory) ?? string.Empty);
-                webBuilder.UseUrls(string.Format(CultureInfo.InvariantCulture, ConfigurationConstants.BaseUri, EdgeSystemHelper.GetPortNumber(_configuration)));
+                webBuilder.UseUrls(string.Format(CultureInfo.InvariantCulture, ConfigurationConstants.BaseUri, EdgeSystemHelper.GetBindAddress(_configuration), EdgeSystemHelper.GetPortNumber(_configuration)));
                 webBuilder.ConfigureKestrel(serverOptions =>
                 {
                     serverOptions.Limits.MaxRequestBodySize = MaxRequestBodySizeBytes;
