@@ -33,6 +33,7 @@ internal static class ConfigurationConstants
     internal const string InstanceParameter = "--instance:";
     internal const string KerberosLocalGroupParameter = "--kerberoslocalgroup:";
     internal const string KerberosLocalGroupSidParameter = "--kerberoslocalgroupsid:";
+    internal const string KerberosModeStr = "Kerberos";
 
     internal const string BaseUri = "http://{0}:{1}";
 

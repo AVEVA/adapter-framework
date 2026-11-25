@@ -20,8 +20,6 @@ internal sealed class AccessAdapterAuthorizationOptions
 {
     public const string KerberosSectionName =
         "ApplicationSettings:Authorization:AccessAdapter:Kerberos";
-    public const string KerberosAuthenticationSectionName =
-        "ApplicationSettings:Authentication:Kerberos";
 
     public WindowsLocalGroupOptions LocalGroup { get; set; }
         = new();

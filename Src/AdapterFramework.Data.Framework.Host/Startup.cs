@@ -14,6 +14,7 @@
 // SPDX-License-Identifier: Apache-2.0
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using AdapterFramework.Data.Framework.Abstractions.Administration;
@@ -182,63 +183,67 @@ public class Startup
         services.AddSingleton<ISecretsManager>(x => x.GetRequiredService<SecretsManager>());
 
         var authenticationMode = _appSettingsConfiguration.GetValue<String>(ConfigurationConstants.AuthModeKey);
+        AuthorizationPolicy accessAdapterPolicy = null;
 
-        var accessAdapterPolicy = new AuthorizationPolicyBuilder().RequireAuthenticatedUser().AddRequirements(new AccessAdapterRequirement()).Build();
-
-        if (authenticationMode == "Kerberos")
+        switch (authenticationMode)
         {
-            // Get info from appSettings and .env variables
-            var kerberosSection = _appSettingsConfiguration.GetSection(AccessAdapterAuthorizationOptions.KerberosSectionName);
-           
-            services.AddSingleton<IValidateOptions<AccessAdapterAuthorizationOptions>,
-                KerberosOptionsStartupValidator>();
+            case ConfigurationConstants.KerberosModeStr:
+                // Get info from appSettings and .env variables
+                var kerberosSection = _appSettingsConfiguration.GetSection(AccessAdapterAuthorizationOptions.KerberosSectionName);
 
-            services.AddOptions<AccessAdapterAuthorizationOptions>()
+                // Add singletons for startup validation and authorization
+                services.AddSingleton<IValidateOptions<AccessAdapterAuthorizationOptions>,
+                    KerberosOptionsStartupValidator>();
+                services.AddSingleton<IGroupMembershipEvaluator, WindowsGroupMembershipEvaluator>();
+                services.AddSingleton<
+                    IAuthorizationHandler,
+                    AccessAdapterAuthorizationHandler>();
+
+                // Bind only Kerberos options section to options validator
+                services.AddOptions<AccessAdapterAuthorizationOptions>()
                 .Bind(kerberosSection)
                 .ValidateOnStart();
 
-            // Add Authentication and Authorization middleware
-            services
-                .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-                .AddNegotiate("Negotiate", options =>
-                {
-                    options.PersistKerberosCredentials = false;
-                    options.PersistNtlmCredentials = false;
-                    
-                    options.Events.OnAuthenticated = context =>
+                accessAdapterPolicy = new AuthorizationPolicyBuilder()
+                    .RequireAuthenticatedUser()
+                    .AddRequirements(new AccessAdapterRequirement())
+                    .Build();
+
+                // Add authentication and authorization middleware
+                services
+                    .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+                    .AddNegotiate("Negotiate", options =>
                     {
-                        var identity = context.Principal?.Identity;
+                        options.PersistKerberosCredentials = false;
+                        options.PersistNtlmCredentials = false;
 
-                        if (!OperatingSystem.IsWindows())
+                        options.Events.OnAuthenticated = context =>
                         {
-                            context.Fail("Kerberos authentication is only supported on Windows.");
-                        }
-                        return Task.CompletedTask;
-                    };
+                            if (!OperatingSystem.IsWindows())
+                            {
+                                context.Fail("Kerberos authentication is only supported on Windows.");
+                            }
+                            return Task.CompletedTask;
+                        };
+                    });
+
+
+                services.AddAuthorization(options =>
+                {
+                    options.AddPolicy(
+                        AdapterPolicies.AccessAdapter,
+                        accessAdapterPolicy);
+
+                    options.DefaultPolicy = accessAdapterPolicy;
                 });
-
-            services.AddSingleton<IGroupMembershipEvaluator, WindowsGroupMembershipEvaluator>();
-            services.AddSingleton<
-                IAuthorizationHandler,
-                AccessAdapterAuthorizationHandler>();
-
-            services.AddAuthorization(options =>
-            {
-                options.AddPolicy(
-                    AdapterPolicies.AccessAdapter,
-                    accessAdapterPolicy);
-
-                options.DefaultPolicy = accessAdapterPolicy;
-            });
-        } else
-        {
-            throw new InvalidOperationException("Unsupported authentication mode.");
+                break;
+            default:
+                throw new InvalidOperationException("Unsupported authentication mode.");
         }
 
         // Add System configuration controller
         var mvcBuilder = services.AddMvc(options =>
         {
-            options.EnableEndpointRouting = false;
             options.Filters.Add(new AuthorizeFilter(accessAdapterPolicy));
         });
         mvcBuilder.AddApplicationPart(typeof(SystemConfigurationController).Assembly);
@@ -299,8 +304,14 @@ public class Startup
 
         app.UseCors();
 
+        app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
+
+        app.UseEndpoints(endpoints =>
+        {
+            endpoints.MapControllers();
+        });
 
         // Invoke UseComponent method to allow components to perform custom setup
         Services.Use(app, _sinkImplementations);
@@ -308,8 +319,6 @@ public class Startup
         Services.Use(app, _edgeServiceImplementations);
 
         RegisterSystemAdministrationActions(app.ApplicationServices.GetRequiredService<IRuntimeAdministrationRegistry>());
-
-        app.UseMvc();
     }
 
     #endregion

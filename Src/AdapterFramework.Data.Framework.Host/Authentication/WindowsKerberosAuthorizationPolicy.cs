@@ -61,4 +61,3 @@ internal sealed class AccessAdapterAuthorizationHandler
         return Task.CompletedTask;
     }
 }
-

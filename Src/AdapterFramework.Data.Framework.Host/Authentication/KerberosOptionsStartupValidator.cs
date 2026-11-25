@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using AdapterFramework.Data.Framework.Host.Configuration;
 using AdapterFramework.Data.Framework.Host.Helpers;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -39,9 +40,13 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
     internal static extern int NetGetJoinInformation(
             string server, out IntPtr domain, out NetSetupJoinStatus status);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("Netapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern int NetApiBufferFree(IntPtr buffer);
+
     ValidateOptionsResult IValidateOptions<AccessAdapterAuthorizationOptions>.Validate(string name, AccessAdapterAuthorizationOptions options)
     {
-        return validateKerberosOptionsWindows(options);
+        return ValidateKerberosOptionsWindows(options);
     }
 
     private void LogWindowsClientDetails()
@@ -56,7 +61,8 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
             "Client URL: https://{HostName}:{Port}/",
             hostName,
             port);
-        if (domainJoined) {
+        if (domainJoined)
+        {
             _systemLogger.LogInformation(
                 "Expected HTTP SPN for Kerberos: HTTP/{HostName}",
                 hostName);
@@ -113,7 +119,7 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
             Uri.CheckHostName(hostName) == UriHostNameType.Dns;
     }
 
-    private ValidateOptionsResult validateKerberosOptionsWindows(AccessAdapterAuthorizationOptions options)
+    private ValidateOptionsResult ValidateKerberosOptionsWindows(AccessAdapterAuthorizationOptions options)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -123,30 +129,42 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
         // Get domain join status from NetGetJoinInformation dll
         IntPtr buffer = IntPtr.Zero;
         NetSetupJoinStatus status;
-        int netGetJoinCheckStatus = NetGetJoinInformation(null, out buffer, out status);
-        if (netGetJoinCheckStatus == 0 && status != NetSetupJoinStatus.DomainName)
+        
+        try
         {
-            _systemLogger.LogWarning("The adapter host is not domain-joined. Windows authentication remains enabled. Local Windows accounts require NTLM to be permitted by Windows policy and membership in the configured adapter authorization group.");
+            int netGetJoinCheckStatus = NetGetJoinInformation(null, out buffer, out status);
+            if (netGetJoinCheckStatus == 0 && status != NetSetupJoinStatus.DomainName)
+            {
+                _systemLogger.LogWarning("The adapter host is not domain-joined. Windows authentication remains enabled. Local Windows accounts require NTLM to be permitted by Windows policy and membership in the configured adapter authorization group.");
+            }
+            else if (netGetJoinCheckStatus != 0)
+            {
+                _systemLogger.LogWarning("Domain join status could not be resolved.");
+            }
+            else
+            {
+                domainJoined = true;
+            }
         }
-        else if (netGetJoinCheckStatus != 0)
+        finally
         {
-            _systemLogger.LogWarning("Domain join status could not be resolved.");
-        } else
-        {
-            domainJoined = true;
+            if (buffer != IntPtr.Zero)
+            {
+                _ = NetApiBufferFree(buffer);
+            }
         }
 
 
         if (string.IsNullOrWhiteSpace(options.LocalGroup.Name))
         {
             return ValidateOptionsResult.Fail(
-                "Authorization:AccessAdapter:Kerberos:LocalGroup:Name is required on Windows.");
+                $"{ConfigurationConstants.KerberosLocalGroupNameKey} is required on Windows.");
         }
 
         if (string.IsNullOrWhiteSpace(options.LocalGroup.Sid))
         {
             return ValidateOptionsResult.Fail(
-                "Authorization:AccessAdapter:Kerberos:LocalGroup:Sid is required on Windows.");
+                $"{ConfigurationConstants.KerberosLocalGroupSidKey} is required on Windows.");
         }
 
         SecurityIdentifier configuredSid = null;
@@ -191,10 +209,10 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
                     $"'{options.LocalGroup.Name}' SID does not match the configured SID.");
             }
 
-            if (!localGroup.Members.Any())
+            if (localGroup.Members.Count == 0)
             {
                 _systemLogger.LogError("The Windows security group " +
-                   $"'{options.LocalGroup.Name}' has no members. All Kerberos requests will be denied until members are added.");
+                   "{OptionsLocalGroupName} has no members. All Kerberos requests will be denied until members are added.", options.LocalGroup.Name);
             }
         }
         catch (PrincipalException ex)

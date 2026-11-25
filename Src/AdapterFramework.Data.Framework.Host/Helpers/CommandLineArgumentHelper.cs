@@ -45,7 +45,13 @@ internal class CommandLineArgumentHelper
         configurationBuilder.SetBasePath(baseDirectoryName);
         configurationBuilder.AddJsonFile(GetAppSettingsFileName(arguments), optional: false, reloadOnChange: false);
 
-        
+        var kerberosArgumentMappings = new[]
+            {
+                (ConfigurationConstants.KerberosLocalGroupParameter, ConfigurationConstants.KerberosLocalGroupNameKey),
+                (ConfigurationConstants.KerberosLocalGroupSidParameter, ConfigurationConstants.KerberosLocalGroupSidKey),
+            };
+
+
         foreach (var argument in arguments)
         {
             if (argument.Contains(ConfigurationConstants.ApplicationDataDirectoryParameter, StringComparison.InvariantCultureIgnoreCase))
@@ -82,27 +88,21 @@ internal class CommandLineArgumentHelper
                 configurationValueOverride[ConfigurationConstants.DeviceNameKey] = deviceName;
             }
 
-            var argumentMappings = new[]
+            foreach (var (parameter, configurationKey) in kerberosArgumentMappings)
             {
-                (ConfigurationConstants.KerberosLocalGroupParameter, ConfigurationConstants.KerberosLocalGroupNameKey),
-                (ConfigurationConstants.KerberosLocalGroupSidParameter, ConfigurationConstants.KerberosLocalGroupSidKey),
-            };
-
-                foreach (var (parameter, configurationKey) in argumentMappings)
+                if (!argument.StartsWith(parameter, StringComparison.InvariantCultureIgnoreCase))
                 {
-                    if (!argument.StartsWith(parameter, StringComparison.InvariantCultureIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    if (!TryGetStringArgumentValue(argument, parameter, out var value, out errorMessage))
-                    {
-                        return null;
-                    }
-
-                    configurationValueOverride[configurationKey] = value;
-                    break;
+                    continue;
                 }
+
+                if (!TryGetStringArgumentValue(argument, parameter, out var value, out errorMessage))
+                {
+                    return null;
+                }
+
+                configurationValueOverride[configurationKey] = value;
+                break;
+            }
         }
         configurationBuilder.AddInMemoryCollection(configurationValueOverride);
         errorMessage = null;

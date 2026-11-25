@@ -24,6 +24,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using AdapterFramework.Data.DataModel;
 using AdapterFramework.Data.Framework.Abstractions.Configuration;
 using AdapterFramework.Data.Framework.Abstractions.Constants;
@@ -116,6 +117,12 @@ public static class SystemHost
         }
         catch (Exception ex)
         {
+            if (ex is OptionsValidationException)
+            {
+                _aspNetLogger?.LogCritical(ex.InnerException, "Adapter startup option validation failed. The adapter is shutting down.");
+                return;
+            }
+
             if (ex.InnerException is AddressInUseException)
             {
                 // We don't want to restart in this case, so the exception is only logged.
