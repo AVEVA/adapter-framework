@@ -129,7 +129,7 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
         // Get domain join status from NetGetJoinInformation dll
         IntPtr buffer = IntPtr.Zero;
         NetSetupJoinStatus status;
-        
+
         try
         {
             int netGetJoinCheckStatus = NetGetJoinInformation(null, out buffer, out status);
@@ -230,6 +230,5 @@ internal class KerberosOptionsStartupValidator : IValidateOptions<AccessAdapterA
         }
         LogWindowsClientDetails();
         return ValidateOptionsResult.Success;
-
     }
 }
